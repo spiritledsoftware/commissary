@@ -31,6 +31,38 @@ func bytesField(dst []byte, field protowire.Number, value []byte) []byte {
 
 func b64(raw []byte) string { return base64.StdEncoding.EncodeToString(raw) }
 
+// metaSignature builds a synthetic Meta Muse envelope: the observed five-byte header, then deterministic filler up to
+// 45 + payloadLen bytes, in unpadded base64url. mutate may corrupt the decoded bytes first.
+func metaSignature(payloadLen int, mutate func([]byte)) string {
+	decoded := make([]byte, 45+payloadLen)
+	copy(decoded, []byte{0x43, 0xe3, 0xda, 0x0e, 0x01})
+	for i := 5; i < len(decoded); i++ {
+		decoded[i] = byte(i*31 + 7)
+	}
+	if mutate != nil {
+		mutate(decoded)
+	}
+	return base64.RawURLEncoding.EncodeToString(decoded)
+}
+
+// bareTink builds a Vertex-style bare-Tink signature: prefix byte, a four-byte key id, then filler to length n.
+func bareTink(keyID [4]byte, n int) string {
+	payload := append([]byte{0x01}, keyID[:]...)
+	for len(payload) < n {
+		payload = append(payload, byte(0xA0+len(payload)%0x20))
+	}
+	return b64(payload)
+}
+
+// routerSuffix is OpenRouter's private routing tag: one "." and alphanumeric characters.
+func routerSuffix(n int) string {
+	suffix := ""
+	for len(suffix) < n {
+		suffix += "Ab3"
+	}
+	return "." + suffix[:n]
+}
+
 // classicPayload builds the 0x12 envelope: top-level field 2 container -> field 1 channel block.
 func classicPayload(channelID uint64, infra *uint64, model string) []byte {
 	var channel []byte
@@ -247,6 +279,13 @@ func buildGeminiCases(samples []namedSignature) []geminiCase {
 		))
 		add("text-sig/"+s.name, contents(modelTurn(map[string]any{"text": "t", "thought": true, "thoughtSignature": s.sig})))
 	}
+	// A text part ends a parallel functionCall group: the next call is the first of a new group (Go e5434f65).
+	text := map[string]any{"text": "more"}
+	sentinel := "skip_thought_signature_validator"
+	add("call-after-text-unsigned", contents(modelTurn(part("a", nil), part("b", nil), text, part("c", nil))))
+	add("call-after-text-bypass", contents(modelTurn(part("a", sentinel), part("b", sentinel), text, part("c", sentinel))))
+	add("call-after-empty-carrier-text", contents(modelTurn(part("a", nil), map[string]any{"text": "", "thoughtSignature": sentinel}, part("c", nil))))
+	add("call-after-thought-part", contents(modelTurn(part("a", sentinel), map[string]any{"text": "hidden", "thought": true}, part("b", sentinel))))
 	add("empty", map[string]any{})
 	add("no-contents-array", map[string]any{"contents": "x"})
 	add("request-contents", map[string]any{"request": contents(userTurn(map[string]any{"text": "go"}), modelTurn(part("a", nil)))})
@@ -322,6 +361,12 @@ func main() {
 	grokShort := base64.RawStdEncoding.EncodeToString(grokRaw[:20])
 	grokLowEntropy := base64.RawStdEncoding.EncodeToString(make([]byte, 90))
 	grokPadded := base64.StdEncoding.EncodeToString(grokRaw[:100])
+	// Uniform xAI ciphertext starts with the Tink prefix byte about once in 256 values; it must not look like Gemini.
+	grokTinkByte := append([]byte{0x01, 0x69, 0x14, 0x7d, 0x13}, grokRaw[5:150]...)
+	grokTinkLike := base64.RawStdEncoding.EncodeToString(grokTinkByte)
+	vertexKey, otherKey := [4]byte{0x8f, 0x3d, 0x6b, 0x5f}, [4]byte{0x69, 0x14, 0x7d, 0x13}
+	metaNative := metaSignature(1024, nil)
+	gptRouted := gptFernet + routerSuffix(79)
 
 	samples := []struct{ name, sig string }{
 		{"grok-like-150", grokLike},
@@ -331,6 +376,10 @@ func main() {
 		{"grok-padded", grokPadded},
 		{"grok-leading-space", " " + grokLike},
 		{"grok-url-chars", "abc-_" + grokLike},
+		{"grok-like-routed", grokLike + routerSuffix(62)},
+		{"grok-like-empty-suffix", grokLike + "."},
+		{"grok-like-double-dot-suffix", grokLike + ".a.b"},
+		{"grok-tink-prefix-byte", grokTinkLike},
 		{"empty", ""},
 		{"whitespace", "   "},
 		{"classic-E-channel11", classicE},
@@ -345,13 +394,32 @@ func main() {
 		{"R-valid-base64-bad-strict", rBadStrict},
 		{"antigravity-CAQS", caqs},
 		{"antigravity-CAQS-wrong-infra", caqsBadInfra},
+		{"antigravity-CAQS-channel19", signaturetest.AntigravityCAQSWithChannel(19)},
 		{"claude-CAIS-opus5", caisOpus5},
 		{"claude-CAIS-no-model", caisNoModel},
 		{"gemini-tink-envelope", geminiTink},
 		{"gemini-uuid-envelope", geminiUUID},
+		{"gemini-bare-tink-vertex", bareTink(vertexKey, 405)},
+		{"gemini-bare-tink-other-key", bareTink(otherKey, 405)},
+		{"gemini-bare-tink-short", b64(append([]byte{0x01, 0x8f, 0x3d}, make([]byte, 10)...))},
+		{"prefixed-gemini-bare-tink", "gemini#" + bareTink(vertexKey, 405)},
 		{"gemini-bypass-skip", "skip_thought_signature_validator"},
 		{"gemini-bypass-context", "context_engineering_is_the_way_to_go"},
 		{"gpt-fernet", gptFernet},
+		{"gpt-fernet-routed", gptRouted},
+		{"gpt-fernet-empty-suffix", gptFernet + "."},
+		{"gpt-fernet-bad-suffix", gptFernet + ".bad_char"},
+		{"gpt-fernet-double-dot-suffix", gptFernet + ".a.b"},
+		{"meta-muse-1024", metaNative},
+		{"meta-muse-2048", metaSignature(2048, nil)},
+		{"meta-muse-routed", metaNative + routerSuffix(67)},
+		{"meta-muse-oversized-suffix", metaNative + routerSuffix(129)},
+		{"meta-muse-dash-suffix", metaNative + ".ab-cd"},
+		{"meta-muse-non-bucket", metaSignature(1025, nil)},
+		{"meta-muse-below-minimum", metaSignature(512, nil)},
+		{"meta-muse-bad-header", metaSignature(1024, func(b []byte) { b[2] ^= 0xff })},
+		{"meta-muse-padded", metaNative + "="},
+		{"meta-muse-prefixed", "meta#" + metaNative},
 		{"kimi-like-4340", kimiLike},
 		{"swe-sealed", "sealed.v1.abcdef"},
 		{"prefixed-claude-R", "claude#" + rForm},
@@ -370,7 +438,7 @@ func main() {
 	targets := []signature.SignatureProvider{
 		signature.SignatureProviderClaude, signature.SignatureProviderGemini, signature.SignatureProviderGPT,
 		signature.SignatureProviderKimi, signature.SignatureProviderGrok, signature.SignatureProviderSWE,
-		signature.SignatureProviderUnknown,
+		signature.SignatureProviderMeta, signature.SignatureProviderUnknown,
 	}
 	kinds := []signature.SignatureBlockKind{
 		signature.SignatureBlockKindUnknown, signature.SignatureBlockKindClaudeThinking,
@@ -426,7 +494,7 @@ func main() {
 		if normalized, ok := signature.CompatibleAntigravityClaudeThinkingSignature(s.sig); ok {
 			r.AntigravityTag = normalized
 		}
-		for _, provider := range []signature.SignatureProvider{signature.SignatureProviderClaude, signature.SignatureProviderGemini, signature.SignatureProviderGPT} {
+		for _, provider := range []signature.SignatureProvider{signature.SignatureProviderClaude, signature.SignatureProviderGemini, signature.SignatureProviderGPT, signature.SignatureProviderMeta} {
 			if normalized, ok := signature.CompatibleSignatureForProvider(provider, s.sig); ok {
 				r.Compatible[string(provider)] = normalized
 			} else {
@@ -444,7 +512,10 @@ func main() {
 	}
 
 	models := []string{"claude-sonnet-4-5", "Claude-Opus-4", "gemini-3-pro-high", "gemini-3-flash", "gpt-5", "gpt-oss-120b-medium",
-		"o3-mini", "kimi-k2", "moonshot-v1", "k2-thinking", "grok-4", "swe-1.6", "swe-1", "some-model", " Claude ", "o4", "my-openai-x", "codex-mini"}
+		"o3-mini", "kimi-k2", "moonshot-v1", "k2-thinking", "grok-4", "swe-1.6", "swe-1", "some-model", " Claude ", "o4", "my-openai-x", "codex-mini",
+		// Meta Muse, and the last "/" or ":" segment deciding the family before the whole string.
+		"muse-spark-1.3", "Muse-Wonder-1.0", "muse", "muse_spark_1_3", "meta/muse", "meta/muse-spark-1.2", "meta-muse-spark", "openai-compatible/muse-spark-1.3",
+		"museum-1", "amuse-model", "meta-llama-4", "muse-proxy/gpt-5.4", "openrouter/anthropic/claude-sonnet-4-6", "vendor:grok-4", "gemini-proxy/custom", "provider/"}
 	modelProviders := map[string]string{}
 	for _, m := range models {
 		modelProviders[m] = string(signature.SignatureProviderFromModelName(m))
