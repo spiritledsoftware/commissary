@@ -39,6 +39,13 @@ const sha256Hex = async (text: string): Promise<string> => {
  * `catalog-all`, whose ties follow Go's map order). The per-model summary of the old fixture is not compared for these
  * cases; the four flags are checked against `AHEAD_NATIVE_FLAGS` instead. The fixture stays untouched: F2 (#388)
  * regenerates it and deletes this table.
+ *
+ * Recipe: unpack the base with `git -C .repos/CLIProxyAPI archive 67465884ca179a8f9098328d03a361b50003fdd7`, apply
+ * 8df4e42a (`nullCodexClientRequiredOptions` sets tool_mode, use_responses_lite, supports_reasoning_effort_updates),
+ * a1eeb60e (its image-detail reset, and `applyCodexClientInputModalitiesMetadata` sets it false) and 19398539 (copy
+ * `internal/registry/models/codex_client_models.json` from `d1ea84f4`), put that tree and a copy of `tools/fixturegen`
+ * under one go.work, and run `go run ./tools/fixturegen/registry -out /tmp/registry.json`. The digests hash that
+ * output's `entries` maps as described above.
  */
 const AHEAD_OF_FIXTURE = new Map<string, { entries: string; sha256?: string; size?: number }>([
   [
