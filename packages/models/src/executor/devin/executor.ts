@@ -10,7 +10,8 @@
  *
  * The executor-level apply_patch guards (`helps/apply-patch-stream.ts`) sanitise failures of apply_patch-declaring requests
  * and fail a patch-enabled stream that ends early; the `GetUserStatus` quota refresh runs from cron
- * (`credentials/devin-status.ts`).
+ * (`credentials/devin-status.ts`). Responses compaction (`compaction_trigger` and `/responses/compact`) is compacted
+ * locally with the same model (`helps/compaction.ts`; Go fb77445f, devin_executor_compaction.go).
  *
  * Not ported: request/response debug logs and outbound proxies. `fetch` always sends a User-Agent
  * (native devin-cli omits it); the executor sets it empty and relies on the runtime to drop it.
@@ -34,6 +35,12 @@ import {
   endApplyPatchStream,
   isApplyPatchUpstreamTool,
 } from "../helps/apply-patch-stream.ts";
+import {
+  compactionStreamFromResponse,
+  executeLocalCompaction,
+  expandCompaction,
+  hasResponsesCompactionTriggerRequest,
+} from "../helps/compaction.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { decodeToolCallId } from "../helps/tool-call-ids.ts";
@@ -377,7 +384,8 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
   // Non-stream
   // -------------------------------------------------------------------------------------------------------------
 
-  const execute = Effect.fnUntraced(function* (
+  /** One Devin exchange, without any compaction handling: what the summary turn of a local compaction runs. */
+  const executeTurn = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
@@ -565,7 +573,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     }
   }
 
-  const executeStream = Effect.fnUntraced(function* (
+  const executeStreamTurn = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
@@ -674,17 +682,107 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     return { headers: new Headers(response.headers), chunks } satisfies StreamResult;
   });
 
-  /** `CountTokens`: no upstream endpoint; `len(payload)/4` like Go. */
-  const countTokens: ProviderExecutor["countTokens"] = (_context, request) => {
-    const tokens = Math.floor(
-      new TextEncoder().encode(JSON.stringify(cloneJson(request.payload))).length / 4,
+  // -------------------------------------------------------------------------------------------------------------
+  // Responses compaction (Go fb77445f, devin_executor_compaction.go)
+  // -------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Devin has no compaction endpoint: a `compaction_trigger` or `/responses/compact` is compacted locally with the same
+   * model (Go answers `/responses/compact` with an ordinary generation, which is the wrong shape). Capsules a local
+   * compaction minted become context and foreign `compaction` items are dropped; a `reasoning` item with a D3
+   * `sealed.v1.` signature is not a `compaction` item and is never touched.
+   */
+  const localCompaction = (
+    context: ExecutionContext,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) =>
+    executeLocalCompaction({
+      request,
+      options,
+      summaryTurn: (summaryRequest, summaryOptions) =>
+        executeTurn(context, summaryRequest, summaryOptions),
+    });
+
+  const execute = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
+      return yield* executeTurn(context, requested, requestedOptions);
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
     );
 
-    return Effect.succeed({
-      payload: `{"total_tokens":${tokens},"input_tokens":${tokens}}`,
-      headers: new Headers(),
-    } satisfies ExecutorResponse);
-  };
+    if (
+      options.alt === "responses/compact" ||
+      hasResponsesCompactionTriggerRequest(request, options)
+    )
+      return yield* localCompaction(context, request, options);
+
+    return yield* executeTurn(context, request, options);
+  });
+
+  const executeStream = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
+      return yield* executeStreamTurn(context, requested, requestedOptions);
+
+    if (requestedOptions.alt === "responses/compact") {
+      return yield* new ExecutionError({
+        status: 400,
+        message: "streaming not supported for /responses/compact",
+        requestScoped: true,
+      });
+    }
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
+    );
+
+    if (hasResponsesCompactionTriggerRequest(request, options)) {
+      const sealed = yield* localCompaction(context, request, options);
+
+      return yield* compactionStreamFromResponse(
+        parseSuffix(request.model).modelName,
+        sealed,
+        Date.now(),
+      );
+    }
+
+    return yield* executeStreamTurn(context, request, options);
+  });
+
+  /**
+   * `CountTokens`: no upstream endpoint; `len(payload)/4` like Go, over the expanded payload (a difference from Go,
+   * which counts the capsule's ciphertext).
+   */
+  const countTokens: ProviderExecutor["countTokens"] = Effect.fnUntraced(
+    function* (_context, requested, requestedOptions) {
+      const { request } =
+        requestedOptions.sourceFormat === Formats.OpenAIResponse
+          ? yield* expandCompaction(requested, requestedOptions, "drop-foreign")
+          : { request: requested };
+
+      const tokens = Math.floor(
+        new TextEncoder().encode(JSON.stringify(cloneJson(request.payload))).length / 4,
+      );
+
+      return {
+        payload: `{"total_tokens":${tokens},"input_tokens":${tokens}}`,
+        headers: new Headers(),
+      } satisfies ExecutorResponse;
+    },
+  );
 
   return { identifier: DEVIN_PROVIDER, execute, executeStream, countTokens };
 };
