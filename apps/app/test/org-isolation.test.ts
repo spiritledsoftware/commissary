@@ -497,6 +497,38 @@ const STORES: ReadonlyArray<StoreCase> = [
     },
   }),
 
+  // The Gemini API and Vertex reasoning-replay ledgers (#376): one SessionState store each.
+  storeCase("session state: Gemini and Vertex reasoning replay", {
+    write: async (org, name, value) => {
+      for (const store of ["gemini-reasoning-replay", "vertex-reasoning-replay"]) {
+        await inOrg(
+          org,
+          Effect.flatMap(resolveBackend(), (backend) =>
+            backend.run({ store, scope: "", session: name }, [
+              { op: "put", key: "k", value, ttlMs: 60_000 },
+            ]),
+          ),
+        );
+      }
+    },
+    read: async (org, name) => {
+      const values: Array<string | undefined> = [];
+
+      for (const store of ["gemini-reasoning-replay", "vertex-reasoning-replay"]) {
+        const [result] = await inOrg(
+          org,
+          Effect.flatMap(resolveBackend(), (backend) =>
+            backend.run({ store, scope: "", session: name }, [{ op: "get", key: "k" }]),
+          ),
+        );
+
+        values.push(result?.status === "ok" ? result.value : undefined);
+      }
+
+      return values[0] !== undefined && values[0] === values[1] ? values[0] : undefined;
+    },
+  }),
+
   // Worker caches: the per-isolate ones that hold org data.
   storeCase("worker cache: signatures", {
     write: async (org, name, value) => {
