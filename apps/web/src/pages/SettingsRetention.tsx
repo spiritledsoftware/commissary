@@ -1,7 +1,6 @@
-// The org's retention periods (ADR 0027): how long usage records are kept before the scheduled prune deletes them, and
-// how long agent runs are kept after their last activity (#228, ADR 0040), with their transcripts. Org admins set each,
-// from 1 to 3650 days or "keep forever"; where none is set the section suggests the default of a new org (90 days for
-// usage records, 30 for agent runs).
+// The org's retention period (ADR 0027): how long usage records are kept before the scheduled prune deletes them. Org
+// admins set it, from 1 to 3650 days or "keep forever"; where none is set the section suggests the default of a new org
+// (90 days).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { type FormEvent, useId, useState } from "react";
@@ -13,10 +12,9 @@ import {
   MAX_RETENTION_DAYS,
   MIN_RETENTION_DAYS,
   parseRetentionDays,
-  type Retained,
   retentionPayload,
   retentionSentence,
-  suggestedDays,
+  SUGGESTED_RETENTION_DAYS,
 } from "../lib/retention.ts";
 import { useAction } from "../lib/use-action.ts";
 import styles from "./SettingsOrg.module.css";
@@ -24,39 +22,25 @@ import settings from "./Settings.module.css";
 
 type Mode = "days" | "forever";
 
-/** How each form names what it keeps. */
-const WORDING: Record<
-  Retained,
-  { readonly form: string; readonly legend: string; readonly lead: string; readonly unset: string }
-> = {
-  usage: {
-    form: "Usage retention",
-    legend: "How long usage records are kept",
-    lead: "Older records are deleted automatically. A usage record holds tokens, cost, latency and the outcome of a request, never its prompt or response.",
-    unset: "No retention period is set: usage records are kept until you delete the org.",
-  },
-  runs: {
-    form: "Agent run retention",
-    legend: "How long agent runs are kept after their last activity",
-    lead: "A run idle for longer is deleted automatically with its transcript, never while it is working. Its usage records follow the usage retention period.",
-    unset: "No retention period is set: agent runs are kept until you delete the org.",
-  },
-};
+const WORDING = {
+  form: "Usage retention",
+  legend: "How long usage records are kept",
+  lead: "Older records are deleted automatically. A usage record holds tokens, cost, latency and the outcome of a request, never its prompt or response.",
+  unset: "No retention period is set: usage records are kept until you delete the org.",
+} as const;
 
 /** The choice and the days input; remounted (`key`) when the saved period changes, so it starts from the new one. */
 const RetentionForm = ({
-  retained,
   days,
   onSave,
   busy,
 }: {
-  readonly retained: Retained;
   readonly days: number | null;
   readonly onSave: (days: number | null) => void;
   readonly busy: boolean;
 }) => {
   const [mode, setMode] = useState<Mode>(days === null ? "forever" : "days");
-  const [text, setText] = useState(String(days ?? suggestedDays(retained)));
+  const [text, setText] = useState(String(days ?? SUGGESTED_RETENTION_DAYS));
   const ids = useId();
   const parsed = mode === "forever" ? null : parseRetentionDays(text);
   const invalid = mode === "days" && parsed === undefined;
@@ -69,9 +53,9 @@ const RetentionForm = ({
   };
 
   return (
-    <form className={styles["form"]} onSubmit={submit} aria-label={WORDING[retained].form}>
+    <form className={styles["form"]} onSubmit={submit} aria-label={WORDING.form}>
       <fieldset className={styles["choices"]}>
-        <legend className={kit["visuallyHidden"]}>{WORDING[retained].legend}</legend>
+        <legend className={kit["visuallyHidden"]}>{WORDING.legend}</legend>
         <label className={styles["choice"]} htmlFor={`${ids}-days`}>
           <input
             id={`${ids}-days`}
@@ -128,20 +112,19 @@ const RetentionForm = ({
   );
 };
 
-const Retention = ({ org, retained }: { readonly org: OrgView; readonly retained: Retained }) => {
+const Retention = ({ org }: { readonly org: OrgView }) => {
   const update = useAction(updateOrgSettingsAtom);
   const [problem, setProblem] = useState<string | undefined>(undefined);
   const [saved, setSaved] = useState(false);
-  const days = retained === "usage" ? org.usage_retention_days : org.run_retention_days;
-  const suggested = suggestedDays(retained);
-  const wording = WORDING[retained];
+  const days = org.usage_retention_days;
+  const suggested = SUGGESTED_RETENTION_DAYS;
 
   const save = async (next: number | null) => {
     setProblem(undefined);
     setSaved(false);
 
     const outcome = await update.run({
-      payload: retentionPayload(retained, next),
+      payload: retentionPayload(next),
       reactivityKeys: ORGS,
     });
 
@@ -152,12 +135,12 @@ const Retention = ({ org, retained }: { readonly org: OrgView; readonly retained
   return (
     <>
       <p className={settings["lead"]}>
-        <b>{retentionSentence(days, retained)}</b> {wording.lead}
+        <b>{retentionSentence(days)}</b> {WORDING.lead}
       </p>
       {days === null ? (
         <div className={styles["suggest"]}>
           <p>
-            {wording.unset} {suggested} days is a common choice.
+            {WORDING.unset} {suggested} days is a common choice.
           </p>
           <button
             type="button"
@@ -169,13 +152,7 @@ const Retention = ({ org, retained }: { readonly org: OrgView; readonly retained
           </button>
         </div>
       ) : null}
-      <RetentionForm
-        key={String(days)}
-        retained={retained}
-        days={days}
-        busy={update.busy}
-        onSave={save}
-      />
+      <RetentionForm key={String(days)} days={days} busy={update.busy} onSave={save} />
       {problem === undefined ? null : (
         <p className={kit["fieldError"]} role="alert">
           {problem}
@@ -191,8 +168,7 @@ const Retention = ({ org, retained }: { readonly org: OrgView; readonly retained
 };
 
 /**
- * The section's body: the org's current periods, once read, usage records' and agent runs'. Only org admins reach the
- * page, and they may change them.
+ * The section's body: the org's current period, once read. Only org admins reach the page, and they may change it.
  */
 export const RetentionBody = () => {
   const result = useAtomValue(orgAtom);
@@ -201,21 +177,14 @@ export const RetentionBody = () => {
   return AsyncResult.match(result, {
     onInitial: () => (
       <p className={kit["muted"]} aria-busy="true">
-        Loading the retention periods…
+        Loading the retention period…
       </p>
     ),
     onFailure: (failure) => (
       <Problem onRetry={retry}>
-        Could not load the retention periods. {failureMessage(failure)}
+        Could not load the retention period. {failureMessage(failure)}
       </Problem>
     ),
-    onSuccess: ({ value }) => (
-      <>
-        <h3 className={styles["subheading"]}>Usage records</h3>
-        <Retention org={value} retained="usage" />
-        <h3 className={styles["subheading"]}>Agent runs</h3>
-        <Retention org={value} retained="runs" />
-      </>
-    ),
+    onSuccess: ({ value }) => <Retention org={value} />,
   });
 };

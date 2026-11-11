@@ -9,13 +9,9 @@
  * time no call charged (#224, `ToolsPart.sandboxComputerTime`), which charges it to the opener's Spend limits as the
  * row names them and forgets the row; a row whose close was never heard of is forgotten {@link CLOSE_REPORT_MS} after
  * that ({@link SandboxSessionStore.prune}, from the part's alarm). A session closed with `sandbox_close` goes at once:
- * the call that closed it charged its last stretch. An agent run's session (its principal a run's, #230) lasts as long
- * as the run: no day ends it, and it goes when the run is deleted.
+ * the call that closed it charged its last stretch.
  */
 import { CLOSE_REPORT_MS, SESSION_IDLE_MS } from "./provider.ts";
-
-/** The rows of sessions a day without use ends: all but agent runs' (`run:<id>`, `isRunPrincipalId`). */
-const ENDS_IDLE = `principal NOT LIKE 'run:%'`;
 
 /** One open sandbox session. */
 export interface TrackedSession {
@@ -23,10 +19,8 @@ export interface TrackedSession {
   readonly toolkitId: string;
   /** The member who opened it, if the caller was one. */
   readonly member: string | undefined;
-  /** The principal it belongs to (`user:<email>`, `key:<id>`, `run:<id>`). */
+  /** The principal it belongs to (`user:<email>`, `key:<id>`). */
   readonly principal: string;
-  /** The shared agent whose run opened it (#228), whose Spend limits its computer time counts toward (#224). */
-  readonly agent?: string | undefined;
   readonly openedAt: number;
   readonly lastUsed: number;
 }
@@ -38,7 +32,6 @@ interface SessionRow extends Record<string, SqlStorageValue> {
   principal: string;
   opened_at: number;
   last_used: number;
-  agent: string | null;
 }
 
 /**
@@ -57,7 +50,6 @@ const sessionOf = (row: SessionRow): TrackedSession => ({
   toolkitId: row.toolkit_id,
   member: row.member === "" ? undefined : row.member,
   principal: row.principal,
-  ...(row.agent === null ? {} : { agent: row.agent }),
   openedAt: row.opened_at,
   lastUsed: row.last_used,
 });
@@ -69,13 +61,13 @@ export class SandboxSessionStore {
     this.#sql = sql;
     sql.exec(SCHEMA);
 
-    // The shared agent whose run opened a session (#224, #228): a log from before has no column for it.
     const columns = sql
       .exec<{ name: string }>("PRAGMA table_info(sandbox_sessions)")
       .toArray()
       .map((column) => column.name);
 
-    if (!columns.includes("agent")) sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN agent TEXT`);
+    // Which hosted agent opened a session, which Commissary no longer has (ADR 0048): dropped once.
+    if (columns.includes("agent")) sql.exec(`ALTER TABLE sandbox_sessions DROP COLUMN agent`);
 
     // When a session's computer stops unless a command uses it again (#241): a log from before has no column for it.
     if (!columns.includes("computer_until"))
@@ -90,13 +82,12 @@ export class SandboxSessionStore {
   /** Keeps a session just opened; `computer`: whether it was opened asking for the computer (#241). */
   opened(session: Omit<TrackedSession, "lastUsed">, computer = true): void {
     this.#sql.exec(
-      `INSERT OR REPLACE INTO sandbox_sessions (id, toolkit_id, member, principal, agent, opened_at, last_used, computer)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO sandbox_sessions (id, toolkit_id, member, principal, opened_at, last_used, computer)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       session.id,
       session.toolkitId,
       session.member ?? "",
       session.principal,
-      session.agent ?? null,
       session.openedAt,
       session.openedAt,
       computer ? 1 : 0,
@@ -122,15 +113,6 @@ export class SandboxSessionStore {
       .toArray()[0];
 
     return row === undefined ? undefined : sessionOf(row);
-  }
-
-  /** Whether the part keeps the open session `id` as `principal`'s (#230: a run's gated call names its own only). */
-  owns(id: string, principal: string): boolean {
-    return (
-      this.#sql
-        .exec(`SELECT 1 FROM sandbox_sessions WHERE id = ? AND principal = ?`, id, principal)
-        .toArray().length > 0
-    );
   }
 
   /** Marks the session `id` used at `now`; `principal`'s only, when given (a call's: another's id is not its). */
@@ -196,14 +178,14 @@ export class SandboxSessionStore {
 
   /**
    * How many computers the org has running at `now`, as the sessions' objects last answered, apart from the session
-   * `except`'s and from agent runs' (`run:<id>` principals, which no ceiling caps, ADR 0042).
+   * `except`'s.
    */
   computersRunning(now: number, except?: string): number {
     return (
       this.#sql
         .exec<{ running: number }>(
           `SELECT COUNT(*) AS running FROM sandbox_sessions
-           WHERE computer_until > ? AND id != ? AND principal NOT LIKE 'run:%'`,
+           WHERE computer_until > ? AND id != ?`,
           now,
           except ?? "",
         )
@@ -233,14 +215,14 @@ export class SandboxSessionStore {
 
   /**
    * The sessions that may still be open at `now`, oldest first (#225: the panel's list), `member`'s only when given, at
-   * most `limit`: an agent run's, which no day ends, and the others used within their idle day. One the provider closed
+   * most `limit`: those used within their idle day. One the provider closed
    * whose close is not reported yet is among them until it is forgotten: the provider says which are open.
    */
   mayBeOpen(now: number, limit: number, member?: string): ReadonlyArray<TrackedSession> {
     return this.#sql
       .exec<SessionRow>(
         `SELECT * FROM sandbox_sessions
-         WHERE (NOT (${ENDS_IDLE}) OR last_used > ?) AND (? IS NULL OR member = ?)
+         WHERE last_used > ? AND (? IS NULL OR member = ?)
          ORDER BY opened_at, id LIMIT ?`,
         now - SESSION_IDLE_MS,
         member ?? null,
@@ -251,36 +233,39 @@ export class SandboxSessionStore {
       .map(sessionOf);
   }
 
-  /** The open sessions of the principals `principals` (#230: agent runs'). */
-  sessionsOf(principals: ReadonlyArray<string>): ReadonlyArray<TrackedSession> {
-    if (principals.length === 0) return [];
-
+  /**
+   * The sessions due to be forgotten at `now`: those the provider ended for want of use whose close was not reported
+   * (#224), oldest first, at most `limit`. The Tools part deletes each at the provider, then forgets it ({@link ended}).
+   */
+  unreported(now: number, limit: number): ReadonlyArray<TrackedSession> {
     return this.#sql
       .exec<SessionRow>(
-        `SELECT * FROM sandbox_sessions WHERE principal IN (${principals.map(() => "?").join(", ")})
-         ORDER BY opened_at, id`,
-        ...principals,
+        `SELECT * FROM sandbox_sessions WHERE last_used <= ? ORDER BY last_used, id LIMIT ?`,
+        now - FORGOTTEN_AFTER_MS,
+        limit,
       )
       .toArray()
       .map(sessionOf);
   }
 
-  /**
-   * Forgets the sessions the provider ended for want of use whose close was not reported by `now` (#224), but agent
-   * runs' (#230), which no day ends; answers when the next one is forgotten.
-   */
-  prune(now: number): number | null {
-    this.#sql.exec(
-      `DELETE FROM sandbox_sessions WHERE last_used <= ? AND ${ENDS_IDLE}`,
-      now - FORGOTTEN_AFTER_MS,
-    );
-
+  /** When the next session is due to be forgotten ({@link unreported}); `null` for none kept. */
+  forgottenAt(): number | null {
     const first = this.#sql
-      .exec<{ first: number | null }>(
-        `SELECT MIN(last_used) AS first FROM sandbox_sessions WHERE ${ENDS_IDLE}`,
-      )
+      .exec<{ first: number | null }>(`SELECT MIN(last_used) AS first FROM sandbox_sessions`)
       .toArray()[0]?.first;
 
     return first === null || first === undefined ? null : first + FORGOTTEN_AFTER_MS;
+  }
+
+  /**
+   * Whether the part keeps a session a hosted agent's run opened (`run:<id>`), which Commissary no longer has (ADR
+   * 0048): its object never closes it, as it waited for its run to be deleted, so the part deletes it once it is due.
+   */
+  hasRunSessions(): boolean {
+    return (
+      this.#sql
+        .exec(`SELECT 1 FROM sandbox_sessions WHERE principal LIKE 'run:%' LIMIT 1`)
+        .toArray().length > 0
+    );
   }
 }

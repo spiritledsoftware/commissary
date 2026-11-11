@@ -44,33 +44,27 @@ export const BrowserSessionHandoff = Schema.Struct({
 
 export type BrowserSessionHandoff = typeof BrowserSessionHandoff.Type;
 
-/** How a session was opened: with an API key, by a person signed in (through Access), or by a hosted agent's run. */
-export const BrowserSessionOpener = Schema.Literals(["api_key", "person", "agent_run"]);
+/** How a session was opened: with an API key or by a person signed in (through Access). */
+export const BrowserSessionOpener = Schema.Literals(["api_key", "person"]);
 
 export type BrowserSessionOpener = typeof BrowserSessionOpener.Type;
 
 export const BrowserSessionView = Schema.Struct({
   id: Schema.String,
   opened_at: Schema.String,
-  /** Its member; `null` for a shared agent's run, which opened it as the agent. */
+  /** Its member; `null` when it has none. */
   member: Schema.NullOr(BrowserSessionMember),
   opened_by: BrowserSessionOpener,
   /** The caller's own session: they are its member. */
   own: Schema.Boolean,
   /**
-   * The caller may watch it: open its Live View and answer its handoff (its member; for a session a shared agent's run
-   * opened, which has no member, the run's watchers, #232). An org admin's view of another member's session is `false`:
+   * The caller may watch it: open its Live View and answer its handoff (its member). An org admin's view of another member's session is `false`:
    * they may only end it.
    */
   watchable: Schema.Boolean,
   profile: Schema.NullOr(BrowserSessionProfile),
   /** The handoff that waits for the caller, in a session they may watch only; `null` otherwise. */
   handoff: Schema.NullOr(BrowserSessionHandoff),
-  /**
-   * The hosted agent run that opened it (`opened_by: "agent_run"`, #234), whose page the panel links
-   * (`/agent-runs/<run>`, which decides who sees the run); absent for any other session.
-   */
-  run: optional(Schema.String),
 });
 
 export type BrowserSessionView = typeof BrowserSessionView.Type;

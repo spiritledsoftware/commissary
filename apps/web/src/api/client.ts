@@ -2,10 +2,9 @@
 // panel's own origin; Cloudflare Access authenticates them with the session cookie, so no credentials live here.
 import { Cause, Clock, Duration, Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
-import { AsyncResult, Atom, AtomHttpApi, Reactivity } from "effect/reactivity";
+import { Atom, AtomHttpApi, Reactivity } from "effect/reactivity";
 import { ManagementApi, scopedApiUrl } from "@commissary/contract/api";
 import { type BatchAction, batchLimit } from "@commissary/contract/credentials";
-import type { CreateTrigger } from "@commissary/contract/agent-triggers";
 import { ManagementError } from "@commissary/contract/errors";
 import type {
   GrantBody,
@@ -15,7 +14,6 @@ import type {
 } from "@commissary/contract/grants";
 import type { PriceOverrideBody, PriceOverrideSaved } from "@commissary/contract/prices";
 import type { RoutingModels } from "@commissary/contract/routing";
-import { servedTools, type ToolLike } from "../lib/agent-notice.ts";
 import { type ChunkOutcome, chunks, foldOutcomes } from "../lib/batch.ts";
 import { causeMessage } from "../lib/failure.ts";
 import type { SaveSettings, SettingsView } from "@commissary/contract/settings";
@@ -30,7 +28,6 @@ import {
   saveAccess,
 } from "../lib/browser-profiles.ts";
 import { orgSlugOfPath } from "../lib/org.ts";
-import { RUN_KEYS } from "../lib/agent-runs.ts";
 import { type RuleChange, type RuleWrite, saveRuleChange } from "../lib/models.ts";
 import { type Edits, saveDraft } from "../lib/settings.ts";
 import {
@@ -991,145 +988,6 @@ export const sandboxSessionsAtom = ManagementClient.query("sandboxSessions", "li
 
 /** Ends a sandbox session (call with `reactivityKeys: SANDBOX_SESSIONS`). */
 export const endSandboxSessionAtom = ManagementClient.mutation("sandboxSessions", "end");
-
-/** The Agents pages (and the agents a member may use) refetch after a mutation tagged with this key. */
-export const AGENTS = ["agents"] as const;
-
-/**
- * The agents the caller manages (a member their private ones, an org admin every shared one and their own), with the
- * other members' private agents as existence only for an org admin. Read it only where `deployment.agents`: without the
- * Agents area the route answers 404.
- */
-export const agentsAtom = ManagementClient.query("agents", "list", {
-  reactivityKeys: AGENTS,
-  timeToLive: KEEP,
-});
-
-/** The agents the caller may use: their private ones and the shared agents granted to them, enabled. */
-export const usableAgentsAtom = ManagementClient.query("agents", "mine", {
-  reactivityKeys: AGENTS,
-  timeToLive: KEEP,
-});
-
-// Agent writes (#233): call with `reactivityKeys: AGENTS`. An edit or a removal names the agent's revision in `If-Match`.
-export const createAgentAtom = ManagementClient.mutation("agents", "create");
-
-export const updateAgentAtom = ManagementClient.mutation("agents", "update");
-
-export const removeAgentAtom = ManagementClient.mutation("agents", "remove");
-
-/**
- * The tools (stable id and class, `servedTools`) the toolkits named by `ids` (comma-separated, sorted; `""`: none) give,
- * by toolkit id, for the notice on an unattended agent, and the ids of the toolkits whose list could not be read. A
- * toolkit whose list has not loaded yet is in neither.
- */
-export const toolListsAtom = Atom.family((ids: string) =>
-  Atom.make((get) => {
-    const lists: Record<string, ReadonlyArray<ToolLike>> = {};
-    const failed: Array<string> = [];
-
-    for (const id of ids === "" ? [] : ids.split(",")) {
-      const result = get(toolkitToolsAtom(id));
-
-      if (AsyncResult.isSuccess(result)) lists[id] = servedTools(result.value.tools);
-      else if (AsyncResult.isFailure(result)) failed.push(id);
-    }
-
-    return { lists, failed } as const;
-  }),
-);
-
-/** The agent runs' pages (#234) refetch after a mutation tagged with this key. */
-export const AGENT_RUNS = RUN_KEYS;
-
-/**
- * The runs the caller sees (#232, #234): those they started, the runs no one started of the shared agents they watch
- * with the child runs below their runs, and for an org admin every shared agent's run as metadata; each with its cost.
- * Read again every 15 seconds while open, so a run that starts or settles shows without a reload.
- */
-export const agentRunsAtom = ManagementClient.query("agentRuns", "list", {
-  reactivityKeys: AGENT_RUNS,
-}).pipe(Atom.withRefresh(Duration.seconds(15)));
-
-/**
- * One run as its page shows it: its transcript, turns and what it waits on (its starter and watchers), or its metadata
- * (an org admin). The page reads it again every `POLL_MS` while a turn runs or something waits (`pollsNow`).
- */
-export const agentRunAtom = Atom.family((id: string) =>
-  ManagementClient.query("agentRuns", "get", { params: { run: id }, reactivityKeys: AGENT_RUNS }),
-);
-
-/**
- * The org's retention period for agent runs, as a run's page says when the run is pruned (`GET
- * /agent-runs/:run/retention`): read once per page, not on each of the run's reads.
- */
-export const agentRunRetentionAtom = Atom.family((id: string) =>
-  ManagementClient.query("agentRuns", "retention", { params: { run: id }, timeToLive: KEEP }),
-);
-
-// Run writes (#234): call with `reactivityKeys: AGENT_RUNS`. A start answers the run, which its page shows next.
-export const startRunAtom = ManagementClient.mutation("agentRuns", "start");
-
-export const sendRunMessageAtom = ManagementClient.mutation("agentRuns", "message");
-
-export const cancelRunAtom = ManagementClient.mutation("agentRuns", "cancel");
-
-export const deleteRunAtom = ManagementClient.mutation("agentRuns", "remove");
-
-/** The grants on shared agents refetch after a mutation tagged with this key. */
-export const AGENT_GRANTS = ["agent-grants"] as const;
-
-/** Every agent grant of the org (org admins). */
-export const agentGrantsAtom = ManagementClient.query("agentGrants", "list", {
-  reactivityKeys: AGENT_GRANTS,
-  timeToLive: KEEP,
-});
-
-export const createAgentGrantAtom = ManagementClient.mutation("agentGrants", "create");
-
-export const removeAgentGrantAtom = ManagementClient.mutation("agentGrants", "remove");
-
-/** An agent's triggers refetch after a mutation tagged with this key. */
-export const AGENT_TRIGGERS = ["agent-triggers"] as const;
-
-/** One agent's schedules and webhooks (its manager's), oldest first. */
-export const agentTriggersAtom = Atom.family((agent: string) =>
-  ManagementClient.query("agentTriggers", "list", {
-    params: { id: agent },
-    reactivityKeys: AGENT_TRIGGERS,
-    timeToLive: KEEP,
-  }),
-);
-
-// Trigger writes (#233): call with `reactivityKeys: AGENT_TRIGGERS`. A webhook's secret is answered once, when it is
-// created or rotated.
-export const createTriggerAtom = ManagementClient.runtime.fn(
-  (write: { readonly agent: string; readonly payload: CreateTrigger }) =>
-    Effect.gen(function* () {
-      const client = yield* ManagementClient;
-
-      const { agent: id, payload } = write;
-
-      // The endpoint's payload is a union the generated client takes one member at a time.
-      return yield* Reactivity.mutation(
-        payload.kind === "schedule"
-          ? client.agentTriggers.create({ params: { id }, payload })
-          : client.agentTriggers.create({ params: { id }, payload }),
-        AGENT_TRIGGERS,
-      );
-    }).pipe(
-      Effect.catchIf(
-        (error) => Schema.isSchemaError(error) || HttpClientError.isHttpClientError(error),
-        Effect.die,
-      ),
-    ),
-);
-
-export const updateTriggerAtom = ManagementClient.mutation("agentTriggers", "update");
-
-export const removeTriggerAtom = ManagementClient.mutation("agentTriggers", "remove");
-
-export const rotateTriggerSecretAtom = ManagementClient.mutation("agentTriggers", "rotateSecret");
 
 /** The Browser profiles page (#217) refetches after a mutation tagged with this key. */
 export const BROWSER_PROFILES = ["browser-profiles"] as const;

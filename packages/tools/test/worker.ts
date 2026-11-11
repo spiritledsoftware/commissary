@@ -4,8 +4,7 @@
 // browser and computer ControlPlanes carry to test what plans count of Tools (#241, `PLANS_ON`).
 //
 // `ControlPlane` is a deployment without built-in toolkits; `BrowserControlPlane` one with a fake Browser Run binding
-// (#212) and the browser sessions' objects (#213: `BrowserSession`, whose browsers are a fake provider's), and a fake
-// Agents area's watchers of runs (#232, `RUN_WATCHERS_KEY`),
+// (#212) and the browser sessions' objects (#213: `BrowserSession`, whose browsers are a fake provider's),
 // `OtherBrowserControlPlane` one whose browser toolkit has a fake second browser provider behind it, and
 // `UpgradedControlPlane` one that gets the binding once its storage holds `UPGRADE_TO_BROWSER`: a test sets it and
 // restarts the object, as a deploy that adds the binding does. `SandboxControlPlane` has the sandbox toolkit as every
@@ -18,19 +17,16 @@
 // deployment's bindings with a fake Browser Run binding and the account and API token of Browser Run's crawls (#270),
 // whose REST API a test serves through the global `fetch` (`fake-crawl.ts`, `fake-fetch.ts`). `CloudControlPlane` is
 // Commissary Cloud's, with a managed OAuth app for the toolkit catalog service `acme` (#207, `support/managed-apps.ts`).
-// `AgentsControlPlane` has the agents toolkit (#229), as where the Agents area is, over a fake directory of the agents
-// each member may run.
 import { env } from "cloudflare:workers";
 import type { Clock } from "effect";
 import { BillingPart } from "@commissary/billing/state";
 import { COMPUTER_MARKER } from "@commissary/core";
 import { composeControlPlane } from "@commissary/state";
-import type { SpendAgent } from "@commissary/state/spend";
 import type { ToolsControlPlane } from "../src/env.ts";
 import { browserRun } from "../src/browser/browser-run.ts";
 import { type BrowserSessionEnv, browserSessions } from "../src/browser/session-object.ts";
 import type { SessionRecord } from "../src/usage/record.ts";
-import { builtInProviders, type RunnableAgent, ToolsPart } from "../src/state.ts";
+import { builtInProviders, ToolsPart } from "../src/state.ts";
 import { fakeBrowserRun, fakeOtherProvider } from "./support/fake-browser.ts";
 import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
 import type { SandboxSessionEnv } from "../src/sandbox/cloudflare/session.ts";
@@ -102,13 +98,15 @@ export { SandboxEgress, WorkspaceProxy, WorkspaceServiceProxy } from "../src/sta
  * the time from (`clock`, a `TestClock` it also gives the part) and makes the next usage record writes or reports fail
  * (`failRecords`, `failReports`), through an instance's constructor in the objects' isolate (computer-time.test.ts).
  * With `before224` set, every object answers as one from before #224 would: it takes no metering, so it meters
- * nothing and answers no computer time, and has no `stopForLimit`.
+ * nothing and answers no computer time, and has no `stopForLimit`. `failPurges` makes the next purges fail, as an object
+ * the ControlPlane could not reach (sandbox-toolkit.test.ts).
  */
 export class SandboxSession extends FakeComputerSandboxSession {
   static clock: Clock.Clock | undefined;
   static failRecords = 0;
   static failReports = 0;
   static before224 = false;
+  static failPurges = 0;
 
   constructor(ctx: DurableObjectState, sessionEnv: SandboxSessionEnv) {
     super(ctx, sessionEnv);
@@ -142,9 +140,7 @@ export class SandboxSession extends FakeComputerSandboxSession {
   }
 
   override open(
-    ...[caller, allowance, policy, metering, opener, untilPurged]: Parameters<
-      FakeComputerSandboxSession["open"]
-    >
+    ...[caller, allowance, policy, metering, opener]: Parameters<FakeComputerSandboxSession["open"]>
   ) {
     return super.open(
       caller,
@@ -152,7 +148,6 @@ export class SandboxSession extends FakeComputerSandboxSession {
       policy,
       SandboxSession.#taken(metering),
       SandboxSession.#taken(opener),
-      untilPurged,
     );
   }
 
@@ -168,16 +163,6 @@ export class SandboxSession extends FakeComputerSandboxSession {
     return super.readFile(caller, path, SandboxSession.#taken(metering));
   }
 
-  override stat(...[caller, path, metering]: Parameters<FakeComputerSandboxSession["stat"]>) {
-    return super.stat(caller, path, SandboxSession.#taken(metering));
-  }
-
-  override readBytes(
-    ...[caller, path, offset, length, metering]: Parameters<FakeComputerSandboxSession["readBytes"]>
-  ) {
-    return super.readBytes(caller, path, offset, length, SandboxSession.#taken(metering));
-  }
-
   override writeFile(
     ...[caller, path, text, metering]: Parameters<FakeComputerSandboxSession["writeFile"]>
   ) {
@@ -190,6 +175,16 @@ export class SandboxSession extends FakeComputerSandboxSession {
 
   override close(...[caller, metering]: Parameters<FakeComputerSandboxSession["close"]>) {
     return super.close(caller, SandboxSession.#taken(metering));
+  }
+
+  override async purge(...args: Parameters<FakeComputerSandboxSession["purge"]>) {
+    if (SandboxSession.failPurges > 0) {
+      SandboxSession.failPurges -= 1;
+
+      throw new Error("the sandbox session could not be reached");
+    }
+
+    return await super.purge(...args);
   }
 
   override async stopForLimit(...args: Parameters<FakeComputerSandboxSession["stopForLimit"]>) {
@@ -233,12 +228,6 @@ export class CloudControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core, {}, { managedApps: cloudManagedApps }),
 }) {}
 
-/**
- * The prefix of the keys whose values (member ids) a `BrowserControlPlane`'s fake Agents area answers as a run's
- * watchers (#232): `RUN_WATCHERS_KEY + runId`, which a test writes into the object's storage. No key: no one.
- */
-export const RUN_WATCHERS_KEY = "test:run-watchers:";
-
 export class BrowserControlPlane extends composeControlPlane({
   billing: (ctx) => billingPartOf(ctx),
   tools: (ctx, env: Cloudflare.Env, core) =>
@@ -248,9 +237,6 @@ export class BrowserControlPlane extends composeControlPlane({
       {
         browser: browserRun(fakeBrowserRun()),
         browserSessions: browserSessions(env.BROWSER_SESSIONS),
-        runWatchers: {
-          of: (runId) => ctx.storage.kv.get<ReadonlyArray<string>>(RUN_WATCHERS_KEY + runId) ?? [],
-        },
       },
       { plans: plansOf(ctx) },
     ),
@@ -304,53 +290,17 @@ export class SandboxControlPlane extends composeControlPlane({
   tools: (ctx, env: Cloudflare.Env, core) => new ToolsPart(ctx, core, builtInProviders(env)),
 }) {}
 
-/** The shared agent whose runs a test of computer time limits (#224, #228), as the Agents area would name it. */
-export const SHARED_AGENT = { id: "ag_shared", label: "shared" };
-
-/** The Tools part with {@link SHARED_AGENT} for a Spend limit to name, as an org with the Agents area has. */
-class WithSharedAgent extends ToolsPart {
-  override spendAgents(): ReadonlyArray<SpendAgent> {
-    return [SHARED_AGENT];
-  }
-}
-
-/**
- * A deployment that attached the sandbox's computer: the marker the deploy binds beside it (#223); a shared agent's
- * Spend limits apply to its runs ({@link SHARED_AGENT}).
- */
+/** A deployment that attached the sandbox's computer: the marker the deploy binds beside it (#223). */
 export class ComputerSandboxControlPlane extends composeControlPlane({
   billing: (ctx) => billingPartOf(ctx),
   tools: (ctx, env: Cloudflare.Env, core) =>
-    new WithSharedAgent(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER }), {
+    new ToolsPart(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER }), {
       plans: plansOf(ctx),
     }),
 }) {}
 
 export class OtherSandboxControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core, { sandbox: fakeSandboxProvider() }),
-}) {}
-
-/**
- * The agents a fake Agents area lets each member run (#229), by member id; `""` is a shared agent's run (as no
- * member). Any other member may run none.
- */
-export const FAKE_AGENTS = new Map<string, ReadonlyArray<RunnableAgent>>([
-  [
-    "m-alice",
-    [
-      { id: "ag_writer", name: "writer", description: "Writes drafts" },
-      { id: "ag_critic", name: "critic", description: "" },
-    ],
-  ],
-  ["", [{ id: "ag_support", name: "support", description: "Answers customers" }]],
-]);
-
-/** A deployment with the Agents area, whose agents {@link FAKE_AGENTS} answers: the agents toolkit (#229). */
-export class AgentsControlPlane extends composeControlPlane({
-  tools: (ctx, _env, core) =>
-    new ToolsPart(ctx, core, {
-      agents: { runnable: (member) => FAKE_AGENTS.get(member ?? "") ?? [] },
-    }),
 }) {}
 
 export default {

@@ -1,6 +1,6 @@
 # Commissary
 
-One service through which an org's members and their clients reach models, tools, a browser and hosted agents, under the
+One service through which an org's members and their clients reach models, tools and a browser, under the
 org's credentials, grants and spend limits. An org can run it itself (self-hosted Commissary), or use Commissary Cloud.
 Its Models area began as a port of the Go server CLIProxyAPI, which it now consults as a reference rather than follows.
 
@@ -10,19 +10,13 @@ Its Models area began as a port of the Go server CLIProxyAPI, which it now consu
 
 **Commissary**:
 The product, and any one deployment of it: one service that serves one or more orgs, each with its own credentials,
-through its three areas.
+through its two areas.
 _Avoid_: proxy (as the whole), gateway, server, platform
 
 **Area**:
-One of Commissary's three parts, under one org, one API key and one control panel: Models (the model proxy), Tools (with
-the hosted browser and sandbox) and Agents. Commissary Cloud is not an area; it is how Commissary is run.
+One of Commissary's two parts, under one org, one API key and one control panel: Models (the model proxy) and Tools (with
+the hosted browser and sandbox). Commissary Cloud is not an area; it is how Commissary is run.
 _Avoid_: product, module, feature
-
-**Hosted agent**:
-An agent that Commissary runs for an org in its Agents area, as opposed to a client a member runs: a saved definition
-(instructions, a model, the tools and agents it may use) that is either private to one member, whom its runs act as, or
-shared, used under grants, with runs that act as the agent itself.
-_Avoid_: agent (on its own), bot, assistant, assistant config
 
 **Org**:
 A company or group that uses Commissary as one unit, with its own members, teams, credentials, config entries and spend
@@ -30,9 +24,9 @@ limits. Nothing in one org is visible to another. A self-hosted Commissary usual
 _Avoid_: tenant, workspace, organisation (kept for a provider's own organisation, such as an Anthropic organisation)
 
 **Retention period**:
-How many days an org keeps its usage records, or its agent runs after their last activity, before they are deleted; an
-org admin sets each (none keeps them). They are the only retention settings, per org; deletions of orgs, members,
-credentials, API keys and hosted agents keep nothing and have no grace period.
+How many days an org keeps its usage records before they are deleted; an org admin sets it (none keeps them). It is the
+only retention setting, per org; deletions of orgs, members, credentials and API keys keep nothing and have no grace
+period.
 _Avoid_: TTL, expiry (an API key and replay state expire on their own)
 
 **Export**:
@@ -133,16 +127,15 @@ _Avoid_: legacy auth, Access fallback
 
 **Client**:
 An application that calls the client API, such as pi, Claude Code, Codex, an MCP client or an SDK.
-_Avoid_: caller, consumer, user, agent (on its own: a hosted agent is Commissary's)
+_Avoid_: caller, consumer, user
 
 **Principal**:
-The identity behind a request: a signed-in person, a service token, a management key, an API key or a shared agent's
-run. Usage and session
+The identity behind a request: a signed-in person, a service token, a management key or an API key. Usage and session
 state are attributed to it.
 _Avoid_: user, caller
 
 **Client API**:
-Everything clients call with an API key: the model endpoints, the MCP endpoint and the browser and agent endpoints. On a
+Everything clients call with an API key: the model endpoints, the MCP endpoint and the browser endpoints. On a
 self-hosted Commissary an MCP client may also reach the MCP endpoint through Access instead.
 _Avoid_: proxy routes, public API, model routes (a model route is a credential's)
 
@@ -216,16 +209,15 @@ _Avoid_: personal account, own key
 
 **Grant**:
 Permission for a member, a team or everyone in an org to use certain shared credentials for certain upstream models, or
-a toolkit's shared credential for certain of its tools (all of them, its read tools, or named ones), certain shared
-agents, or certain shared browser profiles (to open a browser session from; saving into one stays an org admin's). A
+a toolkit's shared credential for certain of its tools (all of them, its read tools, or named ones), or certain shared
+browser profiles (to open a browser session from; saving into one stays an org admin's). A
 member's access is the union of the grants that name them; there is no deny. A new org starts with one grant that gives everyone every
 model on every shared credential; a toolkit's shared credential goes to whoever the org admin picks when connecting it.
 _Avoid_: entitlement, ACL, access rule
 
 **Reach**:
-What a member's grants add up to: the upstream models and the tools they may use on each shared credential, and the
-shared agents they may run. A shared agent's reach is what its definition names. Selection, the model lists and the tool
-lists are computed under it; a model, tool or agent outside it answers like an unknown one.
+What a member's grants add up to: the upstream models and the tools they may use on each shared credential. Selection, the model lists and the tool
+lists are computed under it; a model or tool outside it answers like an unknown one.
 _Avoid_: allowance (a provider's limit), permissions
 
 **Sign-in account**:
@@ -592,11 +584,9 @@ _Avoid_: usage as a word for allowances
 
 **Usage record**:
 The stored account of one attempt, tool call, browser session or sandbox session, never its content: an attempt's or a
-tool call's org, principal, credential, tokens or tool, cost, latency and outcome, and the hosted agent, agent run and
-starter behind it if any; a browser session's org, principal, browser profile, browser time and cost; a sandbox
-session's org, principal, computer time and cost. A request that fails over leaves one record per attempt; a browser
-or sandbox session leaves one when it closes, which is not a request, but an agent run's sandbox session leaves one
-each time its computer stops instead.
+tool call's org, principal, credential, tokens or tool, cost, latency and outcome; a browser session's org, principal,
+browser profile, browser time and cost; a sandbox session's org, principal, computer time and cost. A request that fails over leaves one record per attempt; a browser
+or sandbox session leaves one when it closes, which is not a request.
 _Avoid_: request, log entry
 
 **Token breakdown**:
@@ -636,8 +626,7 @@ The cost added up over a period for whatever a spend limit covers.
 _Avoid_: usage (on its own), consumption
 
 **Spend limit**:
-A cap on spend over a calendar day, week or month, set on a member, a team, an org, a shared credential, an API key or a
-shared agent.
+A cap on spend over a calendar day, week or month, set on a member, a team, an org, a shared credential or an API key.
 _Avoid_: budget, quota, allowance (a provider's limit)
 
 ### Plans
@@ -654,7 +643,7 @@ _Avoid_: allowance, quota (a provider's), free tier, credits
 **Plan limit**:
 Where a plan refuses further use: Free's stop at the free usage of a unit (requests and tool calls, browser hours,
 computer hours: Free has no computer hours, so no computer), the billing cap, or a ceiling on concurrent browser
-sessions, computers or request rate. A used-up unit refuses only its own use; agent runs stay uncapped by the ceilings.
+sessions, computers or request rate. A used-up unit refuses only its own use.
 _Avoid_: spend limit (an org's own cap on cost), quota, rate limit (on its own)
 
 **Billing cap**:
@@ -682,14 +671,13 @@ _Avoid_: free org, comped, sponsored
 A named set of tools that the Tools area builds from one source, such as GitHub's MCP server or Stripe's OpenAPI
 document, and that its tools are named after (`github_create_issue`). An org admin adds a toolkit for the org; a member
 can add a private toolkit, which only they can use and of which org admins see only that it exists. Commissary provides
-the browser, sandbox and agents toolkits itself.
+the browser and sandbox toolkits itself.
 _Avoid_: integration, connector, app, source, MCP server (for the toolkit itself)
 
 **Toolkit kind**:
 What a toolkit is built from: a remote MCP server, an OpenAPI document, a GraphQL endpoint or a Google Discovery
 document; for a built-in toolkit, the service Commissary provides it on (`browser`: the browser toolkit, on a browser
-provider; `sandbox`: the sandbox toolkit, on a sandbox provider; `agents`: the agents toolkit, on Commissary's own
-hosted agents).
+provider; `sandbox`: the sandbox toolkit, on a sandbox provider).
 _Avoid_: source type, protocol
 
 **Tool list**:
@@ -718,8 +706,7 @@ instead, and the private toolkit is marked rename suggested (ADR 0037).
 _Avoid_: hidden (that is an override), conflict
 
 **Tool scope**:
-The toolkits, their read tools, single tools and agents that an API key or a hosted agent may use, within what its
-member (or, for a shared agent, the org admin) may use. A key without one may use every tool its member may use.
+The toolkits, their read tools and single tools that an API key may use, within what its member may use. A key without one may use every tool its member may use.
 _Avoid_: tool permissions, allow-list
 
 **Toolkit catalog**:
@@ -769,13 +756,11 @@ re-authorizes it.
 _Avoid_: OAuth session, OAuth flow, login (for a toolkit), renewal
 
 **Browser toolkit**:
-The toolkit that Commissary provides itself: a hosted browser, from a browser provider, that clients and hosted agents
-drive through tools.
+The toolkit that Commissary provides itself: a hosted browser, from a browser provider, that clients drive through tools.
 _Avoid_: Browser area, browser (as an area), browser MCP
 
 **Browser session**:
-One open browser of the browser toolkit, which belongs to the member and API key that opened it, or to the shared agent
-whose run opened it.
+One open browser of the browser toolkit, which belongs to the member and API key that opened it.
 _Avoid_: tab, context, browser instance
 
 **Browser profile**:
@@ -789,8 +774,7 @@ the tools carry on.
 _Avoid_: takeover, intervention, human-in-the-loop (on its own)
 
 **Live View**:
-A view of a browser session's tab in the panel, in which its member, or the watchers of the agent run that opened it,
-watch it and act in a handoff; reached through a short-lived link minted only for them.
+A view of a browser session's tab in the panel, in which its member watches it and act in a handoff; reached through a short-lived link minted only for them.
 _Avoid_: screen share, stream, recording, remote desktop
 
 **Browser provider**:
@@ -798,18 +782,12 @@ The service behind a browser toolkit, reached through Commissary's own adapter, 
 _Avoid_: provider (on its own: that is a model provider), browser host, browser vendor
 
 **Sandbox toolkit**:
-A toolkit that Commissary provides itself, in which clients and hosted agents run commands on files.
+A toolkit that Commissary provides itself, in which clients run commands on files.
 _Avoid_: workspace (on its own), shell, code interpreter
 
 **Sandbox session**:
-One open sandbox with its files, which belongs to the member and API key that opened it, or to the agent run it serves.
+One open sandbox with its files, which belongs to the member and API key that opened it.
 _Avoid_: container, VM, workspace (on its own)
-
-**Gated call**:
-An agent run's call of one of its coding tools (bash, read, write, edit), checked as the sandbox toolkit's tool of the
-same name and charged its price, then made by the run itself on its sandbox session; its ticket authorises that call's
-operations until it is settled. It is not a call held for an approver: that is a pending approval.
-_Avoid_: pending call, approval ticket
 
 **Computer**:
 The Linux machine that Cloudflare's sandbox falls back to for a command its shell cannot run, working on the same files.
@@ -824,47 +802,6 @@ _Avoid_: sandbox time, container time (just-bash's time is not metered)
 The service behind a sandbox toolkit, reached through Commissary's own adapter, such as Cloudflare or Daytona.
 _Avoid_: provider (on its own: that is a model provider), sandbox host, backend (just-bash and the computer are the
 backends of Cloudflare's sandbox)
-
-**Agents toolkit**:
-The toolkit that Commissary provides itself, through which clients and agent runs start, steer and wait for runs of the
-hosted agents they may use.
-_Avoid_: agent tools, subagents
-
-### Agents
-
-**Agent run**:
-One conversation of a hosted agent, with its own transcript and sandbox files, started by a trigger.
-_Avoid_: session, task, job, execution
-
-**Turn**:
-One input to an agent run and the work up to its answer.
-_Avoid_: step (one model call within a turn), message
-
-**Trigger**:
-What starts runs of a hosted agent, such as a schedule or a webhook configured on it.
-_Avoid_: event, hook, automation
-
-**Trigger kind**:
-How a trigger starts runs: chat in the panel, a call through the agents toolkit, a schedule or a webhook.
-_Avoid_: trigger type, channel
-
-**Starter**:
-The member or agent run that started an agent run; a run started by a schedule or webhook of a shared agent has none.
-_Avoid_: owner, initiator, caller
-
-**Watcher**:
-A member, or a member of a team, named on a shared agent to watch, steer and answer its runs that no one started.
-A child run's watchers are the people of the run at the head of its chain: its starter, or its agent's watchers.
-_Avoid_: owner, supervisor, subscriber
-
-**Parked call**:
-An agent run's tool call that waits for a person, such as an approval or a handoff, while its turn waits with no
-connection open; the run makes the call again once the person answered, or is told it was refused once the wait expired.
-_Avoid_: suspended call, blocked call, pending call (a pending approval is what it waits on)
-
-**Child run**:
-An agent run that another run started through the agents toolkit, which acts as the agent it runs.
-_Avoid_: subagent, sub-run, nested run
 
 ### The reference
 

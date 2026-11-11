@@ -24,7 +24,6 @@
  * metered, and the calls in it keep their own records. No record holds a command, a path, file content or output.
  */
 import { Effect } from "effect";
-import type { UsageRun } from "@commissary/auth";
 import type { ToolCallApproval, ToolCallRecordOutcome } from "@commissary/contract/usage";
 import { type OrgId, runAfterResponse } from "@commissary/core";
 import { ToolsEnv } from "../env.ts";
@@ -35,8 +34,6 @@ export interface ToolCallRecord {
   /** The caller's principal (`key:<key id>` for an API key, which names the key). */
   readonly principalId: string;
   readonly memberId: string | undefined;
-  /** The agent run the call is of (#227): its agent, the run and its starter. */
-  readonly run?: UsageRun | undefined;
   readonly toolkitId: string;
   /** The tool's stable id, `<toolkit id>:<upstream name>`. */
   readonly toolId: string;
@@ -89,9 +86,6 @@ const COLUMNS = [
   "request_bytes",
   "response_bytes",
   "approval",
-  "agent_id",
-  "run_id",
-  "starter",
   "browser_ms",
   "browser_profile_id",
   "computer_ms",
@@ -118,8 +112,7 @@ const rowOf = (
   principal_id: record.principalId,
   org_id: record.orgId,
   member_id: record.memberId ?? null,
-  // A private agent's run is its member's alone (#228, ADR 0040).
-  private: record.private || record.run?.private === true ? 1 : 0,
+  private: record.private ? 1 : 0,
   auth_id: "",
   auth_type: record.credential ?? "",
   source: "",
@@ -133,9 +126,6 @@ const rowOf = (
   request_bytes: record.requestBytes,
   response_bytes: record.responseBytes,
   approval: record.approval,
-  agent_id: record.run?.agentId ?? null,
-  run_id: record.run?.runId ?? null,
-  starter: record.run?.starter ?? null,
   browser_ms: record.browserMs ?? null,
   browser_profile_id: null,
   computer_ms: null,
@@ -179,13 +169,12 @@ export const writeToolCallRecord = (record: ToolCallRecord): Effect.Effect<void,
 /**
  * The usage record of a browser session (#214) or a sandbox session (#224): one per session, written when it closes,
  * under the session's id (so a close that runs twice writes it once). It names the session's org, principal
- * (`key:<key id>` for an API key, which names the key; an agent run's, with its agent, run and starter) and member, the
+ * (`key:<key id>` for an API key, which names the key) and member, the
  * toolkit, the time it metered and what that cost at the toolkit's price per hour, prorated: a browser session's
  * browser time from opening to closing, a sandbox session's computer time (just-bash's is not metered); no tool (its
  * calls keep their own records), no URL, command, path, file content or output. A built-in toolkit's credential is its
- * shared one (Commissary's own binding), so the record is org-wide, but for a private agent's run's (#228), which is its
- * member's alone. A browser session's names the browser profile it opened from (#215), if it opened from one; either
- * names the agent run that opened it (#228), if one did.
+ * shared one (Commissary's own binding), so the record is org-wide. A browser session's names the browser profile it
+ * opened from (#215), if it opened from one.
  */
 export interface SessionRecord {
   readonly sessionId: string;
@@ -203,8 +192,6 @@ export interface SessionRecord {
   readonly costMicros: number;
   /** The browser profile a browser session opened from (#215); undefined when it opened from none. */
   readonly profileId?: string | undefined;
-  /** The agent run that opened it (#228): its agent, the run and its starter; a private agent's is its member's alone. */
-  readonly run?: UsageRun | undefined;
 }
 
 const sessionRowOf = (
@@ -221,7 +208,7 @@ const sessionRowOf = (
   principal_id: record.principalId,
   org_id: record.orgId,
   member_id: record.memberId ?? null,
-  private: record.run?.private === true ? 1 : 0,
+  private: 0,
   auth_id: "",
   auth_type: "shared",
   source: "",
@@ -235,9 +222,6 @@ const sessionRowOf = (
   request_bytes: null,
   response_bytes: null,
   approval: null,
-  agent_id: record.run?.agentId ?? null,
-  run_id: record.run?.runId ?? null,
-  starter: record.run?.starter ?? null,
   browser_ms: record.browserMs ?? null,
   browser_profile_id: record.profileId ?? null,
   computer_ms: record.computerMs ?? null,

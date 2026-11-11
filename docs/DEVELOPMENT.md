@@ -74,10 +74,7 @@ Worker hands its part a fake (`packages/tools/test/worker.ts`), and an app test 
 (`fakeBrowserRun`). The part and the sandbox's `SandboxSession` objects also read `LOADER` (the Worker Loader) and
 `SANDBOX_SESSION` (#222), which every state Worker binds; Miniflare runs both, so the Tools, app and API test configs
 bind them (`workerLoaders`, a Durable Object namespace) and their test Workers export `SandboxSession`,
-`SandboxEgress` and `WorkspaceServiceProxy` beside the ControlPlane. Agents reads `CONTROL_PLANE` and the optional `LOADER`, whose
-presence is the area's (`AgentsBindings`, `packages/agents/src/env.ts`): the app Worker binds `LOADER` too
-(`alchemy.run.ts`, its `src/env.d.ts`, `workerLoaders` in its `vitest.config.ts`), and an app test of a deployment
-without it passes `LOADER: undefined` (`apps/app/test/agents.test.ts`).
+`SandboxEgress` and `WorkspaceServiceProxy` beside the ControlPlane.
 
 Under `bun run dev` with `COMMISSARY_MODE=cloud`, Commissary Cloud's OAuth server for MCP clients (#200) is on, with its KV
 namespace emulated: its issuer is the app Worker (`http://localhost:1337`) and its resource the API Worker's `/mcp`
@@ -91,7 +88,7 @@ binding. Its behaviour is covered by the Tools tests over a fake binding; trying
 PR preview).
 
 `tools/workers/worker-configuration.d.ts` holds the Workers runtime types for the compatibility date and flags in
-`alchemy.run.ts`, shared by every program that runs in workerd (`apps/app`, `apps/api`, `packages/state`, `packages/models`, `packages/billing`, `packages/tools`, `packages/agents`; each declares its own
+`alchemy.run.ts`, shared by every program that runs in workerd (`apps/app`, `apps/api`, `packages/state`, `packages/models`, `packages/billing`, `packages/tools`; each declares its own
 `Env`). Regenerate it when those change (Wrangler is used only as a type generator here):
 
 ```bash
@@ -175,9 +172,8 @@ are not one atomic step across the reset, as a Spend charge is not either.
   (org deletion), `src/dev.ts` (its `alchemy dev` entry over the bridge, "Infrastructure");
   `test/` (workerd tests through its router or `fetch`; `test/worker.ts` is the test Worker, with a fake auth Worker,
   `FakeSignIn`). It mounts Models explicitly, through
-  `@commissary/models/api` and `/management` only ("Lint and format", `boundaries`), and Tools and Agents likewise
-  through their `/api` and `/management` (Agents' routes with the adapter over Models and Tools,
-  `src/management/agent-routes.ts`).
+  `@commissary/models/api` and `/management` only ("Lint and format", `boundaries`), and Tools likewise
+  through its `/api` and `/management`.
 - `apps/api` (`@commissary/api`): the API Worker (`Api`, ADR 0030): the client API of every area and the cron jobs; it
   binds the state Worker's Durable Objects. `src/http` (router, the client gate, CORS, hosts: a 404 for every other
   path, `/healthz`), `src/scheduled.ts` (the cron runner), `src/dev.ts` (its `alchemy dev` entry over the bridge,
@@ -186,7 +182,7 @@ are not one atomic step across the reset, as a Spend charge is not either.
   cron task) through `@commissary/tools/api`.
 - `apps/state` (`@commissary/state-worker`): the state Worker (ADR 0030). `src/index.ts` exports the ControlPlane
   (`src/control-plane.ts`: `@commissary/state`'s org-wide base composed with `@commissary/models/state`'s,
-  `@commissary/billing/state`'s, `@commissary/tools/state`'s and `@commissary/agents/state`'s parts), SessionState, Platform and `@commissary/tools/state`'s BrowserSession, and answers
+  `@commissary/billing/state`'s, and `@commissary/tools/state`'s parts), SessionState, Platform and `@commissary/tools/state`'s BrowserSession, and answers
   every request 404; `src/env.d.ts` declares what the classes read; `src/dev.ts` adds the dev-only bridge
   ("Infrastructure"). No tests of its own: the app's, the API's and the auth Worker's test Workers run its classes.
 - `apps/auth` (`@commissary/auth-worker`): the auth Worker (`Auth`, ADR 0030), Commissary Cloud only: Better Auth on the
@@ -239,16 +235,7 @@ are not one atomic step across the reset, as a Spend charge is not either.
   catalog's refreshed registry is kept) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists, and `@commissary/billing`'s `./api` only (`PlanMeter`, which counts tool
   calls, browser and computer time on Commissary Cloud, and `planRefusalText`); nothing from `apps/` or Models. The MCP
-  endpoint reads `BillingEnv` too, to word a plan's refusal (the API Worker's and the run gateway's contexts provide it).
-- `packages/agents` (`@commissary/agents`): the Agents area (#226, ADR 0040): hosted agent definitions, private and
-  shared, the grants on shared agents and their watchers; runs come later (#227). `agents` (the store, the checks of a
-  definition's texts), `management` (its routes, the reference check through `AgentReferences`, role-table entries, its
-  section of the org export), the ControlPlane part (`AgentsPart`) and its org-deletion step. Entry points `./api`
-  (`AgentsEnv`, `agentsPresent`), `./management` (the app Worker's), `./state` (the state Worker's: `AgentsPart`) and
-  `./testing` (`agentBody`). It names models and toolkits but imports neither Models nor Tools: the app Worker hands its
-  routes an `AgentReferences` over their `/management` entries. It may import `@commissary/state`, `auth`, `contract`,
-  `core`, `effect` and the runtime modules `tools/oxlint/boundaries` lists. Its tests run in workerd against
-  `packages/agents/test/worker.ts`, a test-only ControlPlane (state's base composed with its part).
+  endpoint reads `BillingEnv` too, to word a plan's refusal (the API Worker's context provides it).
 - `apps/web` (`@commissary/web`): the control panel (below).
 - `packages/auth` (`@commissary/auth`): request-side authentication (#132). The principal and `AccessPrincipal`, roles,
   Access JWT verification, the cross-site checks, API and management keys (their text and the per-isolate caches of
@@ -397,20 +384,7 @@ stays with that Worker.
   Auth's own flows are tested in `apps/auth`. A request to the app's test Worker with the header `x-test-api-worker`
   goes to the API Worker's handler (`@commissary/api`, a dev dependency of the app) with the same bindings, as zone
   routes send the client API there on a stage with one host: the one test that follows an MCP client from the app host's
-  OAuth server to `/mcp` (`test/hosted/mcp-oauth.test.ts`, #200) uses it. The other flow that crosses both Workers is an
-  agent run (#227): the app Worker's routes start it, and its object, the API Worker's `AgentRun`, calls the API
-  Worker's run gateway over `ctx.exports`; so the app's test Worker also exports `@commissary/api`'s `AgentRun` and
-  `AgentRunGateway`, and the runs' end-to-end tests (`test/agent-runs.test.ts`) stay with the app Worker. The agents
-  toolkit's MCP calls (#229) are tested there too, though `/mcp` is the API Worker's: they need the agents, grants and
-  API keys the app Worker's routes create, the API Worker's MCP endpoint (the file calls `@commissary/api`'s handler,
-  `api.fetch`, with the test Worker's bindings) and the runs' objects together. What runs without the client API (the
-  index of runs, the turns' readings of the definition, the object's checks, and the agents toolkit's starts, chains,
-  claims and deliveries) is `@commissary/agents`' own (`packages/agents/test/runs.test.ts`,
-  `packages/agents/test/toolkit-runs.test.ts`). The schedule triggers' objects (`AgentSchedule`, #231)
-  are the API Worker's too, exported the same way for the triggers' routes (`test/agent-triggers.test.ts`); their ticks
-  and the webhooks' checks (signatures' tolerance and deliveries' keys under `TestClock`) are Agents' own
-  (`packages/agents/test/triggers.test.ts`), and webhook deliveries, a client
-  API route, the API Worker's (`apps/api/test/agent-webhooks.test.ts`). A test that goes through the client API's
+  OAuth server to `/mcp` (`test/hosted/mcp-oauth.test.ts`, #200) uses it. It is the only flow that crosses both Workers. A test that goes through the client API's
   router or `fetch` is the API Worker's; one that needs an org, member or API key there sets it up straight through the
   Durable Objects (`apps/api/test/support/client.ts`), since the management routes that make them are the app Worker's.
   So do
@@ -439,10 +413,7 @@ stays with that Worker.
   `serveFakeMcpServers` from `@commissary/tools/testing`), fake MCP servers (`fakeMcpServer`) and fake HTTP servers for
   OpenAPI toolkits' documents and calls and GraphQL toolkits' endpoints (`test/support/http-server.ts`,
   `fakeHttpServer`, which records each request with its body; a fake GraphQL endpoint runs the introspection query it
-  is sent with graphql-js's `graphqlSync`). `@commissary/agents` has one workerd project (`agents`): its test Worker,
-  `packages/agents/test/worker.ts`, is a test-only ControlPlane (state's base composed with the Agents part only) with
-  the Platform registry and SessionState, on real SQLite storage, and `LOADER` bound; the part takes what the routes
-  found of Models and Tools as data, so no other area runs there (the app Worker's tests check the routes with both).
+  is sent with graphql-js's `graphqlSync`).
 - **Package config.** A workerd package's `vitest.config.ts` uses `cloudflareTest` with its test Worker, the deployed
   Worker's compatibility settings and the bindings its env view names; its tsconfig adds the shared Workers runtime
   types and `@cloudflare/vitest-plugin/types`. A Node.js package's `vitest.config.ts` is
@@ -555,9 +526,9 @@ Intel Macs, Windows and musl Linux. oxlint leaves TypeScript's own errors to `bu
 
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
   repository; edit its rules there.
-- **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports`, `boundaries/billing-imports`,
-  `boundaries/tools-imports` and `boundaries/agents-imports` keep `@commissary/models`, `@commissary/billing`,
-  `@commissary/tools` and `@commissary/agents` behind their entry points (#151, #196, #226; another package's sources import Billing's `./api` only, none import Models, Tools or Agents; Models' tests use `@commissary/tools/testing` (`insertToolCallRecord`) through a dev dependency). An area's
+- **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports`, `boundaries/billing-imports`
+  and `boundaries/tools-imports` keep `@commissary/models`, `@commissary/billing` and
+  `@commissary/tools` behind their entry points (#151, #196; another package's sources import Billing's `./api` only, none import Models or Tools; Models' tests use `@commissary/tools/testing` (`insertToolCallRecord`) through a dev dependency). An area's
   sources import only their own files, the dependencies its `package.json` declares and the runtime modules the rule
   lists; the apps import it only as `@commissary/<area>/api`, `/management` and `/state` (their tests also `/testing`),
   never its other exports or one of its files by a relative path. `boundaries/org-scoped-kv` (ADR 0044, #250) keeps org data out of raw KV: a source file of a package or an app
@@ -600,7 +571,7 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   area's entry points (Models: the client API `ClientApiLayer` of `@commissary/models/api`, which the API Worker mounts,
   the management routes of `@commissary/models/management`, which the app Worker's `management/routes.ts` mounts;
   Tools: the MCP endpoint's `ClientApiLayer` of `@commissary/tools/api`, mounted next to Models', and its management
-  routes of `@commissary/tools/management`; Agents: its management routes of `@commissary/agents/management`).
+  routes of `@commissary/tools/management`).
 - Never log tokens, API keys, JWTs or bodies; use `redactHeaders` when headers must be logged.
 - No wall-clock sleeps in tests; use Effect `TestClock` or injected clocks.
 - The Workers' tests live in `apps/app/test/*.test.ts`, `apps/api/test/*.test.ts` and `apps/auth/test/*.test.ts` and run in workerd ("Tests"
@@ -629,8 +600,7 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
     `workerd` fetch their platform binaries; `tsrs` runs none, but `effect-tsgo patch` rewrites its binary in place (ADR
     0047), and a trusted package (with its dependencies) stays in the checkout's own
     `node_modules/.bun` instead of Bun's global store, which every other checkout on the machine shares. Blocked on
-    purpose (`bun pm untrusted` lists them): `@google/genai` and `protobufjs` (pi-ai's provider SDKs, which the agent
-    runs never load: they reach models through the client API) and `@mongodb-js/zstd` and `node-liblzma` (native
+    purpose (`bun pm untrusted` lists them): `@mongodb-js/zstd` and `node-liblzma` (native
     compressors just-bash may use in Node.js; the sandbox's shell runs in a Dynamic Worker without them).
   - `bunfig.toml`: the isolated linker (a package sees only what it declares, as under pnpm), the global store (one
     copy of each package for every checkout and worktree) and a minimum release age of one day. `node_modules` is then
@@ -645,7 +615,7 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   upgrade is a deliberate edit. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
   (app Worker, workerd types), `apps/api/tsconfig.json` (API Worker, workerd types), `apps/auth/tsconfig.json` (auth Worker, workerd types), `apps/state/tsconfig.json` (state Worker, workerd types), `apps/web/tsconfig.app.json` (panel, DOM types) and `tsconfig.node.json` (its Node.js side),
   `packages/contract/tsconfig.json` (no runtime types), `packages/auth`, `packages/core`, `packages/json` and `packages/translation` (Node.js types,
-  no Workers types), `packages/state`, `packages/billing`, `packages/models`, `packages/tools` and `packages/agents` (workerd types, with the Node.js tests of `test/unit/`
+  no Workers types), `packages/state`, `packages/billing`, `packages/models` and `packages/tools` (workerd types, with the Node.js tests of `test/unit/`
   checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); Turborepo caches it. The installed tsrs is Effect-patched, so it also reports the Effect diagnostics ("Lint and format", ADR 0047). The `typescript` package is no longer a dependency of the
   repository; it is still installed for commitlint's config loader, which declares it as a peer.
 - `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`) is used because it supports vitest 5,

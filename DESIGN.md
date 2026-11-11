@@ -157,7 +157,7 @@ components:
 
 **Creative North Star: "The Trail Signpost"**
 
-Quota is a walk to the next reset. Each account reads like a Swiss Wanderweg signpost: where it stands now, and how long until capacity is back, in walking-sign time. By day the ground is plain white; at night (the dark theme) it is a warm near-black. Either way the only loud things are the yellow route (the reset blades, and the shell: a yellow bar by day, a yellow band at night) and, when something is wrong, red. It is a glance tool for one operator at a desktop monitor between agent runs, usable down to 390 px.
+Quota is a walk to the next reset. Each account reads like a Swiss Wanderweg signpost: where it stands now, and how long until capacity is back, in walking-sign time. By day the ground is plain white; at night (the dark theme) it is a warm near-black. Either way the only loud things are the yellow route (the reset blades, and the shell: a yellow bar by day, a yellow band at night) and, when something is wrong, red. It is a glance tool for one operator at a desktop monitor between other work, usable down to 390 px.
 
 Structure comes from hairlines and one ink rule under table headings. There are no cards, no boxes inside boxes, no shadows, and no per-section colour strips. Type is Atkinson Hyperlegible Next with tabular figures throughout.
 
@@ -346,20 +346,6 @@ Square signage. Buttons take a 3px radius; meters 1px. Blades have a square tail
   on the sunk ground across the page column, a mark and a 600-weight sentence per notice (the trail mark for 100% and a failed
   payment, the near mark at 80%), most urgent first, then a "Plan and usage" link to the Billing page. No colour fill,
   no stripe: the marks carry the urgency.
-
-### Unattended Notice
-
-- At the head of an agent's page, above its definition, where an enabled schedule or webhook meets a write tool with
-  no approval rule: one
-  set-apart block on the sunk ground (an icon, an 800-weight title, the tools by name in 600, a stone-4 line on the
-  fix), as the Plan Notices. No colour fill, no stripe. It goes when the scope or the triggers change so it no longer
-  applies.
-
-### Secret Notice
-
-- A webhook's secret, shown once (on creation or rotation): a sunk block with a title, a sentence that it is shown
-  this once, the URL and the secret each as a copyable value, and how a request proves itself. It stays until
-  dismissed, since leaving the page loses the secret.
 
 ### Tables
 

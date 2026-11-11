@@ -224,7 +224,7 @@ describe("the sandbox toolkit's open sessions", () => {
       );
   });
 
-  it("leaves out a session that closed, and shows an agent run's as the run's", async () => {
+  it("leaves out a session that closed", async () => {
     const plane = await org();
     const closed = await plane.open(plane.alice);
     const kept = await plane.open(plane.alice);
@@ -232,27 +232,9 @@ describe("the sandbox toolkit's open sessions", () => {
     await plane.call(plane.alice, "sandbox_close", { session: closed });
     await plane.advance(1_000);
 
-    const outcome = await plane.stub.tools().callTool(
-      plane.alice,
-      {
-        name: "sandbox_open",
-        arguments: {},
-        principalId: "run:run_1",
-        run: {
-          toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
-          asAgent: false,
-        },
-        runSession: true,
-      },
-      POLICY,
-    );
-
-    if (outcome.outcome !== "result") throw new Error(`the call came to ${outcome.outcome}`);
-
     const listed = await plane.list(plane.alice);
 
-    expect(listed.map((session) => session.opened_by)).toEqual(["person", "agent_run"]);
-    expect(listed[0]?.id).toBe(kept);
+    expect(listed.map((session) => [session.id, session.opened_by])).toEqual([[kept, "person"]]);
   });
 
   it("lets a member end their own session: it closes, its files go, and its calls find no such session", async () => {
@@ -368,45 +350,6 @@ describe("the sandbox toolkit's open sessions", () => {
     await runDurableObjectAlarm(env.SANDBOX_SESSION.getByName(`${plane.name}:${id}`));
     expect(await spent()).toBe(MINUTE);
     expect(await records(id)).toEqual({ n: 1, cost: MINUTE });
-  });
-
-  it("keeps a shared agent run's session from a member, and shows it to an org admin as the run's, who may end it", async () => {
-    const plane = await org();
-
-    const outcome = await plane.stub.tools().callTool(
-      { admin: false },
-      {
-        name: "sandbox_open",
-        arguments: {},
-        principalId: "run:ar_1",
-        run: {
-          toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
-          asAgent: true,
-          starterMember: "m_starter",
-          usage: { agentId: "ag_shared", runId: "ar_1", starter: "member:m_starter" },
-        },
-        runSession: true,
-      },
-      POLICY,
-    );
-
-    if (outcome.outcome !== "result") throw new Error(`the call came to ${outcome.outcome}`);
-    // SAFETY: `sandbox_open` answers the session in its structured content.
-    const id = (outcome.result["structuredContent"] as { session: string }).session;
-
-    expect(await plane.list(plane.alice)).toEqual([]);
-    expect(await plane.stub.tools().endSandboxSession(plane.alice, id)).toMatchObject({
-      ok: false,
-      error: "not_found",
-    });
-
-    expect(await plane.list(plane.admin)).toMatchObject([
-      { id, member: null, opened_by: "agent_run", own: false },
-    ]);
-    expect(await plane.stub.tools().endSandboxSession(plane.admin, id)).toMatchObject({
-      ok: true,
-    });
-    expect(await plane.list(plane.admin)).toEqual([]);
   });
 });
 

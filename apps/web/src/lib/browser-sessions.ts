@@ -14,11 +14,11 @@ import { formatAgo, formatClock, formatDuration } from "./format.ts";
 /** The Browser sessions page's path, under the Tools pages; each session's page is below it. */
 export const BROWSER_SESSIONS_PAGE = "/tools/sessions";
 
-/** Whose a session is: "You" for the caller's own, else its member's email (or id), or a shared agent's. */
+/** Whose a session is: "You" for the caller's own, else its member's email (or id), or "No member" for one that has none. */
 export const ownerText = (session: Pick<BrowserSessionView, "own" | "member">): string => {
   if (session.own) return "You";
 
-  if (session.member === null) return "A shared agent";
+  if (session.member === null) return "No member";
 
   return session.member.email ?? session.member.member_id;
 };
@@ -26,10 +26,9 @@ export const ownerText = (session: Pick<BrowserSessionView, "own" | "member">): 
 const OPENERS: Readonly<Record<BrowserSessionOpener, string>> = {
   api_key: "with an API key",
   person: "signed in",
-  agent_run: "by an agent run",
 };
 
-/** How a session was opened, as a phrase that follows when: "with an API key", "signed in", "by an agent run". */
+/** How a session was opened, as a phrase that follows when: "with an API key", "signed in". */
 export const openerText = (opener: BrowserSessionOpener): string => OPENERS[opener];
 
 /** The browser profile a session opened from; another member's private one is named by what it is, not its name. */
@@ -131,7 +130,7 @@ export const notWatchableText = (
   if (session.watchable) return undefined;
 
   return session.member === null
-    ? "A shared agent's session is not watched from the panel. You may end it."
+    ? "This session has no member to watch it. You may end it."
     : `Only ${ownerText(session)} may watch this session or answer its handoffs. You may end it.`;
 };
 

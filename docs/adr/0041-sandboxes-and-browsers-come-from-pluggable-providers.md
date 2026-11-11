@@ -1,5 +1,5 @@
 ---
-status: accepted, amended below (no default limits; a barebones computer with mise; the computer's presence marker)
+status: accepted, amended below (no default limits; a barebones computer with mise; the computer's presence marker; ADR-0048: no hosted agents)
 ---
 
 # Sandboxes are a built-in toolkit, and sandboxes and browsers come from pluggable providers
@@ -67,3 +67,7 @@ So every provider gives the same tools and session model, and a hosted agent can
 ## Amendment: the computer's presence is a marker variable
 
 - "Requirements" said the computer is present when the deployment has a container binding. A container attached to a Durable Object class gives no Worker a binding in its `env`: the class reaches it through `ctx.container`, and the Workers that decide whether "may use the computer" can be turned on (the app Worker for the settings, the State Worker for the session) never see it. So a deployment that attaches the container also gives those Workers a `COMPUTER` variable as its marker, set by the same deploy setting (`COMMISSARY_COMPUTER`), with the instance size beside it. It is the one piece whose presence is a variable rather than the binding itself.
+
+## Amendment: no hosted agents
+
+ADR 0048 removes hosted agents. The sandbox toolkit is used by clients alone: there is no agent definition that names a sandbox, no run whose one session lives as long as the run, no gated calls and no run retention. A session that a run held before the removal is an ordinary session now: the Tools part's alarm deletes it at the provider and forgets it eight days after its last use, 50 sessions at a time. The rest of this decision stands.

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0048 (Agents is removed: two areas)
 ---
 
 # Commissary's names
@@ -14,3 +14,7 @@ The one key a member's clients send, which reaches every area, is now an **API k
 
 - This decides terms, not identifiers. #103 decided the identifiers: everything is renamed and nothing is frozen except the Go config keys (done in #121 and #122).
 - Panel labels and docs swap "API key" and "provider key" at once; the two names must not drift apart mid-rename.
+
+## Amendment: Agents is removed
+
+ADR 0048 removes the Agents area, so Commissary has two areas, Models and Tools, and "hosted agent" is no longer a term. The names this decision made stay: **API key**, **provider key**, **client API**, **credential**. The note that an "agent key" clashes with hosted agents no longer matters.

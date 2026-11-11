@@ -3,8 +3,7 @@
  * counterpart.
  *
  * A **Spend limit** caps the Cost (micro-USD) that one subject may spend in one period. The subject is a member, a
- * team, the org, a shared credential (a Models credential, or a toolkit's shared credential, #199), an API key or a
- * shared agent (#226); the periods are a day, a week and a month in the org's time zone (`period.ts`). Spend is counted
+ * team, the org, a shared credential (a Models credential, or a toolkit's shared credential, #199), or an API key; the periods are a day, a week and a month in the org's time zone (`period.ts`). Spend is counted
  * per **scope** (a subject) and period, not per limit: an admin's and a member's limit on one API key share a counter.
  * A counter starts when the first limit of its scope and period is written, and goes when the last one is deleted.
  */
@@ -18,7 +17,6 @@ export const SUBJECT_KINDS = [
   "credential",
   "key",
   "toolkit_credential",
-  "agent",
 ] as const;
 
 export type SubjectKind = (typeof SUBJECT_KINDS)[number];
@@ -45,7 +43,7 @@ export type LimitSource = (typeof LIMIT_SOURCES)[number];
 export interface SpendLimit {
   readonly id: string;
   readonly kind: SubjectKind;
-  /** A member, team, credential, API key, toolkit or shared agent id; empty for the org. */
+  /** A member, team, credential, API key or toolkit id; empty for the org. */
   readonly subject: string;
   readonly period: Period;
   /** Micro-USD (1 USD = 1,000,000), at least 0 (nothing may be spent). */
@@ -93,14 +91,8 @@ export interface ChargedCredential {
   readonly kind?: CredentialKind | undefined;
 }
 
-/**
- * Who a request is for, as the limits see it. A hosted agent's run (#228, ADR 0040) has no API key: a private agent's
- * run is its member's (`memberId`), and a shared agent's run is the agent's own (`agentId`, with no member), so it
- * counts toward the agent's limit and the org's, never its starter's.
- */
+/** Who a request is for, as the limits see it. */
 export interface SpendCaller {
   readonly memberId?: string | undefined;
   readonly apiKeyId?: string | undefined;
-  /** A shared agent whose run this is: its own Spend limits apply, as a member's do to their traffic. */
-  readonly agentId?: string | undefined;
 }

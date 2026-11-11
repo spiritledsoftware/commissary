@@ -31,10 +31,7 @@ import {
   type TeamRecord,
   bodyJson,
 } from "@commissary/state";
-import { AgentsEnv } from "@commissary/agents/api";
-import { sweepDeletedRuns, sweepRetiredSchedules } from "@commissary/agents/management";
 import {
-  CurrentOrg,
   GLOBAL_ORG,
   type OrgId,
   handled,
@@ -192,10 +189,6 @@ const removeMember = Effect.gen(function* () {
   yield* orRefuse(result);
   // Their API keys went with them (ADR 0027); the Workers that cached one refuse it within the cache lifetime.
   yield* reindex;
-  // So did their private agents' schedules and runs, and every run they started (#228): their objects, which the
-  // ControlPlane cannot reach, are deleted now.
-  yield* sweepRetiredSchedules(yield* AgentsEnv, yield* CurrentOrg);
-  yield* sweepDeletedRuns(yield* AgentsEnv, yield* CurrentOrg);
 
   return jsonReply(200, { status: "ok" });
 });
@@ -205,7 +198,6 @@ const settingsView = (settings: MembershipSettingsWire, org: OrgId): MembershipS
   auto_join: settings.autoJoin,
   private_credentials: settings.privateCredentials,
   private_toolkits: settings.privateToolkits,
-  private_agents: settings.privateAgents,
   ...(org === GLOBAL_ORG ? { access_clients: settings.accessClients } : {}),
 });
 
@@ -224,7 +216,6 @@ const updateMembershipSettings = Effect.gen(function* () {
     input.auto_join === undefined &&
     input.private_credentials === undefined &&
     input.private_toolkits === undefined &&
-    input.private_agents === undefined &&
     input.access_clients === undefined
   )
     return yield* replyError(400, "invalid body");
@@ -250,7 +241,6 @@ const updateMembershipSettings = Effect.gen(function* () {
         ? {}
         : { privateCredentials: input.private_credentials }),
       ...(input.private_toolkits === undefined ? {} : { privateToolkits: input.private_toolkits }),
-      ...(input.private_agents === undefined ? {} : { privateAgents: input.private_agents }),
       ...(input.access_clients === undefined ? {} : { accessClients: input.access_clients }),
     }),
   );

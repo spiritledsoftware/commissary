@@ -26,7 +26,7 @@ export type { PlanMeter } from "./plan-meter.ts";
 
 export type { CeilingLimit, PlanLimit, PlanRefusal } from "./store.ts";
 
-export { limitClientRate, limitWebhookAttempts, RATE_LIMITED } from "./rate-limit.ts";
+export { limitClientRate, RATE_LIMITED } from "./rate-limit.ts";
 
 export { scheduledTasks } from "./scheduled-tasks.ts";
 

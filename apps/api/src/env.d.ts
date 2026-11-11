@@ -1,6 +1,6 @@
 // Bindings and variables of the API Worker (ADR 0030). Deployed values come from the `Api` Worker's `env` in
 // `alchemy.run.ts`; keep both in sync. Tests bind the same names in `vitest.config.ts`. The Durable Object namespaces
-// are the state Worker's (apps/state), bound by script name, but for the agents' (`AGENT_RUN`, `AGENT_SCHEDULE`),
+// are the state Worker's (apps/state), bound by script name, but for the retired agents' (`AGENT_RUN`, `AGENT_SCHEDULE`),
 // defined here; under `alchemy dev` the state Worker's come over its dev-only bridge instead (src/dev.ts). `Env` is read only by the entries (`index.ts`, `dev.ts`, `scheduled.ts`) and
 // tests; other code reads its package's view (`AuthConfig`, `StateEnv`, `ModelsEnv`, `BillingEnv`, `ApiBindings`:
 // `worker-env.ts`), which `Env` must satisfy.
@@ -70,20 +70,12 @@ interface __ApiWorkerEnv {
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */
   PLATFORM: DurableObjectNamespace<import("@commissary/state-worker").Platform>;
   /**
-   * The agent runs (#227): this Worker's own class (`AgentRun`, src/http/run-gateway.ts; ADR 0030's amendment), one
-   * object per run, which the app Worker binds by this Worker's script name.
+   * The retired hosted agents' Durable Object classes (ADR 0048): this Worker's own tombstones (src/retired-objects.ts),
+   * still bound this release because the previous app Worker binds them by this Worker's script name. A follow-up
+   * release removes both bindings and the classes. Nothing reads them.
    */
-  AGENT_RUN: DurableObjectNamespace<import("@commissary/agents/api").AgentRunObject>;
-  /**
-   * The schedule triggers (#231): this Worker's own class (`AgentSchedule`, `@commissary/agents/api`'s
-   * `AgentScheduleObject`), one object per schedule, which the app Worker binds by this Worker's script name to arm.
-   */
-  AGENT_SCHEDULE: DurableObjectNamespace<import("@commissary/agents/api").AgentScheduleObject>;
-  /**
-   * Dynamic Workers (ADR 0043, every deployment): the Agents area's presence, read only as such here: the MCP endpoint
-   * serves the agents toolkit (#229) where it is bound.
-   */
-  LOADER?: WorkerLoader;
+  AGENT_RUN: DurableObjectNamespace<import("./retired-objects.ts").AgentRun>;
+  AGENT_SCHEDULE: DurableObjectNamespace<import("./retired-objects.ts").AgentSchedule>;
   // Not here on purpose: `DEV_STATE_BRIDGE`, bound under `alchemy dev` only (alchemy.run.ts) and typed by the dev entry
   // alone (`DevBridgedEnv`, src/dev.ts), so no deployed code can name it; the tests bind the objects instead.
 }

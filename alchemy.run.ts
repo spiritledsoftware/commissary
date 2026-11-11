@@ -2,7 +2,7 @@
  * Infrastructure of the Workers port, deployed with Alchemy (`bun run deploy`, `bun run dev`, `bun run destroy`): the
  * Workers of ADR 0030, the state Worker, which defines the Durable Objects, the app Worker (panel, management API) with
  * its static assets, and the API Worker (the client API) with its cron trigger, which both bind the objects by script
- * name (but one: the API Worker defines the agent runs' `AgentRun`, which the app Worker binds by its script name); the
+ * name; the
  * KV namespace, the D1 usage database (migrations applied on every deploy), the `auth_index` HMAC key and the
  * Cloudflare Access application, policies and service tokens in front of the app (and of the client API on a stage with
  * one host, except that clients send API keys there). Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026) creates no
@@ -28,7 +28,7 @@ import { DEV_SECRETS_KEY, secretsKeyResourceId } from "./packages/state/src/secr
 /**
  * Runtime compatibility of the Workers; keep in sync with apps/app/vitest.config.ts, apps/api/vitest.config.ts,
  * apps/auth/vitest.config.ts, packages/state/vitest.config.ts, packages/models/vitest.config.ts,
- * packages/billing/vitest.config.ts, packages/tools/vitest.config.ts, packages/agents/vitest.config.ts and
+ * packages/billing/vitest.config.ts, packages/tools/vitest.config.ts and
  * tools/workers/worker-configuration.d.ts. `global_fetch_strictly_public` sends a fetch to a hostname in the
  * deployment's own zone through the internet, not straight to its origin (ADR 0044, docs/ARCHITECTURE.md "Outbound
  * guard").
@@ -301,7 +301,7 @@ export default Alchemy.Stack(
           computer === undefined
             ? Cloudflare.DurableObject("SandboxSession")
             : Cloudflare.DurableObject("SandboxSession", { containers: [computer] }),
-        // Also the Agents area's presence (ADR 0043): the ControlPlane has the agents toolkit (#229) where it is bound.
+        // Dynamic Workers: where the sandbox's just-bash runs (the session objects read it).
         LOADER: Cloudflare.WorkerLoader("LOADER"),
         ...(hosted === undefined ? {} : { COMMISSARY_MODE: "cloud" }),
         ...stateSettings,
@@ -370,7 +370,6 @@ export default Alchemy.Stack(
     const appWorker = (
       apiDomain: string | Output.Output<string> | undefined,
       auth: Effect.Success<ReturnType<typeof authWorker>> | undefined,
-      api: Effect.Success<ReturnType<typeof apiWorker>>,
     ) =>
       Cloudflare.Worker("Commissary", {
         main: dev ? "./apps/app/src/dev.ts" : "./apps/app/src/index.ts",
@@ -396,14 +395,6 @@ export default Alchemy.Stack(
           ...browserEnv,
           // Read for `/me`'s `deployment.computer` only.
           ...computerMarker,
-          // Dynamic Workers (ADR 0043, Workers Paid, on every deployment): the Agents area exists where they do (#226);
-          // only its presence is read here, for the Agents routes and `/me`'s `deployment.agents`.
-          LOADER: Cloudflare.WorkerLoader("LOADER"),
-          // The agent runs (#227): the API Worker's class (ADR 0030's amendment), bound by its script name, which also
-          // makes this Worker deploy after it on every stage.
-          AGENT_RUN: Cloudflare.DurableObject("AgentRun", { scriptName: api.workerName }),
-          // The schedule triggers (#231): the API Worker's class too, which the Agents routes arm.
-          AGENT_SCHEDULE: Cloudflare.DurableObject("AgentSchedule", { scriptName: api.workerName }),
           // Where the panel tells clients to send API keys (`GET /me` `api_url`).
           ...(apiDomain === undefined ? {} : { API_DOMAIN: apiDomain }),
           ...(hosted === undefined || auth === undefined
@@ -431,13 +422,7 @@ export default Alchemy.Stack(
     // stage that has one, else zone routes for the client API paths on the app host (`zoneRoutedPrefixes`: a route
     // pattern matches every path that starts with it, as the Workers match them, so `/v1*` covers `/v1beta`; on a
     // self-hosted stage not `/mcp`, which the app Worker serves behind Access, ADR 0045). Under `alchemy dev` it serves
-    // its own port. It deploys before the app Worker (and the auth Worker) on every stage: the app Worker binds its
-    // `AgentRun` (#227).
-    //
-    // The agent runs' objects live here, not in the state Worker (ADR 0030's amendment): a run reaches the client API
-    // and the MCP endpoint through this Worker's own run gateway over `ctx.exports` (apps/api/src/http/run-gateway.ts,
-    // the trust boundary of a run's principal), where a state Worker's object would need a service binding to this
-    // Worker, which binds the state Worker's objects: a cycle no fresh stage could deploy. No Worker binds the gateway.
+    // its own port.
     const apiWorker = () =>
       Cloudflare.Worker("Api", {
         main: dev ? "./apps/api/src/dev.ts" : "./apps/api/src/index.ts",
@@ -465,21 +450,19 @@ export default Alchemy.Stack(
           // point there. A preview and `alchemy dev` bind none, and the links name their pages in words.
           ...(!dev && !settings.preview ? { APP_DOMAIN: settings.appDomain } : {}),
           ...(split ? { API_DOMAIN: settings.apiDomain } : {}),
-          // The agent runs (#227, `@commissary/agents/api`'s `AgentRun`), one object per run, defined here.
+          // Retired (ADR 0048): the hosted agents' classes, kept this release as tombstones (apps/api/src/retired-objects.ts)
+          // because Cloudflare refuses to delete a class another Worker still binds, and the previous app Worker
+          // does until it is deployed. A follow-up release removes these two bindings and the classes (Alchemy then
+          // emits `deleted_classes`).
           AGENT_RUN: Cloudflare.DurableObject("AgentRun"),
-          // The schedule triggers (#231, `@commissary/agents/api`'s `AgentScheduleObject`), one object per schedule,
-          // whose alarm starts the runs above: here, as the state Worker's ControlPlane cannot reach them.
           AGENT_SCHEDULE: Cloudflare.DurableObject("AgentSchedule"),
-          // Dynamic Workers (ADR 0043): the Agents area's presence; the MCP endpoint serves the agents toolkit (#229)
-          // where it is bound, as the app Worker serves the area's routes.
-          LOADER: Cloudflare.WorkerLoader("LOADER"),
           ...hostedApiEnv,
           ...mcpOAuthEnv,
         },
       });
 
-    // The order, on every stage: the state Worker first (above); then the API Worker, whose `AgentRun` the app Worker
-    // binds; the auth Worker before the app Worker, which binds it. On a preview the app names the API Worker's
+    // The order, on every stage: the state Worker first (above); then the API Worker; the auth Worker before the app
+    // Worker, which binds it. On a preview the app names the API Worker's
     // workers.dev host, and on Commissary Cloud the auth Worker derives the app's origin from its URL.
     const client = yield* apiWorker();
 
@@ -509,7 +492,7 @@ export default Alchemy.Stack(
 
           return {
             auth: signInWorker,
-            worker: yield* appWorker(previewHost, signInWorker, client),
+            worker: yield* appWorker(previewHost, signInWorker),
           };
         })
       : yield* Effect.gen(function* () {
@@ -525,11 +508,7 @@ export default Alchemy.Stack(
                       },
                 );
 
-          const app = yield* appWorker(
-            split ? settings.apiDomain : undefined,
-            signInWorker,
-            client,
-          );
+          const app = yield* appWorker(split ? settings.apiDomain : undefined, signInWorker);
 
           return { worker: app, auth: signInWorker };
         });

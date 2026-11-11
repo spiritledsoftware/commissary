@@ -91,7 +91,6 @@ describe("a toolkit's prices", () => {
     expect(
       priceFieldsOf(toolkit({ kind: "sandbox", built_in: true })).map((field) => field.field),
     ).toEqual(["computer_hour_price_micros"]);
-    expect(priceFieldsOf(toolkit({ kind: "agents", built_in: true }))).toEqual([]);
   });
 
   it("are none on a private toolkit: a member may not price their own", () => {

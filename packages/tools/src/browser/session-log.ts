@@ -1,7 +1,7 @@
 /**
  * The org's open browser sessions, as the Tools part keeps them (#214): the `browser_sessions` table, one of the part's
  * tables (`TOOLS_TABLES`), keyed by `toolkit_id` like the others. A row holds a session's id, its toolkit and who opened
- * it (the member, and the principal it belongs to, and the shared agent whose run opened it, #228), nothing of its pages. The part logs a session it opens, and forgets
+ * it (the member, and the principal it belongs to), nothing of its pages. The part logs a session it opens, and forgets
  * it when a call closes it or its object reports that its alarm did (`ToolsPart.browserSessionClosed`, which charges
  * the browser time before it to the opener's Spend limits). The org's deletion deletes each logged session's object
  * first (`ToolsPart.purgeBrowserSessions`), so no alarm of theirs writes a usage record or reaches the ControlPlane
@@ -15,12 +15,9 @@ import type { BrowserSessionOpener } from "@commissary/contract/browser-sessions
 export const apiKeyOf = (principal: string): string | undefined =>
   principal.startsWith("key:") ? principal.slice("key:".length) : undefined;
 
-/** How a principal opened a session, as the Browser sessions page says it (#216): an API key, an agent run, a person. */
-export const openerOf = (principal: string): BrowserSessionOpener => {
-  if (apiKeyOf(principal) !== undefined) return "api_key";
-
-  return principal.startsWith("run:") ? "agent_run" : "person";
-};
+/** How a principal opened a session, as the Browser sessions page says it (#216): an API key, or a person. */
+export const openerOf = (principal: string): BrowserSessionOpener =>
+  apiKeyOf(principal) === undefined ? "person" : "api_key";
 
 /** A browser session as the part logs it. */
 export interface LoggedBrowserSession {
@@ -28,10 +25,8 @@ export interface LoggedBrowserSession {
   readonly toolkitId: string;
   /** The member who opened it, if the caller was one (null in the table otherwise). */
   readonly member: string | undefined;
-  /** The principal it belongs to (`user:<email>`, `key:<id>`, `run:<id>`). */
+  /** The principal it belongs to (`user:<email>`, `key:<id>`). */
   readonly principal: string;
-  /** The shared agent whose run opened it (#228), whose Spend limits its browser time counts toward; absent otherwise. */
-  readonly agent?: string | undefined;
   readonly openedAt: number;
   /** The browser profile it opened from (#215, #216: the Browser sessions page shows it); absent: none, or logged before. */
   readonly profile?: string | undefined;
@@ -51,7 +46,6 @@ type Row = {
   toolkit_id: string;
   member: string | null;
   principal: string;
-  agent: string | null;
   opened_at: number;
   profile: string | null;
   handoff_until: number | null;
@@ -62,7 +56,6 @@ const sessionOf = (row: Row): LoggedBrowserSession => ({
   toolkitId: row.toolkit_id,
   member: row.member ?? undefined,
   principal: row.principal,
-  ...(row.agent === null ? {} : { agent: row.agent }),
   openedAt: row.opened_at,
   ...(row.profile === null ? {} : { profile: row.profile }),
   ...(row.handoff_until === null ? {} : { handoffUntil: row.handoff_until }),
@@ -75,13 +68,13 @@ export class BrowserSessionStore {
     this.#sql = sql;
     sql.exec(SCHEMA);
 
-    // The shared agent whose run opened a session (#228): a log from before has no column for it.
     const columns = sql
       .exec<{ name: string }>("PRAGMA table_info(browser_sessions)")
       .toArray()
       .map((column) => column.name);
 
-    if (!columns.includes("agent")) sql.exec(`ALTER TABLE browser_sessions ADD COLUMN agent TEXT`);
+    // Which hosted agent opened a session, which Commissary no longer has (ADR 0048): dropped once.
+    if (columns.includes("agent")) sql.exec(`ALTER TABLE browser_sessions DROP COLUMN agent`);
 
     // The profile a session opened from, and its handoff (#216): a log from before has no columns for them.
     if (!columns.includes("profile"))
@@ -93,13 +86,12 @@ export class BrowserSessionStore {
 
   opened(session: LoggedBrowserSession): void {
     this.#sql.exec(
-      `INSERT OR REPLACE INTO browser_sessions (id, toolkit_id, member, principal, agent, opened_at, profile)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO browser_sessions (id, toolkit_id, member, principal, opened_at, profile)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       session.id,
       session.toolkitId,
       session.member ?? null,
       session.principal,
-      session.agent ?? null,
       session.openedAt,
       session.profile ?? null,
     );
@@ -125,17 +117,11 @@ export class BrowserSessionStore {
     return row === undefined ? undefined : sessionOf(row);
   }
 
-  /**
-   * How many sessions are open that count toward the plan's ceiling on concurrent browser sessions (#241): all but
-   * those agent runs opened (`run:<id>` principals), which no ceiling caps (ADR 0042).
-   */
-  countCapped(): number {
+  /** How many sessions are open, which the plan's ceiling on concurrent browser sessions counts (#241). */
+  count(): number {
     return (
-      this.#sql
-        .exec<{ open: number }>(
-          `SELECT COUNT(*) AS open FROM browser_sessions WHERE principal NOT LIKE 'run:%'`,
-        )
-        .toArray()[0]?.open ?? 0
+      this.#sql.exec<{ open: number }>(`SELECT COUNT(*) AS open FROM browser_sessions`).toArray()[0]
+        ?.open ?? 0
     );
   }
 

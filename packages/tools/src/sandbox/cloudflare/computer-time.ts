@@ -12,7 +12,6 @@
  * price at the time (ADR 0024). The time of a run that ended before the call is answered by the next call
  * (`pendingMs`). The session's usage record holds the sum of what was answered, and of its cost.
  */
-import type { UsageRun } from "@commissary/auth";
 import { hourlyCost } from "../../toolkits/price.ts";
 import type { ComputerTime } from "../provider.ts";
 import { COMPUTER_IDLE_MS } from "./computer.ts";
@@ -29,10 +28,9 @@ export interface ComputerRun {
 
 /** What a session opened by a Tools part from #224 on keeps of its computer time, for its calls and its record. */
 export interface ComputerMetering {
-  /** The toolkit, member and agent run (#228) its usage record names. */
+  /** The toolkit and member its usage record names. */
   readonly toolkitId: string;
   readonly member?: string | undefined;
-  readonly run?: UsageRun | undefined;
   /** Epoch ms, when the session opened. */
   readonly openedAt: number;
   /** The computer time answered so far, in ms, and what it cost. */

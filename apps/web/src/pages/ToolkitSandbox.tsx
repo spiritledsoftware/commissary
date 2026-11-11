@@ -20,7 +20,6 @@ import {
 import { ConfirmDialog, type ConfirmRequest } from "../components/Confirm.tsx";
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import { NetworkPicker } from "../components/NetworkPicker.tsx";
-import { sandboxCeilingText } from "../lib/agent-form.ts";
 import { failureMessage } from "../lib/failure.ts";
 import type { NetworkFields } from "../lib/sandbox-network.ts";
 import {
@@ -29,6 +28,7 @@ import {
   LEAK_WARNING,
   NO_COMPUTER_REASON,
   OPTIONAL_PIECES_URL,
+  sandboxCeilingText,
   SESSIONS_KEEP_NOTE,
   type SandboxSettingsDraft,
   settingsBody,
@@ -106,7 +106,7 @@ export const SandboxSettings = ({
           ...toolkit,
           computer: computerAvailable && toolkit.computer === true,
         })}
-        . A client&rsquo;s session and a hosted agent&rsquo;s sandbox pick within it.
+        . A client&rsquo;s session picks within it.
       </p>
       <form className={styles["form"]} onSubmit={(event) => void submit(event)} noValidate>
         <p className={styles["note"]}>{LEAK_WARNING}</p>

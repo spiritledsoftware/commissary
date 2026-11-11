@@ -47,7 +47,6 @@ const KIND_LABELS: Readonly<Record<ToolkitKind, string>> = {
   discovery: "Google Discovery document",
   browser: "Browser",
   sandbox: "Sandbox",
-  agents: "Agents",
 };
 
 export const kindLabel = (kind: ToolkitKind): string => KIND_LABELS[kind];

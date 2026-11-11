@@ -1,15 +1,6 @@
 import { RpcTarget } from "cloudflare:workers";
 import { Clock, type Duration, Effect, Result, type Schema } from "effect";
-import {
-  type Access,
-  accessTo,
-  isFullAccess,
-  runOfPrincipal,
-  runPrincipalId,
-  type Scope,
-  type UsageRun,
-  type Viewer,
-} from "@commissary/auth";
+import { type Access, accessTo, isFullAccess, type Scope, type Viewer } from "@commissary/auth";
 import type {
   ApprovalDecision,
   ApprovalsList,
@@ -17,7 +8,7 @@ import type {
   Approver,
   ApproverView,
 } from "@commissary/contract/approvals";
-import { agentsInScope, type ToolScope } from "@commissary/contract/api-keys";
+import type { ToolScope } from "@commissary/contract/api-keys";
 import type {
   BrowserProfileGrants,
   BrowserProfilesList,
@@ -72,14 +63,7 @@ import type {
   UsableTool,
   UsableTools,
 } from "@commissary/contract/tools";
-import {
-  type RunToolTicket,
-  SANDBOX_MAX_TIMEOUT_MS,
-  type SandboxEnvReply,
-  type SandboxEnvRequest,
-} from "@commissary/contract/sandbox-env";
 import type { ToolCallApproval } from "@commissary/contract/usage";
-import type { RunWaitState } from "@commissary/contract/run-waits";
 import {
   CurrentOutboundPolicy,
   OutboundHttpClientLive,
@@ -92,7 +76,6 @@ import type { ControlPlanePart, OrgCore } from "@commissary/state";
 import type {
   ChargedCredential,
   Refusal,
-  SpendAgent,
   SpendCaller,
   SpendCredential,
 } from "@commissary/state/spend";
@@ -217,7 +200,6 @@ import {
 import { exchangeToken, type Minted, mintGitHubApp, mintJwt } from "./signing/tokens.ts";
 import {
   type BuiltIn,
-  type CalledBuiltIn,
   type BuiltInCall,
   type BuiltInProviders,
   browserTimeOf,
@@ -227,38 +209,15 @@ import {
 } from "./toolkits/built-in.ts";
 import type { BrowserSessions } from "./browser/session-object.ts";
 import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
-import {
-  type AgentDirectory,
-  isAgentsToolkit,
-  runnableAgents,
-  startDescription,
-} from "./agents/toolkit.ts";
-import { type RunWatchers, watchersOfPrincipal } from "./agents/run-watchers.ts";
 import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
-import { agentSandboxFits, type AgentSandboxSettings } from "./sandbox/agent-sandbox.ts";
 import {
   type ComputerMeter,
   type Metered,
   type SandboxProvider,
   SESSION_IDLE_MS,
 } from "./sandbox/provider.ts";
-import {
-  computerStoppedNote,
-  meetsComputer,
-  NO_COMPUTER_HOURS_HINT,
-  noted,
-  unknownSessionResult,
-} from "./sandbox/toolkit.ts";
+import { meetsComputer, NO_COMPUTER_HOURS_HINT, noted } from "./sandbox/toolkit.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
-import {
-  argumentBytes,
-  gatedTool,
-  type RunCallTicket,
-  RunCallTickets,
-  TICKET_IDLE_MS,
-  ticketAllows,
-} from "./sandbox/run-calls.ts";
-import { sandboxOperation } from "./sandbox/run-operations.ts";
 import { BrowserCrawlStore } from "./browser/crawls.ts";
 import {
   apiKeyOf,
@@ -326,6 +285,12 @@ const REFRESH_RECHECK_MS = 30_000;
 
 /** The alarm's token refreshes at once. */
 const REFRESH_CONCURRENCY = 4;
+
+/** The most sandbox sessions due to be forgotten one alarm deletes at the provider (`SandboxSessionStore.unreported`). */
+const UNREPORTED_BATCH = 50;
+
+/** How soon the alarm comes again while sandbox sessions due to be forgotten are left: more than a batch, or failed. */
+const UNREPORTED_RETRY_MS = 60_000;
 
 /** Browser crawls cancelled at once when a member leaves or the org is deleted (#270). */
 const CRAWL_CANCEL_CONCURRENCY = 4;
@@ -638,29 +603,6 @@ export interface ClientTool {
   readonly toolClass: ToolClass;
 }
 
-/**
- * A hosted agent's run calling the MCP endpoint (#227, ADR 0040): its definition's tool scope, which narrows what it
- * reaches as an API key's does, and whether it acts as the shared agent itself (`asAgent`), whose reach is its
- * definition: every org toolkit with a shared credential, whatever the tool grants. A private agent's run acts as its
- * member (the viewer), with their reach. Its starter (`starterMember`) is the caller of its approvals (ADR 0040): under
- * a rule of the caller they decide, and under the others they do not. A run no one started (a shared agent's schedule
- * or webhook, #231) has none: its agent's watchers are its caller (#232, {@link RunWatchers}), any of whom decides
- * under a rule of the caller.
- */
-export interface RunToolReach {
-  readonly toolScope: ToolScope;
-  readonly asAgent: boolean;
-  readonly starterMember?: string | undefined;
-  /** The run's agent (#229), which the agents toolkit does not offer it. */
-  readonly agentId?: string | undefined;
-  /**
-   * The run as its usage records name it (#228): a shared agent's run counts toward the agent's own Spend limits, and
-   * the browser sessions it opens write records naming it. Absent from an API Worker from before #228, whose shared
-   * agents' runs count toward the org's limits only.
-   */
-  readonly usage?: UsageRun | undefined;
-}
-
 /** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */
 export interface ToolCall {
   readonly name: string;
@@ -672,8 +614,6 @@ export interface ToolCall {
    * toward its Spend limits (#199).
    */
   readonly apiKeyId?: string | undefined;
-  /** An agent run's reach (#227): its definition's tool scope in place of a key's. */
-  readonly run?: RunToolReach | undefined;
   /** The caller's principal, which names a caller without a member in a pending approval (#201). */
   readonly principalId?: string | undefined;
   /**
@@ -707,23 +647,6 @@ export interface ToolCall {
    */
   readonly handoffAnswer?: FormAction | undefined;
   /**
-   * Set by an MCP endpoint whose Worker makes the agents toolkit's calls (#229, `AgentsToolkitPort`): only such a call
-   * reaches its tools, and gets them as `delegated`. An API Worker deployed before the agents toolkit sends none, and
-   * reaches none of its tools (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
-   */
-  readonly agentsToolkit?: true | undefined;
-  /**
-   * An agent run's call that asks for a ticket rather than the call (#230, `RUN_EXECUTES_META`): a call of the sandbox
-   * toolkit's `bash`, `read`, `write` or `edit` that went through every gate answers `gated`, and the run executes it
-   * on its session itself ({@link ToolsPart.runSandboxOperation}). Only a run's call (`run`) is gated so.
-   */
-  readonly executes?: true | undefined;
-  /**
-   * An agent run's `sandbox_open` of its own session (#230, `RUN_SESSION_META`): that session lasts as long as the run.
-   * Only a run's call is honoured so.
-   */
-  readonly runSession?: true | undefined;
-  /**
    * Set by an MCP endpoint that understands `plan_limited` (#241). An API Worker deployed before it sends a call
    * without it, and gets a call a plan limit refuses as `failed` (docs/DEVELOPMENT.md, "State RPC: expand, then
    * contract").
@@ -731,20 +654,10 @@ export interface ToolCall {
   readonly planOutcomes?: true | undefined;
 }
 
-/** What a caller of {@link ToolsPart.clientTools} serves beyond the part's own toolkits. */
-export interface ClientToolsOptions {
-  /** The endpoint's Worker makes the agents toolkit's calls ({@link ToolCall.agentsToolkit}): list its tools. */
-  readonly agentsToolkit?: true | undefined;
-}
-
-/**
- * Who `viewer`'s `call` is for, as the Spend limits see it: its member and API key, or a shared agent whose run makes it
- * (#228), which counts toward the agent's own limits and has neither. A run has no API key, so no key limit applies.
- */
+/** Who `viewer`'s `call` is for, as the Spend limits see it: its member and API key. */
 const spenderOf = (viewer: Viewer, call: ToolCall): SpendCaller => ({
   memberId: viewer.member,
   apiKeyId: call.apiKeyId,
-  agentId: call.run?.asAgent === true ? call.run.usage?.agentId : undefined,
 });
 
 /** How a client's caller answered an elicitation form (MCP `ElicitResult.action`). */
@@ -785,12 +698,10 @@ export interface CallUsage {
  * approves on a form first (the client makes it again with their answer), `pending`, a call that waits for its
  * approver in the panel, or `not_approved`, one that was denied (or that no one could approve); the upstream's
  * `result`, an `isError` one included; or `failed`, an upstream or transport failure, with a short message that
- * quotes neither the source nor the server's answer; or, for the agents toolkit, `delegated`: a call the endpoint's
- * Worker makes (#229); or `plan_limited`, a call Commissary Cloud's plan refused before any work (#241). All but
- * `unknown` and `approve` say what the call's usage record holds (a call on a form writes
- * its record once it ends). The approval outcomes go only to a call that says it understands them
- * (`ToolCall.approvalOutcomes`), `delegated` only to one that serves the agents toolkit (`ToolCall.agentsToolkit`) and
- * `plan_limited` only to one that says it understands it (`ToolCall.planOutcomes`).
+ * quotes neither the source nor the server's answer; or `plan_limited`, a call Commissary Cloud's plan refused before
+ * any work (#241). All but `unknown` and `approve` say what the call's usage record holds (a call on a form writes its
+ * record once it ends). The approval outcomes go only to a call that says it understands them
+ * (`ToolCall.approvalOutcomes`) and `plan_limited` only to one that says it understands it (`ToolCall.planOutcomes`).
  */
 export type ToolCallOutcome =
   | { readonly outcome: "unknown" }
@@ -869,60 +780,12 @@ export type ToolCallOutcome =
       readonly until: number;
       readonly usage: CallUsage;
     }
-  | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage }
-  | {
-      /**
-       * A call of the agents toolkit (#229) that went through reach, tool scope, Spend and approval: the endpoint's
-       * Worker makes it (`AgentsToolkitPort`), with the agents the caller's tool scope names (`undefined`: every agent
-       * within reach). Only to a call with {@link ToolCall.agentsToolkit}.
-       */
-      readonly outcome: "delegated";
-      readonly tool: string;
-      readonly arguments: Schema.JsonObject;
-      readonly scopeAgents?: ReadonlyArray<string> | undefined;
-      readonly usage: CallUsage;
-    }
-  | {
-      /**
-       * A run's sandbox call that went through every gate and was charged its price (#230, {@link ToolCall.executes}):
-       * the run executes it with this ticket, and settling the ticket writes its usage record
-       * ({@link ToolsPart.settleRunSandboxCall}), not the endpoint.
-       */
-      readonly outcome: "gated";
-      readonly ticket: RunToolTicket;
-      readonly usage: CallUsage;
-    };
+  | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage };
 
 /** What an API key's view says of its tools (#200): how many it may use now, and what its scope names that is gone. */
 export interface KeyToolSummary {
   readonly toolCount: number;
   readonly missing: ReadonlyArray<string>;
-}
-
-/** The tool scope a caller of the MCP endpoint is narrowed by, and whether it acts as a shared agent (#227). */
-interface CallerScope {
-  readonly scope: ToolScope | undefined;
-  readonly asAgent: boolean;
-  /** The calling run's agent (#229): the agents toolkit leaves it out, as a run cannot start its own agent. */
-  readonly self?: string | undefined;
-}
-
-/**
- * Whether a management caller takes the agents toolkit (#229) in toolkit lists, tool lists and the export: the app
- * Worker's routes ask for it; a caller deployed before it (DEVELOPMENT.md, "State RPC: expand, then contract") does not,
- * and never meets the toolkit kind `agents` it could not decode.
- */
-export interface KindsOptions {
-  readonly agentsToolkit?: boolean | undefined;
-}
-
-/** What {@link ToolsPart.#reachable} narrows to: a caller's scope, and whether to count the agents toolkit. */
-interface Reach extends Partial<CallerScope> {
-  /**
-   * Count the agents toolkit (#229): only for an MCP endpoint whose Worker makes its calls, and for the panel's views
-   * that show no toolkit kind. Off by default, so a caller deployed before it never meets its kind.
-   */
-  readonly agentsToolkit?: boolean | undefined;
 }
 
 /** A tool the MCP endpoint serves a member, and how they reach it. */
@@ -1078,8 +941,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** The org's open sandbox sessions (#222), and the sandbox they are in. */
   readonly #sandboxSessions: SandboxSessionStore;
   readonly #sandbox: SandboxProvider | undefined;
-  /** The tickets of agent runs' gated sandbox calls (#230). */
-  readonly #runCalls: RunCallTickets;
   /** The org's browser profiles (#215) and the grants on shared ones. */
   readonly #profiles: ProfileStore;
   /** Who started each of the org's browser crawls (#270), and the browser provider's crawls they run at. */
@@ -1092,8 +953,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #managedApps: ManagedApps;
   /** The org's lookups at integrations.sh of domains the toolkit catalog lacks (#207), counted to throttle them. */
   readonly #lookups = new LookupThrottle();
-  /** Which agents a caller may run (#229): the agents toolkit's reach, from the Agents part. */
-  readonly #agents: AgentDirectory | undefined;
   /**
    * The org's Billing part, which counts what plans count of the part (#241), where the deployment has plans
    * (Commissary Cloud); read when needed, as the state Worker makes the parts of an object one after the other.
@@ -1109,8 +968,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * computers that run, or may start, for the ceiling.
    */
   readonly #pendingComputers = new Map<string, number>();
-  /** Who watches each agent run (#232), from the Agents part: its approvals' caller, its browser sessions' watchers. */
-  readonly #runWatchers: RunWatchers | undefined;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
@@ -1145,7 +1002,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#oauth = new OAuthStore(ctx.storage.sql, core.secrets);
     this.#outbound = outboundPolicy({ hosts: [ownHosts] });
     this.#sandboxSessions = new SandboxSessionStore(ctx.storage.sql);
-    this.#runCalls = new RunCallTickets(ctx.storage.sql);
     this.#sandbox = providers.sandbox;
     this.#profiles = new ProfileStore(ctx.storage.sql, core.secrets);
     this.#crawls = new BrowserCrawlStore(ctx.storage.sql);
@@ -1153,9 +1009,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#browserSessionLog = new BrowserSessionStore(ctx.storage.sql);
     this.#browserSessions = providers.browserSessions;
     this.#managedApps = managedApps;
-    this.#agents = providers.agents;
-    this.#runWatchers = providers.runWatchers;
     this.#yieldBuiltInNames();
+
+    // Sessions hosted agents' runs opened (ADR 0048) are due like any other, but were left out of the part's wake-ups:
+    // an alarm makes sure the part looks at them.
+    if (this.#sandboxSessions.hasRunSessions())
+      void ctx.blockConcurrencyWhile(async () => {
+        if ((await ctx.storage.getAlarm()) === null) await ctx.storage.setAlarm(Date.now());
+      });
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
@@ -1186,6 +1047,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * wake-up go on.
    */
   async alarm(now: number): Promise<number | null> {
+    // A sandbox session whose close the part never heard of is deleted at the provider before the part forgets it, so
+    // nothing of it outlives its row (its files, if its object still keeps them); one the provider could not reach is
+    // kept, for the next alarm. Without a provider, there is nothing to delete.
+    const unreported = this.#sandboxSessions.unreported(now, UNREPORTED_BATCH);
+
+    if (this.#sandbox === undefined) this.#sandboxSessions.ended(unreported.map(({ id }) => id));
+    else await this.#purgeSandboxSessions(unreported);
+
     const due = this.#store.refreshesDue(now);
 
     await Effect.runPromise(
@@ -1222,14 +1091,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Prunes what is due at `now`; answers the part's next wake-up, the earliest of the sessions' (upstream and sandbox),
-   * the browser crawls', the approvals' and the credentials' token refreshes (none before `refreshFrom`).
+   * the browser crawls', the approvals' and the credentials' token refreshes (none before `refreshFrom`). Sandbox
+   * sessions due to be forgotten are the alarm's to delete first: while any is left, it comes again soon.
    */
   #nextWakeUp(now: number, refreshFrom = now): number | null {
     const refresh = this.#store.nextRefreshAt();
+    const forgotten = this.#sandboxSessions.forgottenAt();
 
     const wakes = [
       this.#store.pruneSessions(now),
-      this.#sandboxSessions.prune(now),
+      forgotten === null ? null : Math.max(forgotten, now + UNREPORTED_RETRY_MS),
       this.#crawls.prune(now),
       this.#approvals.prune(now),
       refresh === null ? null : Math.max(refresh, refreshFrom),
@@ -1300,199 +1171,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       purged,
       remaining: this.#sandboxSessions.sessions().length,
     };
-  }
-
-  /**
-   * Whether an agent run's session opened with `opened` still fits its definition's sandbox `definition` and the
-   * sandbox toolkit's ceiling now (#230, `agentSandboxFits`): the Agents part of the same ControlPlane asks as a turn
-   * starts, and a run whose definition or ceiling narrowed since opens a new session. A toolkit that is no sandbox fits
-   * nothing.
-   */
-  runSandboxFits(definition: AgentSandboxSettings, opened: AgentSandboxSettings): boolean {
-    const builtIn = this.#builtIn(definition.toolkit);
-
-    if (builtIn?.toolkit.kind !== "sandbox") return false;
-    const ceiling = this.#withSettings(builtIn.toolkit).ceiling ?? NO_ALLOWANCE;
-
-    return agentSandboxFits(definition, opened, { kind: "sandbox", ...ceiling });
-  }
-
-  /**
-   * Deletes the sandbox sessions of the agent runs `runIds` (#230), with their files: a run's sessions last as long as
-   * the run, and go when it is deleted (its agent or its member removed, or the org's retention period for agent runs
-   * passed), which the Agents part of the same ControlPlane tells this one (`apps/state/src/control-plane.ts`). Each
-   * settles first, as a member's leaving settles theirs (#224): a computer still running stops, its last stretch is
-   * charged and recorded. Answers the runs none of whose sessions is left; one the sandbox could not reach keeps its
-   * row, for the next try.
-   */
-  async purgeRunSandboxSessions(runIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>> {
-    const principals = runIds.map(runPrincipalId);
-
-    await this.#purgeSandboxSessions(this.#sandboxSessions.sessionsOf(principals), true);
-    this.#runCalls.forgetPrincipals(principals);
-    const left = new Set(this.#sandboxSessions.sessionsOf(principals).map((row) => row.principal));
-
-    return runIds.filter((id) => !left.has(runPrincipalId(id)));
-  }
-
-  /**
-   * How what a parked call of the agent run `run` waits on stands (#232, ADR 0040), as the run gateway asks it now and
-   * then: a pending approval of the run's call (`waiting` while undecided, `ready` once approved or denied, as the same
-   * call made again takes the outcome, `expired` once its hour passed by the part's clock), or a handoff in a browser
-   * session the run opened (`waiting` while its person is asked, `ready` once it ended or the session closed). One that
-   * is not the run's, or of which nothing is kept, is `gone`: the run decides by its own clock. Reads only.
-   */
-  async runWaitState(
-    run: string,
-    waiting: { readonly kind: "approval" | "handoff"; readonly id: string },
-  ): Promise<RunWaitState> {
-    const principal = runPrincipalId(run);
-
-    if (waiting.kind === "approval") {
-      const approval = this.#approvals.held(waiting.id);
-
-      if (approval === undefined || approval.callerPrincipal !== principal) return "gone";
-
-      if (approval.expiresAt <= this.#now()) return "expired";
-
-      return approval.status === "pending" && !approval.settled ? "waiting" : "ready";
-    }
-
-    const session = this.#browserSessionLog.session(waiting.id);
-    const sessions = this.#browserSessions;
-
-    if (session === undefined || session.principal !== principal || sessions === undefined)
-      return "gone";
-    const watched = await sessions.watch(this.#core.org, waiting.id);
-
-    return watched.kind === "open" && watched.handoff !== undefined ? "waiting" : "ready";
-  }
-
-  /**
-   * Runs one operation of an agent run's gated sandbox call (#230) on its session: only with the call's live ticket
-   * (`ticket`, of the run `run`'s), and only an operation the gated tool makes (`TICKET_OPS`). Each operation's start
-   * and end keep the ticket alive (`run-calls.ts`, "Expiry"). The session is the call's, as the run's principal owns
-   * it; it is used as the sandbox toolkit's own calls use it.
-   *
-   * Its computer time (#224) is metered as the sandbox toolkit's calls meter it: each operation passes the metering the
-   * gate set (the price per computer hour, and whether a Spend limit its time counts toward had no room), and the
-   * session's computer time it answers is charged at once to the call's spender's limits (a shared agent's run's, as
-   * the agent, #228). With no room, an operation that met the running computer stopped it and goes on, with a note for
-   * the model; a command that needs the computer is refused, which the ticket keeps, so that settling it ends the
-   * run's turn.
-   */
-  async runSandboxOperation(
-    run: string,
-    ticket: string,
-    request: SandboxEnvRequest,
-  ): Promise<SandboxEnvReply> {
-    const principal = runPrincipalId(run);
-    const gated = this.#runCalls.live(ticket, principal, this.#now());
-    const sandbox = this.#sandbox;
-
-    if (gated === undefined || !ticketAllows(gated.tool, request.op))
-      return { ok: false, reason: "ticket", message: "The call has no valid ticket." };
-
-    if (sandbox === undefined)
-      return { ok: false, reason: "failed", message: "The deployment has no sandbox." };
-    const owner = { org: this.#core.org, principal };
-    const start = this.#now();
-
-    // A command may run as long as its timeout, the sandbox's ten minutes at most: the ticket lives past it.
-    const running =
-      request.op === "exec" ? Math.min(Math.max(0, request.timeoutMs), SANDBOX_MAX_TIMEOUT_MS) : 0;
-
-    this.#runCalls.extend(ticket, start + running + TICKET_IDLE_MS);
-
-    const meter: ComputerMeter = {
-      hourPriceMicros: gated.hourPriceMicros,
-      limitReached: gated.limitReached,
-      ...(gated.planRefusal === undefined ? {} : { limitReason: "plan" as const }),
-      ...(gated.plans ? { plans: true as const } : {}),
-    };
-
-    const operation = sandboxOperation(sandbox, owner, gated.session, request, start, meter);
-
-    const reply = await Effect.runPromise(
-      operation.pipe(
-        Effect.map(({ value, ...metered }) => ({ reply: { ok: true, value } as const, metered })),
-        Effect.catch((error) =>
-          Effect.succeed({
-            reply: {
-              ok: false,
-              reason:
-                error.reason === "unknown_session" || error.reason === "closed" ? "lost" : "failed",
-              message: error.message,
-            } as const,
-            metered: error,
-            refused: error.reason === "refused",
-            unknown: error.reason === "unknown_session",
-          }),
-        ),
-      ),
-    );
-
-    const end = this.#now();
-    const { computerTime, computerStopped } = reply.metered;
-    const ledger = this.#core.spend.ledger();
-    const spender = { memberId: gated.member, apiKeyId: gated.apiKey, agentId: gated.agent };
-
-    const charged: ChargedCredential = {
-      id: gated.toolkitId,
-      shared: gated.credential === "shared",
-      kind: "toolkit_credential",
-    };
-
-    ledger.charge(ledger.scopes(spender, charged), computerTime?.costMicros ?? 0, end);
-
-    // The computer time counts toward the plan, and where the computer stands toward its ceiling (#241).
-    this.#countTime("computerHours", computerTime?.computerMs);
-
-    if (computerTime !== undefined)
-      this.#sandboxSessions.computerRunsUntil(gated.session, computerTime.runsUntil);
-
-    // A command that needs the computer, refused for want of room: the call's settling ends the turn with the limit's
-    // refusal, a Spend limit's or else the plan's (#241).
-    // The plan's, when the gate found it kept the computer from the call: that is what the session's answer said, so the
-    // settling says it too, whatever a Spend limit has come to since.
-    const needed = "refused" in reply && reply.refused;
-    const planRefused = needed && gated.planRefusal !== undefined;
-    const refusal = needed && !planRefused ? ledger.refusal(spender, charged, end) : undefined;
-
-    if (refusal !== undefined) this.#runCalls.refused(ticket, refusal, computerStopped === true);
-    else if (planRefused) this.#runCalls.planRefused(ticket, computerStopped === true);
-
-    // The call did no work then: it is no tool call (#241), as a refused command of a call outside a run is none.
-    if (refusal !== undefined || planRefused) {
-      const counted = this.#runCalls.uncount(ticket);
-
-      if (counted !== undefined) this.#plans()?.refund(counted);
-    }
-
-    this.#runCalls.extend(ticket, end + TICKET_IDLE_MS);
-
-    // A session the sandbox does not know is forgotten, as the sandbox toolkit's own calls forget it; one found closed
-    // is kept until its close is reported (#224).
-    if ("unknown" in reply && reply.unknown)
-      this.#sandboxSessions.ended([gated.session], principal);
-    else if (reply.reply.ok || reply.reply.reason !== "lost")
-      this.#sandboxSessions.used(gated.session, end, principal);
-
-    // An operation that met the running computer stopped it for want of room, and went on: the model is told.
-    return computerStopped === true && refusal === undefined && !planRefused
-      ? { ...reply.reply, note: computerStoppedNote(meter) }
-      : reply.reply;
-  }
-
-  /**
-   * Settles the gated call `ticket` of the run `run` (#230): ends its operations and answers what the call's usage
-   * record says of it (the run's settling writes it, under the ticket's id, `@commissary/tools/api`). Settling is not
-   * bound by the ticket's expiry, which limits its operations only: a settling tried again within a day of the gate
-   * (`SETTLE_GRACE_MS`, as the run retries one that failed, or one the API Worker could not finish) answers the same,
-   * and the record is written once. `undefined` for none (unknown, past that day, or another run's), which writes none.
-   */
-  async settleRunSandboxCall(run: string, ticket: string): Promise<RunCallTicket | undefined> {
-    return this.#runCalls.settle(ticket, runPrincipalId(run), this.#now());
   }
 
   /**
@@ -1600,11 +1278,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** Read on every use: nothing to forget. */
   privateCredentialsChanged(): void {}
 
-  /** Tools holds no agents: no Spend limit names one of its (a test's subclass names one, to limit an agent's run). */
-  spendAgents(): ReadonlyArray<SpendAgent> {
-    return [];
-  }
-
   /**
    * The org toolkits' shared credentials, by their toolkit (a toolkit holds at most one): what a toolkit's Spend limit
    * names (#199). Its tool calls on the shared credential count toward it.
@@ -1631,15 +1304,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   // --- toolkits ---------------------------------------------------------------------------------------------------
 
   /**
-   * The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only. The
-   * agents toolkit (#229) only for a caller that asks for it ({@link KindsOptions}).
+   * The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only.
    */
-  listToolkits(viewer: Scope, options?: KindsOptions): ToolkitsList {
+  listToolkits(viewer: Scope): ToolkitsList {
     const resolution = this.#resolve(this.#servedMember(this.#memberOf(viewer)));
     const toolkits: Array<ToolkitView> = [];
     const others: Array<LimitedToolkitView> = [];
 
-    for (const toolkit of this.#toolkits(options ?? {})) {
+    for (const toolkit of this.#toolkits()) {
       const access = reach(toolkit, viewer);
 
       if (access === "limited") others.push(this.#limitedView(toolkit));
@@ -3132,14 +2804,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The tools of a toolkit, with their flags: an org toolkit's among the org's toolkits, a private toolkit's among the
-   * org's and its owner's (none while the org does not serve private toolkits). The agents toolkit's (#229) only for a
-   * caller that asks for it ({@link KindsOptions}).
+   * org's and its owner's (none while the org does not serve private toolkits).
    */
-  listTools(viewer: Scope, id: string, options?: KindsOptions): ToolsResult<ToolsList> {
+  listTools(viewer: Scope, id: string): ToolsResult<ToolsList> {
     const toolkit = this.#toolkit(id);
 
-    if (toolkit === undefined || (isAgentsToolkit(toolkit) && options?.agentsToolkit !== true))
-      return NOT_FOUND;
+    if (toolkit === undefined) return NOT_FOUND;
     const access = reach(toolkit, viewer);
 
     if (access === "none" || access === "limited") return NOT_FOUND;
@@ -3166,39 +2836,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * tool of an org toolkit that takes private credentials, as themselves, while the org lets members hold private
    * credentials; and the tools of org toolkits' shared credentials their tool grants give (#198). There is no default
    * tool grant. A request with an API key (`apiKeyId`) gets what both the member's reach and the key's tool scope allow
-   * (#200), read from the key on every request, so a change to the scope applies at once. An agent run (`run`, #227)
-   * gets what its definition's tool scope allows, as its member or as the shared agent ({@link RunToolReach}).
-   *
-   * The agents toolkit's tools (#229) are listed only to a caller whose endpoint makes their calls (`options`), and
-   * only while they may run an agent; `agents_start`'s description lists those agents, so it changes with them.
+   * (#200), read from the key on every request, so a change to the scope applies at once.
    */
-  clientTools(
-    viewer: Viewer,
-    apiKeyId?: string,
-    run?: RunToolReach,
-    options?: ClientToolsOptions,
-  ): ReadonlyArray<ClientTool> {
-    const caller = this.#caller(viewer, apiKeyId, run);
-
-    const reached = this.#reachable(viewer, {
-      ...caller,
-      agentsToolkit: options?.agentsToolkit === true,
-    });
-
-    return reached.map(({ tool }) => {
-      const description =
-        isAgentsToolkit(tool.toolkit) && tool.upstreamName === "start" && this.#agents !== undefined
-          ? startDescription(runnableAgents(this.#agents, { member: viewer.member, ...caller }))
-          : tool.description;
-
-      return {
-        name: tool.name,
-        toolkit: tool.toolkit.name,
-        ...(description === undefined ? {} : { description }),
-        ...(tool.tool?.inputSchema === undefined ? {} : { inputSchema: tool.tool.inputSchema }),
-        toolClass: tool.toolClass,
-      };
-    });
+  clientTools(viewer: Viewer, apiKeyId?: string): ReadonlyArray<ClientTool> {
+    return this.#reachable(viewer, this.#keyScope(apiKeyId)).map(({ tool }) => ({
+      name: tool.name,
+      toolkit: tool.toolkit.name,
+      ...(tool.description === undefined ? {} : { description: tool.description }),
+      ...(tool.tool?.inputSchema === undefined ? {} : { inputSchema: tool.tool.inputSchema }),
+      toolClass: tool.toolClass,
+    }));
   }
 
   /**
@@ -3272,12 +2919,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     policy: OutboundPolicy,
     held: Held,
   ): Promise<ToolCallOutcome> {
-    const caller = this.#caller(viewer, call.apiKeyId, call.run);
-
-    const reached = this.#reachable(viewer, {
-      ...caller,
-      agentsToolkit: call.agentsToolkit === true,
-    }).find(
+    const reached = this.#reachable(viewer, this.#keyScope(call.apiKeyId)).find(
       ({ tool }) =>
         tool.name === call.name &&
         (call.toolkits === undefined || call.toolkits.includes(tool.toolkit.name)),
@@ -3386,7 +3028,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       // sandbox session's running computer stopped (#224): the refused call never reaches the session, so the part
       // stops it, for a refused `sandbox_close` too.
       const closed =
-        timed && builtIn?.calledBy === "part"
+        timed && builtIn !== undefined
           ? await this.#closeSession(builtIn, viewer, call, policy, spender, charged)
           : false;
 
@@ -3412,7 +3054,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       // A session over the plan's browser hours is closed, as one over a Spend limit is (`#closeSession`); a running
       // computer is stopped (`#stopComputer`).
       const closed =
-        found.session && builtIn?.calledBy === "part"
+        found.session && builtIn !== undefined
           ? await this.#closeSession(builtIn, viewer, call, policy, spender, charged)
           : false;
 
@@ -3431,7 +3073,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
 
     if (meter !== undefined) {
-      const early = this.#planRefusal(meter, builtIn, tool.upstreamName, call);
+      const early = this.#planRefusal(meter, builtIn, tool.upstreamName);
 
       if (early !== undefined) return await limited(early);
     }
@@ -3480,7 +3122,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     let counted: number | undefined;
 
     if (meter !== undefined) {
-      const found = this.#planRefusal(meter, builtIn, tool.upstreamName, call, held);
+      const found = this.#planRefusal(meter, builtIn, tool.upstreamName, held);
 
       if (found !== undefined) return await limited(found);
       const admission = meter.admit(this.#now());
@@ -3496,20 +3138,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if ("builtIn" in serving) {
       const now = this.#now();
       const { builtIn } = serving;
-
-      // The agents toolkit's call (#229) is the endpoint's Worker's to make, with the agents the caller's scope names;
-      // it is charged here, as a built-in tool's is.
-      if (builtIn.calledBy === "worker") {
-        if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, now);
-
-        return {
-          outcome: "delegated",
-          tool: tool.upstreamName,
-          arguments: call.arguments ?? {},
-          scopeAgents: agentsInScope(caller.scope),
-          usage: usage(slot, price, approved),
-        };
-      }
 
       // A sandbox session's computer time (#224): the price from this call on, and whether a limit has no room
       // (`noRoom` is set only for a call that meets the computer), which only the session can act on.
@@ -3533,70 +3161,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             }
           : undefined;
 
-      // A run's call of pi's coding tool (#230) is gated here and executed by the run on its session, with the ticket,
-      // which keeps the call's computer metering and spender for each of its operations.
-      const sessionId = call.arguments?.["session"];
-
-      if (
-        call.executes === true &&
-        call.run !== undefined &&
-        call.principalId !== undefined &&
-        computer !== undefined &&
-        gatedTool(tool.upstreamName) &&
-        typeof sessionId === "string"
-      ) {
-        // Only a session the part keeps as the run's own: another's id, or one it forgot, is answered as unknown, and
-        // the call charged nothing.
-        if (!this.#sandboxSessions.owns(sessionId, call.principalId))
-          return {
-            outcome: "result",
-            result: unknownSessionResult(sessionId),
-            usage: usage(slot, 0, approved),
-          };
-
-        if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, now);
-        // The call is a use of the session, as a call the part makes is.
-        this.#sandboxSessions.used(sessionId, now, call.principalId);
-
-        const id = this.#runCalls.issue(
-          {
-            toolkitId: toolkit.id,
-            tool: tool.upstreamName,
-            principal: call.principalId,
-            member: viewer.member,
-            apiKey: spender.apiKeyId,
-            agent: spender.agentId,
-            run: call.run.usage,
-            session: sessionId,
-            expiresAt: now + TICKET_IDLE_MS,
-            requestedAt: now,
-            requestBytes: argumentBytes(call.arguments),
-            credential: slot,
-            private: slot === "private" || toolkit.owner !== undefined,
-            costMicros: price,
-            approval: approved,
-            hourPriceMicros: computer.hourPriceMicros,
-            limitReached: computer.limitReached,
-            planRefusal: noRoom === undefined ? planRefusal : undefined,
-            plans: meter !== undefined,
-            counted,
-          },
-          now,
-        );
-
-        return { outcome: "gated", ticket: { id }, usage: usage(slot, price, approved) };
-      }
-
-      const session = this.#builtInCall(
-        builtIn,
-        viewer,
-        call,
-        spender,
-        policy,
-        now,
-        computer,
-        continued,
-      );
+      const session = this.#builtInCall(builtIn, viewer, call, policy, now, computer, continued);
 
       const answer = await Effect.runPromise(
         builtIn.call(tool.upstreamName, call.arguments, session.call),
@@ -3740,7 +3305,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * What Commissary Cloud's plan says of a call about to do its work (#241): refused by the plan limit of browser hours
    * (a call that uses browser time, `session` when it may name a session to close), by the ceiling on concurrent
-   * browser sessions (`browser_open`, but for an agent run's: no ceiling caps a run, ADR 0042) or by the limit on tool
+   * browser sessions (`browser_open`) or by the limit on tool
    * calls; `undefined` when it may go on. Counts nothing: {@link PlanMeter.admit} counts a call that may. A call that
    * ends a use (`endsUse`) is never refused.
    *
@@ -3751,15 +3316,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     meter: PlanMeter,
     builtIn: BuiltIn | undefined,
     name: string,
-    call: ToolCall,
     held?: Held,
   ): PlanFound | undefined {
     if (endsUse(builtIn, name)) return undefined;
 
     const now = this.#now();
 
-    const opens =
-      builtIn?.toolkit.kind === "browser" && name === OPEN_TOOL && call.run === undefined;
+    const opens = builtIn?.toolkit.kind === "browser" && name === OPEN_TOOL;
 
     if (builtIn?.toolkit.kind === "browser" && browserTimeOf(name) === "uses") {
       const limit = meter.limitOf("browserHours", now);
@@ -3770,7 +3333,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (opens) {
       const ceiling = meter.checkCeiling(
         "browserSessions",
-        this.#browserSessionLog.countCapped() + this.#pendingOpens,
+        this.#browserSessionLog.count() + this.#pendingOpens,
       );
 
       if (ceiling !== undefined) return { refusal: ceiling, session: false };
@@ -3791,11 +3354,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Why the plan keeps a call of the sandbox tool `name` from the computer (#241), `undefined` when it does not: the
    * plan limit of computer hours (Free has none, so on Free the computer is unavailable; Pay as you go's billing cap),
-   * or the ceiling on concurrent computers, which a session whose computer runs already is not another of, and no
-   * agent run's session counts toward or meets (ADR 0042). Only a session opened with the computer has one to count: a
-   * call in any other is neither checked nor held.
+   * or the ceiling on concurrent computers, which a session whose computer runs already is not another of. Only a
+   * session opened with the computer has one to count: a call in any other is neither checked nor held.
    *
-   * Every call outside a run in a session with a computer holds its place (`held`, see {@link #planRefusal}) while it is
+   * Every call in a session with a computer holds its place (`held`, see {@link #planRefusal}) while it is
    * served, even where the computer runs: a command may outlast the computer's idle minutes, and keeps the slot until
    * it ends, which the count of running computers alone would not. A session with a call held counts as running for
    * the calls it has at once, and for the other sessions' checks as one computer however many calls it holds.
@@ -3815,7 +3377,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const session = call.arguments?.["session"];
 
-    if (call.run !== undefined || typeof session !== "string") return undefined;
+    if (typeof session !== "string") return undefined;
 
     if (!this.#sandboxSessions.mayHaveComputer(session)) return undefined;
 
@@ -3868,10 +3430,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * approvals as one that continues a handoff (`#continuesHandoff`), so it may start none (#216).
    */
   #builtInCall(
-    builtIn: CalledBuiltIn,
+    builtIn: BuiltIn,
     viewer: Viewer,
     call: ToolCall,
-    spender: SpendCaller,
     policy: OutboundPolicy,
     now: number,
     computer?: ComputerMeter,
@@ -3888,8 +3449,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         org: this.#core.org,
         member: viewer.member,
         principal: principalId,
-        ...(call.run?.usage === undefined ? {} : { run: call.run.usage }),
-        ...(call.runSession === true && call.run !== undefined ? { runSession: true } : {}),
         ...(computer === undefined ? {} : { computer }),
         profiles: this.#callerProfiles(viewer, principalId ?? viewer.member),
         // A browser session is logged while it is open, so the org's deletion deletes it (#214), and the panel lists it
@@ -3901,7 +3460,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               toolkitId: builtIn.toolkit.id,
               member: viewer.member,
               principal: principalId ?? "",
-              agent: spender.agentId,
               openedAt: now,
               profile,
             }),
@@ -3919,7 +3477,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
                 toolkitId: builtIn.toolkit.id,
                 member: viewer.member,
                 principal: principalId ?? "",
-                agent: spender.agentId,
                 openedAt: now,
               },
               call.arguments?.["computer"] === true,
@@ -3956,7 +3513,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * last call is charged. Answers whether a session of the caller's closed; another's, or none, stays as it was.
    */
   async #closeSession(
-    builtIn: CalledBuiltIn,
+    builtIn: BuiltIn,
     viewer: Viewer,
     call: ToolCall,
     policy: OutboundPolicy,
@@ -3967,7 +3524,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (typeof sessionId !== "string") return false;
     const now = this.#now();
-    const caller = this.#builtInCall(builtIn, viewer, call, spender, policy, now);
+    const caller = this.#builtInCall(builtIn, viewer, call, policy, now);
 
     const { result, browserTime } = await Effect.runPromise(
       builtIn.call(CLOSE_TOOL, { sessionId }, caller.call),
@@ -3985,8 +3542,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * Hears that the alarm of the logged browser session `sessionId` closed it after its idle minutes (#214): forgets it,
    * and charges `costMicros` of its browser time, the stretch since its last call, which no call charged, to the Spend
    * limits it counts toward, as its toolkit's shared credential served it: those of the member who opened it, their
-   * teams and the org, and of the API key it was opened with, or of the shared agent whose run opened it (#228). The
-   * session's Durable Object calls it. A session the part did not log (or forgot), or a cost that is not a whole number
+   * teams and the org, and of the API key it was opened with. The session's Durable Object calls it. A session the part did not log (or forgot), or a cost that is not a whole number
    * of micro-USD, 0 or more, charges nothing. `browserMs`, the stretch's browser time, counts toward the org's plan
    * (#241).
    */
@@ -4031,15 +3587,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Charges `costMicros`, the time a session's alarm metered since its last call (#214, #224), to the Spend limits of
    * its opener, as its toolkit's shared credential served it: those of the member who opened it, their teams and the
-   * org, and of the API key it was opened with, or of the shared agent whose run opened it (#228). A cost that is not a
-   * whole number of micro-USD, 0 or more, charges nothing.
+   * org, and of the API key it was opened with. A cost that is not a whole number of micro-USD, 0 or more, charges
+   * nothing.
    */
   #chargeClosed(
     session: {
       readonly toolkitId: string;
       readonly member: string | undefined;
       readonly principal: string;
-      readonly agent?: string | undefined;
     },
     costMicros: number,
   ): void {
@@ -4054,7 +3609,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
 
     ledger.charge(
-      ledger.scopes({ memberId: session.member, apiKeyId, agentId: session.agent }, charged),
+      ledger.scopes({ memberId: session.member, apiKeyId }, charged),
       costMicros,
       this.#now(),
     );
@@ -4148,23 +3703,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Whether `viewer` may watch the logged session `session`: open its Live View and answer its handoff (#216, ADR
-   * 0039), the one place that decides it. The session's member, whichever of their principals opened it; and for a
-   * session a shared agent's run opened, which belongs to the run, not to a member (#232, ADR 0040), the run's
-   * watchers: its starter, or the agent's watchers when no one started it, as the Agents part answers at once
-   * ({@link RunWatchers}), so the list asks it of every session. An org admin is no watcher of another member's
-   * session.
+   * 0039), the one place that decides it: the session's member, whichever of their principals opened it. An org admin
+   * may not watch another member's session.
    */
   #mayWatch(session: LoggedBrowserSession, viewer: Viewer): boolean {
-    const member = viewer.member;
-
-    if (member === undefined) return false;
-
-    if (session.member !== undefined) return session.member === member;
-
-    return watchersOfPrincipal(this.#runWatchers, session.principal).includes(member);
+    return viewer.member !== undefined && session.member === viewer.member;
   }
 
-  /** The logged session `id` when `viewer` may see it: a watcher, or an org admin; undefined otherwise. */
+  /** The logged session `id` when `viewer` may see it: its member, or an org admin; undefined otherwise. */
   #visibleSession(viewer: Viewer, id: string): LoggedBrowserSession | undefined {
     const session = this.#browserSessionLog.session(id);
 
@@ -4176,7 +3722,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * A logged session as the Browser sessions page shows it to `viewer`: whether it is theirs (`own`: they are its
    * member) and whether they may watch it (`watchable`, {@link #mayWatch}), with the handoff its object told, if any,
-   * to a watcher only.
+   * to one who may watch it only.
    */
   #sessionView(
     session: LoggedBrowserSession,
@@ -4192,7 +3738,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const profile =
       session.profile === undefined ? undefined : this.#profiles.profile(session.profile);
 
-    const view: BrowserSessionView = {
+    return {
       id: session.id,
       opened_at: iso(session.openedAt),
       member:
@@ -4218,11 +3764,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             },
       handoff: watchable ? handoff : null,
     };
-
-    // Its run's page is for those who watch the session (#234): an org admin's view of another's session names no run.
-    const run = watchable || own ? runOfPrincipal(session.principal) : undefined;
-
-    return run === undefined ? view : { ...view, run };
   }
 
   /**
@@ -4285,7 +3826,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       this.#sessionView(
         session,
         viewer,
-        // What the handoff asks is its watchers' alone: an org admin who may not watch it learns nothing of it.
+        // What the handoff asks is its member's alone: an org admin who may not watch it learns nothing of it.
         watched.handoff === undefined || !this.#mayWatch(session, viewer)
           ? null
           : { until: iso(watched.handoff.until), reason: watched.handoff.reason },
@@ -4295,7 +3836,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Mints a Live View link of a browser session for those who may watch it (#216, ADR 0044, {@link #mayWatch}): its
-   * member, or, for a session a shared agent's run opened, the run's watchers (#232). A bearer link to the session's
+   * member. A bearer link to the session's
    * current tab, which starts a connection only within 60 seconds, for the panel alone. An org admin may see the
    * session but not watch it (`forbidden`); anyone else, or a closed session, gets `not_found`. The link is never
    * logged.
@@ -4308,7 +3849,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return refuse("not_found", "browser session not found");
 
     if (!this.#mayWatch(session, viewer))
-      return refuse("forbidden", "only the session's member or its run's watchers may watch it");
+      return refuse("forbidden", "only the session's member may watch it");
     const minted = await sessions.liveView(this.#core.org, id);
 
     switch (minted.kind) {
@@ -4350,8 +3891,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Whether `viewer` may end the sandbox session `session`: its member's own, or any for an org admin. The list's SQL
-   * applies the same rule (`mayBeOpen`'s member filter), so a hosted agent's run naming its watchers (#232) changes
-   * both.
+   * applies the same rule (`mayBeOpen`'s member filter), so a change to it changes both.
    */
   #mayEndSandbox(session: TrackedSession, viewer: Viewer): boolean {
     return (session.member !== undefined && session.member === viewer.member) || isOrgAdmin(viewer);
@@ -4603,8 +4143,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * one lets it through once (`approved_panel`) and is settled; a denied one answers so and is settled, so the next
    * identical call asks anew; an undecided one answers pending again. Without one (none, or it expired), a pending
    * approval is created, the arguments sealed. A caller without a member under a rule of the caller, without a form,
-   * cannot be approved by anyone, but for an agent run no one started (#232): its watchers are its caller
-   * ({@link #callersOf}), and its approval waits for one of them.
+   * cannot be approved by anyone.
    */
   async #approvalOf(
     viewer: Viewer,
@@ -4622,8 +4161,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (approver === undefined) return { kind: "go", approval: "none" };
     const now = this.#now();
 
-    // A run's approvals are its starter's (a shared agent's run has no member of its own).
-    const callerMember = viewer.member ?? call.run?.starterMember;
+    const callerMember = viewer.member;
 
     const key: ApprovalKey = {
       toolkitId: tool.toolkit.id,
@@ -4650,14 +4188,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return { kind: "approve", requestState: state };
     }
 
-    // A run no one started has its watchers for its caller (#232); without any (no Agents area, or none left), no one
-    // decides.
-    if (
-      approver.kind === "caller" &&
-      callerMember === undefined &&
-      (call.run === undefined ||
-        watchersOfPrincipal(this.#runWatchers, call.principalId ?? "").length === 0)
-    )
+    if (approver.kind === "caller" && callerMember === undefined)
       return { kind: "not_approved", reason: "no_approver" };
 
     const kept = this.#approvals.unsettled(key, now);
@@ -4707,38 +4238,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * The tool scope a caller of the MCP endpoint is narrowed by, and whether it acts as a shared agent: an agent run by
-   * its definition, anyone else by their key's scope.
-   */
-  #caller(
-    viewer: Viewer,
-    apiKeyId: string | undefined,
-    run: RunToolReach | undefined,
-  ): CallerScope {
-    if (run === undefined) return { scope: this.#keyScope(apiKeyId), asAgent: false };
-
-    return { scope: run.toolScope, asAgent: run.asAgent, self: run.agentId };
-  }
-
-  /**
    * The served tools `viewer` reaches ({@link clientTools}), sorted by full name, and how. A private toolkit counts
    * only while the org lets members add them: otherwise it is kept, but not served, and does not shadow an org toolkit
-   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing. `asAgent` (a
-   * shared agent's run, #227): every tool of an org toolkit's shared credential, whatever the grants, as no member.
-   *
-   * The agents toolkit's tools (#229) take no grant: they reach a caller who may run an agent (other than a calling
-   * run's own), as a member or as a shared agent, within their scope's agents; and only when `agentsToolkit` asks for
-   * them ({@link Reach}).
+   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing.
    */
-  #reachable(viewer: Viewer, reach: Reach = {}): ReadonlyArray<ReachableTool> {
-    const { scope, self } = reach;
-    const asAgent = reach.asAgent === true;
-    const member = asAgent ? undefined : viewer.member;
-
-    const runsAgents =
-      reach.agentsToolkit === true &&
-      this.#agents !== undefined &&
-      runnableAgents(this.#agents, { member, asAgent, scope, self }).length > 0;
+  #reachable(viewer: Viewer, scope?: ToolScope): ReadonlyArray<ReachableTool> {
+    const member = viewer.member;
 
     // A built-in toolkit's shared credential is Commissary's own binding, always there.
     const shared = new Set([
@@ -4762,12 +4267,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           member !== undefined &&
           accepts(tool.toolkit, "private") &&
           this.#privateAllowed(tool.toolkit),
-        granted: isAgentsToolkit(tool.toolkit)
-          ? runsAgents
-          : tool.toolkit.owner === undefined &&
-            accepts(tool.toolkit, "shared") &&
-            shared.has(tool.toolkit.id) &&
-            (asAgent || granted(grantable(tool))),
+        granted:
+          tool.toolkit.owner === undefined &&
+          accepts(tool.toolkit, "shared") &&
+          shared.has(tool.toolkit.id) &&
+          granted(grantable(tool)),
       }))
       .filter(
         (reachable) =>
@@ -4795,8 +4299,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * The tools `viewer` may use, by toolkit, for the panel's tool scope editor and consent page (#200): what the MCP
    * endpoint lists for them without a key's scope, with each tool's stable id and class. Each toolkit says why they
    * reach it (`via`, #209): their own private credential (`private`, once connected; `private_available`, while it
-   * can be but is not), the tool grants that name them and give some of its tools, or (the agents toolkit) that they
-   * may run an agent.
+   * can be but is not), or the tool grants that name them and give some of its tools.
    */
   usableTools(viewer: Viewer): UsableTools {
     const member = viewer.member;
@@ -4811,19 +4314,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         tools: Array<UsableTool>;
         reached: Array<GrantableTool>;
         asMember: boolean;
-        agents: boolean;
       }
     >();
 
-    // The panel's tool scope editor names the agents toolkit as any toolkit, by id and name (no kind).
-    for (const { tool, asMember, granted } of this.#reachable(viewer, { agentsToolkit: true })) {
+    for (const { tool, asMember, granted } of this.#reachable(viewer)) {
       const toolkit = toolkits.get(tool.toolkit.id) ?? {
         id: tool.toolkit.id,
         name: tool.toolkit.name,
         tools: [],
         reached: [],
         asMember: false,
-        agents: false,
       };
 
       toolkit.tools.push({
@@ -4834,15 +4334,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
       toolkit.asMember ||= asMember;
 
-      if (isAgentsToolkit(tool.toolkit)) toolkit.agents ||= granted;
-      else if (granted) toolkit.reached.push(grantable(tool));
+      if (granted) toolkit.reached.push(grantable(tool));
       toolkits.set(tool.toolkit.id, toolkit);
     }
 
     return {
       toolkits: [...toolkits.values()]
         .toSorted((a, b) => (a.name < b.name ? -1 : 1))
-        .map(({ reached, asMember, agents, ...toolkit }) => {
+        .map(({ reached, asMember, ...toolkit }) => {
           // Their own credential: the toolkit takes one and the org allows it, whether they have connected it or not.
           const connected =
             member !== undefined && this.#store.credential(toolkit.id, member) !== undefined;
@@ -4858,7 +4357,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               ...(asMember && connected ? { private: true as const } : {}),
               ...(asMember && !connected ? { private_available: true as const } : {}),
               ...(grants.length === 0 ? {} : { grants }),
-              ...(agents ? { agents: true as const } : {}),
             },
           };
         }),
@@ -4902,10 +4400,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       });
 
       return {
-        toolCount: this.#reachable(
-          { member: key.memberId, admin: false },
-          { scope: key.toolScope, agentsToolkit: true },
-        ).length,
+        toolCount: this.#reachable({ member: key.memberId, admin: false }, key.toolScope).length,
         missing,
       };
     });
@@ -5280,9 +4775,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (toolkit === undefined) return `the org has no toolkit ${grant.toolkit}`;
 
-    if (isAgentsToolkit(toolkit))
-      return "the agents toolkit takes no grant: who may run which agent comes from the agents and their grants";
-
     return toolkit.owner === undefined
       ? undefined
       : "a private toolkit is its owner's alone: its tools take no grant";
@@ -5366,30 +4858,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return this.getApproval(viewer, id);
   }
 
-  /**
-   * Whether `viewer` may decide `approval` now (its approver, the teams they are in now). Under a rule of the caller,
-   * an agent run's call that no member made is decided by any of the run's watchers (#232, {@link #callersOf}).
-   */
+  /** Whether `viewer` may decide `approval` now (its approver, the teams they are in now). */
   #mayDecide(approval: StoredApproval, viewer: Viewer): boolean {
     const member = viewer.member;
-
-    if (approval.approver.kind === "caller" && approval.callerMember === undefined)
-      return member !== undefined && this.#callersOf(approval).includes(member);
 
     return mayDecide(approval.approver, approval.callerMember, {
       member,
       teams: member === undefined ? [] : this.#core.teamIdsOf(member),
     });
-  }
-
-  /**
-   * The members who are `approval`'s caller: the member who made the call, or, for an agent run's call that no member
-   * made (a run no one started, #232), the run's watchers as they are now (ADR 0040).
-   */
-  #callersOf(approval: StoredApproval): ReadonlyArray<string> {
-    return approval.callerMember === undefined
-      ? watchersOfPrincipal(this.#runWatchers, approval.callerPrincipal)
-      : [approval.callerMember];
   }
 
   /**
@@ -5399,7 +4875,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   #approvalView(approval: StoredApproval, viewer: Viewer, now: number): ApprovalView | undefined {
     const decides = this.#mayDecide(approval, viewer);
 
-    const caller = viewer.member !== undefined && this.#callersOf(approval).includes(viewer.member);
+    const caller = viewer.member !== undefined && approval.callerMember === viewer.member;
 
     if (!decides && !caller) return undefined;
 
@@ -5411,7 +4887,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ? undefined
         : this.#core.member(approval.callerMember)?.email;
 
-    const view: ApprovalView = {
+    return {
       id: approval.id,
       status: approvalStatus(approval),
       toolkit: {
@@ -5433,11 +4909,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(args === undefined ? {} : { arguments: args }),
       can_decide: decides && pending,
     };
-
-    // Its run's page is for the run's people (#234), who are its caller; an approver beyond them is not told the run.
-    const run = caller ? runOfPrincipal(approval.callerPrincipal) : undefined;
-
-    return run === undefined ? view : { ...view, run };
   }
 
   #approverView(approver: Approver): ApproverView {
@@ -5584,14 +5055,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The toolkits `viewer` reaches, with what their credentials are (never their secrets) and their overrides, and, for
-   * an org admin, each org toolkit's tool grants. The agents toolkit (#229) only for a caller that asks for it
-   * ({@link KindsOptions}).
+   * an org admin, each org toolkit's tool grants.
    */
-  exportToolkits(viewer: Scope, options?: KindsOptions): ReadonlyArray<ToolkitExport> {
+  exportToolkits(viewer: Scope): ReadonlyArray<ToolkitExport> {
     const admin = isOrgAdmin(viewer);
     const grants = admin ? this.#grants.entries() : [];
 
-    return this.#toolkits(options ?? {}).flatMap((toolkit) => {
+    return this.#toolkits().flatMap((toolkit) => {
       const access = reach(toolkit, viewer);
 
       if (access === "none" || access === "limited") return [];
@@ -5704,15 +5174,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   // --- helpers ----------------------------------------------------------------------------------------------------
 
-  /**
-   * Every toolkit of the org: the built-in ones, then the stored ones; the agents toolkit only when `options` asks for
-   * it, and always for the part's own checks (names, grants), which pass none.
-   */
-  #toolkits(options: KindsOptions = { agentsToolkit: true }): ReadonlyArray<Toolkit> {
+  /** Every toolkit of the org: the built-in ones, then the stored ones. */
+  #toolkits(): ReadonlyArray<Toolkit> {
     return [
-      ...this.#builtIns
-        .filter((builtIn) => options.agentsToolkit === true || !isAgentsToolkit(builtIn.toolkit))
-        .map((builtIn) => this.#withSettings(builtIn.toolkit)),
+      ...this.#builtIns.map((builtIn) => this.#withSettings(builtIn.toolkit)),
       ...this.#store.toolkits(),
     ];
   }

@@ -11,7 +11,7 @@
  */
 import { Cause, Effect, Exit, Option, Pull, Scope, Stream } from "effect";
 import type { HttpServerRequest } from "effect/http";
-import { AccessPrincipal, isSharedAgentRun, usageRunOf } from "@commissary/auth";
+import { AccessPrincipal } from "@commissary/auth";
 import { ConfigReader } from "../config/reader.ts";
 import type { Config } from "../config/schema.ts";
 import { ExecutionError, withErrorFields } from "../executor/errors.ts";
@@ -160,7 +160,6 @@ export const toExecutionError = (cause: Cause.Cause<unknown>): ExecutionError | 
 const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: boolean) {
   const identity = yield* AccessPrincipal;
   const org = yield* CurrentOrg;
-  const run = usageRunOf(identity.principal);
 
   const { config } = yield* (yield* ConfigReader).get.pipe(
     Effect.mapError(
@@ -230,9 +229,6 @@ const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: bool
     orgId: org,
     ...(identity.memberId === undefined ? {} : { memberId: identity.memberId }),
     ...(identity.principal.kind === "key" ? { apiKeyId: identity.principal.keyId } : {}),
-    // A shared agent's run acts as the agent (ADR 0040): selection gives it every shared credential.
-    ...(isSharedAgentRun(identity.principal) ? { agentId: identity.principal.agentId } : {}),
-    ...(run === undefined ? {} : { run }),
     callerScope: identity.callerScope,
     endpoint: `${input.request.method} ${url.pathname}`,
     session:

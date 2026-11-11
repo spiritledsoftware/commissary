@@ -1,5 +1,5 @@
 // My tools (/my-tools, #209): the tools the signed-in member may use, by toolkit, and why: their own private
-// credential, or which grants give them (their own, their teams', everyone's), or the agents toolkit. My models'
+// credential, or which grants give them (their own, their teams', everyone's). My models'
 // counterpart; every member reads it. The server sends the reasons (`via` of `GET /tools`).
 import { Link } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";

@@ -17,8 +17,7 @@ export const exportSection = Effect.gen(function* () {
   const viewer = yield* currentViewer;
 
   const toolkits = yield* toolsControlPlane("exportToolkits", (stub) =>
-    // This Worker decodes the agents toolkit's kind (#229).
-    stub.tools().exportToolkits(viewer, { agentsToolkit: true }),
+    stub.tools().exportToolkits(viewer),
   );
 
   return { toolkits };

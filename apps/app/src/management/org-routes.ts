@@ -52,13 +52,6 @@ import {
   exportSection as toolsExportSection,
   orgDeletionStep as toolsOrgDeletionStep,
 } from "@commissary/tools/management";
-import { AgentsEnv } from "@commissary/agents/api";
-import {
-  exportSection as agentsExportSection,
-  orgDeletionStep as agentsOrgDeletionStep,
-  sweepDeletedRuns,
-  sweepRetiredSchedules,
-} from "@commissary/agents/management";
 
 const BASE = "/v9/management";
 
@@ -81,7 +74,6 @@ const view = (org: OrgRecord): OrgView => ({
   name: org.name,
   created_at: new Date(org.createdAt).toISOString(),
   usage_retention_days: org.usageRetentionDays,
-  run_retention_days: org.runRetentionDays,
   ...(org.suspendedAt === undefined ? {} : { suspended: true }),
 });
 
@@ -96,12 +88,10 @@ export const openableOrgs = (
     if (identity.platformAdmin) return yield* registry("listOrgs", (stub) => stub.listOrgs());
     const { principal } = identity;
 
-    // A management key belongs to its org alone: the org of the request, added below; so does an agent run (which
-    // never reaches the management API).
+    // A management key belongs to its org alone: the org of the request, added below; .
     const indexed: ReadonlyArray<OrgRecord> = yield* Match.value(principal).pipe(
       Match.discriminatorsExhaustive("kind")({
         mkey: () => Effect.succeed([]),
-        run: () => Effect.succeed([]),
         service: (service) =>
           registry("orgOfServiceToken", (stub) => stub.orgOfServiceToken(service.commonName)).pipe(
             Effect.map((org) => (org === undefined ? [] : [org])),
@@ -155,13 +145,12 @@ const me = Effect.gen(function* () {
     platform_admin: identity.platformAdmin,
     role: identity.role ?? null,
     orgs: orgs.map((org) => ({ slug: org.slug, name: org.name })),
-    deployment: deploymentOf(yield* AuthConfig, yield* AppEnv, yield* AgentsEnv),
+    deployment: deploymentOf(yield* AuthConfig, yield* AppEnv),
     ...(settings === undefined
       ? {}
       : {
           private_credentials: settings.privateCredentials,
           private_toolkits: settings.privateToolkits,
-          private_agents: settings.privateAgents,
         }),
     ...(yield* ownedOrgs(identity)),
     ...(api === undefined ? {} : { api_url: api }),
@@ -235,14 +224,12 @@ const create = Effect.gen(function* () {
   const {
     private_credentials: privateCredentials,
     private_toolkits: privateToolkits,
-    private_agents: privateAgents,
     ...named
   } = body;
 
   if (
     (privateCredentials !== undefined && typeof privateCredentials !== "boolean") ||
-    (privateToolkits !== undefined && typeof privateToolkits !== "boolean") ||
-    (privateAgents !== undefined && typeof privateAgents !== "boolean")
+    (privateToolkits !== undefined && typeof privateToolkits !== "boolean")
   )
     return yield* replyError(400, "invalid body");
   const { slug, name } = yield* stringFields(named, ["slug", "name"]);
@@ -252,18 +239,17 @@ const create = Effect.gen(function* () {
   const id = newOrgId();
   const env = yield* StateEnv;
 
-  // The creator chooses whether members of the new org may connect private credentials, add private toolkits and create
-  // private agents (off unless asked). The org's ControlPlane takes the choice before the org exists in the registry: a
+  // The creator chooses whether members of the new org may connect private credentials, add private toolkits (off unless
+  // asked). The org's ControlPlane takes the choice before the org exists in the registry: a
   // failure here creates nothing (a retry is safe), and an org that does exist never has a different setting than the
   // one chosen. A refused registry write leaves the unreachable ControlPlane of an id nobody holds, which has no slug
   // and is never addressed.
-  if (privateCredentials === true || privateToolkits === true || privateAgents === true) {
+  if (privateCredentials === true || privateToolkits === true) {
     yield* Effect.tryPromise({
       try: async () =>
         await controlPlaneOf(env, id).setMembershipSettings({
           ...(privateCredentials === true ? { privateCredentials: true } : {}),
           ...(privateToolkits === true ? { privateToolkits: true } : {}),
-          ...(privateAgents === true ? { privateAgents: true } : {}),
         }),
       catch: () => replyError(502, "control plane unavailable"),
     });
@@ -367,28 +353,23 @@ const addressedOrg = Effect.gen(function* () {
 
 const own = addressedOrg.pipe(Effect.map((org) => jsonReply(200, view(org))));
 
-/** `PATCH /org`'s body (`UpdateOrgSettings`): the retention periods, at least one, and nothing else; `400` otherwise. */
+/** `PATCH /org`'s body (`UpdateOrgSettings`): the usage retention period, and nothing else; `400` otherwise. */
 const settingsBody = bodyJson.pipe(
   Effect.flatMap((json) =>
     Schema.decodeUnknownEffect(UpdateOrgSettings)(json, { onExcessProperty: "error" }).pipe(
       Effect.mapError(() => replyError(400, "invalid body")),
     ),
   ),
-  Effect.filterOrFail(
-    (settings) => Object.keys(settings).length > 0,
-    () => replyError(400, "invalid body"),
-  ),
 );
 
 const updateSettings = Effect.gen(function* () {
   const identity = yield* AccessPrincipal;
-  const { usage_retention_days: usageDays, run_retention_days: runDays } = yield* settingsBody;
+  const { usage_retention_days: days } = yield* settingsBody;
 
-  const result = yield* registry("setRetention", (stub) =>
-    stub.setRetention(identity.org, {
-      ...(usageDays === undefined ? {} : { usageDays }),
-      ...(runDays === undefined ? {} : { runDays }),
-    }),
+  if (days === undefined) return yield* replyError(400, "invalid body");
+
+  const result = yield* registry("setUsageRetention", (stub) =>
+    stub.setUsageRetention(identity.org, days),
   );
 
   if (!result.ok) return yield* refused(result);
@@ -407,7 +388,6 @@ const exportOrg = Effect.gen(function* () {
   // Each area's section goes through its own view of the ControlPlane.
   const models = yield* modelsExportSection({ members: byId, teams: teamNames });
   const tools = yield* toolsExportSection;
-  const agents = yield* agentsExportSection;
   const tokens = yield* controlPlane("listServiceTokens", (stub) => stub.listServiceTokens());
   const iso = (at: number) => new Date(at).toISOString();
 
@@ -416,7 +396,6 @@ const exportOrg = Effect.gen(function* () {
     org: view(org),
     ...models,
     ...tools,
-    ...agents,
     members: members.map((member) => ({
       email: member.email,
       role: member.role,
@@ -471,7 +450,6 @@ const areaDeletionSteps = Effect.all([
   modelsOrgDeletionStep,
   billingOrgDeletionStep,
   toolsOrgDeletionStep,
-  agentsOrgDeletionStep,
 ]);
 
 const deleteOrgRoute = Effect.gen(function* () {
@@ -607,10 +585,6 @@ const deleteAccount = Effect.gen(function* () {
         try: async () => await controlPlaneOf(state, org.id).leaveOrg(email),
         catch: (cause) => new DeletionThrew({ cause }),
       }).pipe(Effect.catch(planeFailed("leaveOrg", org.id)));
-      // Their private agents' schedules and runs, and the runs they started, went with them: their objects are deleted
-      // now (#228).
-      yield* sweepRetiredSchedules(yield* AgentsEnv, org.id);
-      yield* sweepDeletedRuns(yield* AgentsEnv, org.id);
       yield* syncOrgIndex(org.id);
       left.push(org.slug);
     }

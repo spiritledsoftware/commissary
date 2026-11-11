@@ -72,8 +72,6 @@ const toolkits = [
   toolkit({ id: "tk_hubspot", name: "hubspot", accepts: "private" }),
   toolkit({ id: "tk_stripe", name: "stripe" }),
   toolkit({ id: "sandbox", kind: "sandbox", name: "sandbox", built_in: true }),
-  // The agents toolkit takes no grant: a caller reaches it by running an agent.
-  toolkit({ id: "agents", kind: "agents", name: "agents", built_in: true }),
 ];
 
 let counter = 0;
@@ -238,7 +236,7 @@ describe("creating each kind of tool grant", () => {
 });
 
 describe("the toolkits a grant may name", () => {
-  it("are the org's own that take a shared credential, the built-in ones, but not the agents toolkit", () => {
+  it("are the org's own that take a shared credential, the built-in ones", () => {
     expect(grantableToolkits(toolkits).map((each) => each.name)).toEqual([
       "github",
       "linear",
@@ -247,7 +245,7 @@ describe("the toolkits a grant may name", () => {
     ]);
   });
 
-  it("flag those that hold a shared credential or are built in and no grant reaches, never the agents toolkit", () => {
+  it("flag those that hold a shared credential or are built in and no grant reaches", () => {
     const grants = [grant({ toolkit: "tk_github" })];
 
     expect(ungrantedToolkits(toolkits, grants).map((each) => each.name)).toEqual([

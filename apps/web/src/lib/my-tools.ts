@@ -1,5 +1,5 @@
 // My tools (#209, ADR 0038, GLOSSARY "Reach"): the tools a member may use, by toolkit, and why: their own private
-// credential, or which grants give them, and the agents toolkit that no grant gates. The server sends each toolkit's
+// credential, or which grants give them. The server sends each toolkit's
 // reasons (`via` of `GET /tools`); this words them and says which of them gives each tool. Pure: no DOM, tested in
 // test/my-tools.test.ts.
 import type { ToolSelection } from "@commissary/contract/grants";
@@ -9,7 +9,7 @@ import { selectionLabel } from "./tool-grants.ts";
 
 /** One way a member reaches tools: what it is and who gave it. */
 export interface Reason {
-  readonly kind: "private" | "private_available" | "grant" | "agents";
+  readonly kind: "private" | "private_available" | "grant";
   /**
    * "Your private credential", "Your own credential, once you connect it on the toolkit's page", "A grant to
    * everyone", "A grant to team Research", "A grant to you".
@@ -71,15 +71,6 @@ export const reasonsOf = (via: UsableVia | undefined): ReadonlyArray<Reason> => 
       label: grantLabel(grant),
       gives: selectionLabel(grant.tools),
     })),
-    ...(via.agents === true
-      ? [
-          {
-            kind: "agents" as const,
-            label: "The agents you may run",
-            gives: "A tool for each agent",
-          },
-        ]
-      : []),
   ];
 };
 
@@ -95,8 +86,8 @@ const selects = (selection: ToolSelection, tool: UsableTool): boolean => {
 };
 
 /**
- * Which of the toolkit's reasons give one tool: the private credential (connected or not yet) and the agents toolkit
- * give every tool, a grant the tools it selects (all, the read tools, or those it names).
+ * Which of the toolkit's reasons give one tool: the private credential (connected or not yet)
+ * gives every tool, a grant the tools it selects (all, the read tools, or those it names).
  */
 export const reasonsForTool = (
   via: UsableVia | undefined,
@@ -111,7 +102,6 @@ export const reasonsForTool = (
       .filter((grant) => selects(grant.tools, tool))
       .toSorted((a, b) => GRANT_RANK[a.subject.kind] - GRANT_RANK[b.subject.kind])
       .map(grantLabel),
-    ...(via.agents === true ? ["The agents you may run"] : []),
   ];
 };
 

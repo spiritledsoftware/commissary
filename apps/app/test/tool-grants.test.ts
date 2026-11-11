@@ -267,7 +267,6 @@ describe("why a member reaches a toolkit's tools (GET /tools, #209)", () => {
   interface Via {
     readonly private?: true;
     readonly private_available?: true;
-    readonly agents?: true;
     readonly grants?: ReadonlyArray<{ readonly subject: unknown; readonly tools: unknown }>;
   }
 
@@ -436,38 +435,6 @@ describe("why a caller reaches an org toolkit that takes private credentials (GE
     expect((await usable(org, org.platform, "github"))?.via).toEqual({
       grants: [{ subject: { kind: "everyone" }, tools: { kind: "all" } }],
     });
-  });
-
-  it("says the agents toolkit is reached by running an agent, with no grant", async () => {
-    const org = await newOrg({ private_credentials: true });
-
-    expect(
-      (
-        await send(org, "/provider-keys/groups", org.admin, "PUT", {
-          family: "claude",
-          revision: 0,
-          group: {
-            "base-url": "https://api.example.test/v1",
-            keys: [{ "api-key": "sk-shared-0001" }],
-            models: [{ name: "claude-sonnet-4-5", alias: "team-sonnet" }],
-          },
-        })
-      ).status,
-    ).toBe(200);
-
-    const made = await send(org, "/agents", org.admin, "POST", {
-      name: "helper",
-      description: "The helper agent",
-      instructions: "Answer briefly.",
-      model: "team-sonnet",
-      tool_scope: [],
-      private: false,
-      subject: { kind: "everyone" },
-    });
-
-    expect(made.status).toBe(201);
-
-    expect((await usable(org, org.alice, "agents"))?.via).toEqual({ agents: true });
   });
 });
 

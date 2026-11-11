@@ -5,36 +5,12 @@
 // dev-only `DevStateBridge` entrypoint (`DEV_STATE_BRIDGE`, apps/state/src/dev.ts): the state namespaces are replaced
 // with bridged ones, whose stubs send their calls, with the object's name, over that service binding
 // (`@commissary/state/dev-state-bridge`). Deployed, the API Worker binds the state Worker's objects by script name and
-// runs src/index.ts. The agent runs' object, the run gateway (#227) and the schedule triggers' object (#231) are this
-// Worker's own, given the bridged `env` too: the objects read their org's ControlPlane, and the gateway serves the
-// client API.
+// runs src/index.ts.
 import { type DevBridgedEnv, devBridgedEnv } from "@commissary/state/dev-state-bridge";
-import {
-  AgentRun as DeployedAgentRun,
-  AgentRunGateway as DeployedAgentRunGateway,
-  AgentSchedule as DeployedAgentSchedule,
-  api,
-} from "./index.ts";
+import { api } from "./index.ts";
 
-export class AgentRun extends DeployedAgentRun {
-  constructor(ctx: DurableObjectState, env: DevBridgedEnv<Env>) {
-    // The app Worker reaches this object through the dev registry too, by its hex id: its name is lost there.
-    super(ctx, devBridgedEnv(env), { unnamedInDev: true });
-  }
-}
-
-export class AgentSchedule extends DeployedAgentSchedule {
-  constructor(ctx: DurableObjectState, env: DevBridgedEnv<Env>) {
-    // The app Worker arms it through the dev registry, by its hex id: its name is lost there too.
-    super(ctx, devBridgedEnv(env), { unnamedInDev: true });
-  }
-}
-
-export class AgentRunGateway extends DeployedAgentRunGateway {
-  constructor(ctx: ExecutionContext, env: DevBridgedEnv<Env>) {
-    super(ctx, devBridgedEnv(env));
-  }
-}
+// The retired tombstone classes, which the Worker still defines (src/retired-objects.ts).
+export { AgentRun, AgentSchedule } from "./retired-objects.ts";
 
 export default {
   fetch: (request, env, ctx) => api.fetch(request, devBridgedEnv(env), ctx),

@@ -105,15 +105,12 @@ export const Shell = () => {
   const me = useAtomValue(meAtom);
   // Commissary Cloud adds pages (Single sign-on, Billing), the plan notices and the account menu's Sign out.
   const hosted = AsyncResult.isSuccess(me) && me.value.deployment.hosted;
-  // The Agents section exists where the deployment has the Dynamic Workers binding (`deployment.agents`, #233).
-  const agents = AsyncResult.isSuccess(me) && me.value.deployment.agents;
 
   const groups =
     role.kind === "ready"
       ? pageGroupsFor(role.caller.role, {
           privateCredentials: role.caller.privateCredentials,
           hosted,
-          agents,
         })
       : [];
 

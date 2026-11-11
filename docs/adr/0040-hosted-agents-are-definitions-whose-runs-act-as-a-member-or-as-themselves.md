@@ -1,5 +1,5 @@
 ---
-status: accepted, amended below (no default limits; who sees a child run)
+status: superseded by ADR-0048 (hosted agents are removed), amended below (no default limits; who sees a child run)
 ---
 
 # Hosted agents are definitions whose runs act as a member or as themselves
@@ -127,3 +127,7 @@ The panel's run pages link a run's child runs from its transcript. Those who ans
 ## Amendment: no default limits
 
 The decision first gave runs deployment caps on concurrent runs per org and per agent, a step limit of 50 model calls per turn, and a wall-clock limit per turn. They are dropped. Cloudflare's plans and Commissary Cloud's billing tiers are what limit use, and fixed caps chosen now would only guess at them. If org admins need limits, they come later as settings an admin configures.
+
+## Superseded: hosted agents are removed
+
+ADR 0048 removes the Agents area, so this decision no longer applies. It is kept as the record of what was built and why it was removed.

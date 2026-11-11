@@ -1,5 +1,5 @@
 /**
- * What an area (Models now; Tools, Browser and Agents later) hands the Workers that mount it (#134 "The area package
+ * What an area (Models, Tools, Billing) hands the Workers that mount it (#134 "The area package
  * convention"): its cron tasks, which the API Worker's cron runner runs, and its org-deletion step, which the app
  * Worker's org deletion runs. Each Worker lists the areas it mounts explicitly; there is no registry.
  */

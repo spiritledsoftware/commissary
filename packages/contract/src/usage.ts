@@ -69,8 +69,7 @@ export const ToolCallApproval = Schema.Literals([
 export type ToolCallApproval = typeof ToolCallApproval.Type;
 
 /**
- * The filters every read takes besides its own: the area, a tool call's toolkit and tool (its stable id), and the hosted
- * agent and agent run a record comes from (#228).
+ * The filters every read takes besides its own: the area, and a tool call's toolkit and tool (its stable id).
  */
 const areaFilters = {
   area: optional(UsageAreaFilter),
@@ -78,10 +77,6 @@ const areaFilters = {
   toolkit: optional(Schema.String),
   /** A tool's stable id, `<toolkit id>:<upstream name>`: its calls. */
   tool: optional(Schema.String),
-  /** A hosted agent's id: the records of its runs, in the areas the read covers. */
-  agent: optional(Schema.String),
-  /** An agent run's id: its records. */
-  run: optional(Schema.String),
 };
 
 /** Keys a summary can be grouped by (`packages/models/src/usage/d1.ts` `GROUP_BY`; a contract test keeps them equal). */
@@ -295,13 +290,6 @@ export const UsageRecord = Schema.Struct({
   computer_ms: optional(Schema.Number),
   /** The browser profile (#215) a browser session's record (#214) opened from; absent when it opened from none. */
   browser_profile_id: optional(Schema.String),
-  /**
-   * The agent run a record comes from (#228): its hosted agent, the run, and who started it (`member:<id>`). A private
-   * agent's run's records are its member's alone (`private`).
-   */
-  agent_id: optional(Schema.String),
-  run_id: optional(Schema.String),
-  starter: optional(Schema.String),
 });
 
 export type UsageRecord = typeof UsageRecord.Type;

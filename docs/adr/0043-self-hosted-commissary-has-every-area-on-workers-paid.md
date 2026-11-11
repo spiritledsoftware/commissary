@@ -1,5 +1,5 @@
 ---
-status: accepted, amended below (the computer's presence marker; how Commissary Cloud and `prod` turn it on)
+status: accepted, amended below (the computer's presence marker; how Commissary Cloud and `prod` turn it on; ADR-0048: two areas)
 ---
 
 # A self-hosted Commissary has every area, on Workers Paid
@@ -48,3 +48,7 @@ This list is closed. Adding to it is a decision of its own.
 
 - The table's "Binding" for the computer is a container attached to the `SandboxSession` class, which gives no Worker an `env` binding. The Workers see it through a `COMPUTER` variable that the same deploy setting sets (ADR 0041's amendment).
 - "Stages" is unchanged: Commissary Cloud and `prod` turn on both. Only the mechanism is settled: each stage reads `COMMISSARY_COMPUTER` from its deployer settings (`.env` for `prod`, `.env.cloud` for Commissary Cloud), which `pnpm ci:setup` writes into the stage's GitHub environment, so the computer is on there once `ci:setup` is re-run with the setting. The code's default stays off, for any other deployer's stage, since the computer needs Docker and its container time is billed. Previews are unchanged.
+
+## Amendment: two areas
+
+ADR 0048 removes the Agents area, so a self-hosted Commissary has the same two areas as Commissary Cloud, Models and Tools, on what every deployment binds: Durable Objects, KV and D1. The Dynamic Workers binding stays for the sandbox toolkit's just-bash; it no longer also marks the Agents area as present.

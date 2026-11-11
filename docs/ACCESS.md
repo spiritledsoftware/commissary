@@ -6,9 +6,7 @@ that the Worker verifies. The Worker never sees their passwords. Clients of the 
 `/backend-api/codex*`, the unprefixed aliases, and the MCP endpoint `/mcp` on the API host) are not behind Access: they
 send an **API key** Commissary issued to a member, which the Worker checks itself (§4, "API keys" below,
 [CLIENTS.md](CLIENTS.md)). MCP clients may also sign in through Access instead, at the app host's `/mcp`, with Access's
-**Managed OAuth** ("MCP clients through Access" below, ADR 0045). Hosted agents' webhook triggers
-(`/agent-webhooks/<org>/<trigger>`, #231) are client API paths too, open to anyone: a delivery proves itself with the
-trigger's secret instead of an API key ("Webhook triggers" below).
+**Managed OAuth** ("MCP clients through Access" below, ADR 0045).
 Scripts on the management API may send a **management key** instead of an Access service token ("Management keys"
 below).
 
@@ -81,8 +79,7 @@ client that signs in through Access sends the token of the app host's applicatio
 (`cloudflared access token -app=https://<app host>`) in `cf-access-token` to the API host; the API Worker checks it
 against `ACCESS_AUD` itself. Without an API host, zone routes send the client API paths of the app host to the API
 Worker, and the bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`,
-`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and
-`/agent-webhooks` (hosted agents' webhook triggers, #231) with their sub-paths, and `/oauth/toolkits/client.json`, Commissary's Client ID Metadata Document for toolkits' OAuth sign-ins
+`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` with their sub-paths, and `/oauth/toolkits/client.json`, Commissary's Client ID Metadata Document for toolkits' OAuth sign-ins
 (#202), which an MCP server's authorization server fetches without signing in and which needs no key. Access applies
 the most specific application to a request, so these paths reach the API Worker without a
 sign-in while every other path stays behind the main application. The API Worker is then the only gate of the client
@@ -120,7 +117,7 @@ fail at the servers that take one (give those toolkits an OAuth app).
 | ------------------------------------ | ---------------------------- | -------------------------- | ------------------------------------------------------ |
 | People using the panel / browsers    | **Allow**                    | Emails, email domain       | Interactive login                                      |
 | Management automation (scripts, CI)  | **Service Auth**             | The stack's service tokens | Non-interactive; an Allow policy does not match tokens |
-| Clients of the client API            | **Bypass**                   | Everyone                   | The Worker checks their API key (a webhook's secret)   |
+| Clients of the client API            | **Bypass**                   | Everyone                   | The Worker checks their API key                        |
 | MCP clients on the app host's `/mcp` | **Allow** / **Service Auth** | As the panel's             | Signed in through Managed OAuth, or a service token    |
 
 Need IdP groups, device posture or other rules? Extend the policies in `infra/access.ts` (Alchemy's
@@ -193,11 +190,6 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read and replace an org toolkit's uploaded document (`/toolkits/:id/document`)                   |                   |     ✓     |              ✓               |       ✓        |
 | Read and search the toolkit catalog; look a domain up (`/toolkit-catalog`, its `domains/`)       |         ✓         |     ✓     |              ✓               |       ✓        |
 | Refresh the toolkit catalog now (`POST /toolkit-catalog/refresh`)                                |                   |     ✓     |              ✓               |       ✓        |
-| Read the agents they may use; create and manage their own private agents (`/agents`)             |         ✓         |     ✓     |              ✓               |       ✓        |
-| Create, edit and remove shared agents; disable or remove a member's private agent                |                   |     ✓     |              ✓               |       ✓        |
-| Read, add, edit and remove agent grants (`/grants/agents`)                                       |                   |     ✓     |              ✓               |       ✓        |
-| Chat with an agent; see, steer, stop and delete the runs they started or watch (`/agent-runs`)   |         ✓         |     ✓     |              ✓               |       ✓        |
-| See every shared agent's runs' metadata; stop any run of the org                                 |                   |     ✓     |              ✓               |       ✓        |
 | Create, rename and remove their own private browser profiles (`/browser-profiles`)               |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, rename and remove shared browser profiles; remove a member's private browser profile     |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove browser profile grants (`/grants/profiles`)                           |                   |     ✓     |              ✓               |       ✓        |
@@ -213,11 +205,10 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)      |                   |           |              ✓               |       ✓        |
 | Allow or stop private credentials (`PATCH /membership`, `private_credentials`)                   |                   |     ✓     |              ✓               |       ✓        |
 | Allow or stop private toolkits (`PATCH /membership`, `private_toolkits`)                         |                   |     ✓     |              ✓               |       ✓        |
-| Allow or stop private agents (`PATCH /membership`, `private_agents`)                             |                   |     ✓     |              ✓               |       ✓        |
 | Give a service token a role above plain member; download a credential                            |                   |           | owner **service token** only |       ✓        |
 | List, create and rename orgs                                                                     |                   |           |                              |       ✓        |
-| Read the org and its retention periods (`GET /org`)                                              |                   |     ✓     |              ✓               |       ✓        |
-| Set the retention periods (`PATCH /org`); download the org's export (`GET /export`)              |                   |     ✓     |              ✓               |       ✓        |
+| Read the org and its retention period (`GET /org`)                                               |                   |     ✓     |              ✓               |       ✓        |
+| Set the retention period (`PATCH /org`); download the org's export (`GET /export`)               |                   |     ✓     |              ✓               |       ✓        |
 | Delete the org (`DELETE /org`, retyping its name; people only)                                   |                   |           |              ✓               |       ✓        |
 | Delete their own account (`DELETE /me`)                                                          |  ✓ (people only)  |     ✓     |              ✓               |       ✓        |
 
@@ -286,34 +277,12 @@ the Worker asks on every request: a removed member, or a member whose role was l
   searches it and looks domains up (integrations.sh's `detect` and `discover`, which change nothing), as they add
   toolkits from it (`POST /toolkits` with `catalog`, under the toolkit rules above); refreshing it now is for org admins
   (`403` for a member), as the model catalog's refresh is.
-- **Agents** (`/agents`, `/grants/agents`, #226, ADR 0040): a hosted agent is one member's (private) or the org's
-  (shared). Every member creates and manages their own private agents, which only they see in full; a plain member's
-  agents are always private. An org admin sees that another member's private agent exists (name and owner) and may
-  disable or remove it, and reaches nothing else about it. Shared agents, and the agent grants that say who may use one
-  (`/grants/agents`, beside `/grants` and `/grants/tools`), are for org admins (`403 forbidden`): creating one names its
-  first grant (`subject`), and there is no default grant. A shared agent may name only the org's models (its shared
-  credentials) and toolkits, a private one only the models its member may use and the toolkits they can see (tools
-  outside their grants are narrowed at run time; `422 unknown_model`, `422 unknown_toolkit`). Names are unique across
-  private and shared agents, as a name is the agents toolkit's argument: a deliberate choice, by which `409 name_taken`
-  can reveal a name used by an agent the caller cannot see.
-  `private_agents` of `/membership` is the org setting for private agents, with `private_toolkits`' defaults (on for
-  `global`, and for a new org only when `POST /orgs` asks; an org from before it takes its `private_toolkits`, `global` on): with it off,
-  creating one answers `403 private_agents_unavailable` and the private agents are kept but not usable until it is on
-  again. `GET /agents/mine` lists what the caller may use. Without the deployment's Dynamic Workers binding the Agents
-  routes answer `404`.
-  A run (`/agent-runs`, #227, #232, #234) shows to its starter; a shared agent's run no one started, to the agent's
-  watchers; a child run, to the people of the run at the head of its chain (its starter, or that agent's watchers); and
-  every shared agent's run, child runs included, to an org admin as its metadata only (no transcript, `403 forbidden`
-  on messages and waits). A private agent's run is its member's alone, but an org admin may stop any run's turn. Its
-  starter and its watchers delete a run (`DELETE /agent-runs/<id>`), with the runs it started, at once and for good; an
-  org admin who sees only its metadata gets `403 forbidden`. Anyone else gets `404`, as for an unknown run. A run's
-  view carries its cost so far (`cost_micros`) to whoever sees it.
 - **Browser profiles** (`/browser-profiles`, `/grants/profiles`, #215, ADR 0039): saved logins and site data a browser
   session of the browser toolkit starts from (`browser_open`'s `profile`), one member's (private) or the org's
   (shared), sealed with the org's data key. Every member creates, renames and removes their own private profiles; a
   plain member's are always private, and they need no grant. An org admin sees only that another member's private
   profile exists (its member, not its name) and may remove it. Shared profiles, and the profile grants that say who may
-  use one (`/grants/profiles`, beside `/grants`, `/grants/tools` and `/grants/agents`), are for org admins (`403
+  use one (`/grants/profiles`, beside `/grants` and `/grants/tools`), are for org admins (`403
   forbidden`); there is no default grant, so an org admin needs one too, and the session tools themselves still need
   the browser toolkit's tool grant. Saving a session back into a profile (`browser_close` with `save`) is its member's
   for a private profile and an org admin's for a shared one: that is the org admin's right as such, checked at save
@@ -372,36 +341,6 @@ characters>`), its member, its name and when it was created, last used (to the m
   waiting out one frees its place.
 - API keys are never accepted on the management API or the panel: those stay behind Access.
 
-### Webhook triggers
-
-A hosted agent's webhook trigger (#231) has a URL, `https://<API host>/agent-webhooks/<org id>/<trigger id>` (or the
-app host's, where zone routes send it to the API Worker), and a secret (`whsec_...`), which its agent's manager sees
-once, when it is created and each time it is rotated (`POST /v9/management/agents/<id>/triggers/<trigger>/secret`; the
-old secret stops working at once). The URL is not secret on its own. A sender `POST`s a body of at most 1 MiB and
-proves it holds the secret in one of two ways:
-
-- `Authorization: Bearer <secret>`, for senders that can only set a header; or
-- a signature, which never sends the secret (Standard Webhooks' scheme, under Commissary's header names): three
-  headers, all required: `X-Commissary-Delivery: <id>` (the delivery's id, the same on every retry of it),
-  `X-Commissary-Timestamp: <unix seconds>` and `X-Commissary-Signature: sha256=<hex>`, the lowercase or uppercase hex
-  of HMAC-SHA256, keyed with the secret as written (its UTF-8 bytes, `whsec_` included), of the id, a `.`, the
-  timestamp, a `.` and the raw body: `<id>.<timestamp>.<body>`. A signature whose timestamp is more than five minutes
-  from the API Worker's clock, either way, is refused, so a delivery someone captured cannot be replayed later; within
-  those five minutes a replay names the signed id, and finds the run that id started (under another id it proves
-  nothing).
-
-A delivery id sent again finds the run the first one started, so a sender retries with the same id (and a signing
-sender signs a retry afresh, with a new timestamp). Bearer deliveries should name theirs in `X-Commissary-Delivery`
-too (Standard Webhooks' `Webhook-Id` is read as well): without one, a bearer delivery is known by its body's hash and
-the minute it came in, so identical bodies within one minute start one run, and a retry that crosses a minute's
-boundary starts a second run. A delivery answers `202 {"run": "<run id>"}` once the run started;
-`401` for anything that does not prove itself (a malformed address, an org or trigger that does not exist, a wrong
-secret, a bad or stale signature: the same answer for all), `409` while the trigger or its agent is disabled, `413`
-for a larger body, and on Commissary Cloud `429`: every delivery to an existing org, proven or not, counts first
-against the org's webhook bucket (as many a minute as its request-rate ceiling, apart from it), so a flood of
-unproven deliveries is refused there and leaves the ceiling of the org's API keys alone; a proven delivery then counts
-against the org's request-rate ceiling too, as an API key's request does.
-
 ### Management keys
 
 A **management key** (ADR 0026) is how a script calls the management API without a person's session:
@@ -447,10 +386,10 @@ characters; a missing key is refused everywhere.
 
 1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`,
    `/backend-api/codex*`, the unprefixed aliases `/chat/completions`, `/completions`, `/responses`, the MCP endpoint
-   `/mcp`, toolkits' CIMD document `/oauth/toolkits/client.json` and hosted agents' webhook triggers `/agent-webhooks*`
-   are the client API and need a principal, all but the CIMD document, which the API Worker serves to anyone, and the
-   webhook triggers, whose route checks the trigger's secret itself (the app Worker answers them `404`, naming the API Worker's
-   address, except the MCP endpoint `/mcp` itself on a self-hosted Commissary, which it serves behind Access: below);
+   `/mcp` and toolkits' CIMD document `/oauth/toolkits/client.json`
+   are the client API and need a principal, all but the CIMD document, which the API Worker serves to anyone (the app
+   Worker answers them `404`, naming the API Worker's address, except the MCP endpoint `/mcp` itself on a
+   self-hosted Commissary, which it serves behind Access: below);
    `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the
    control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with
    their sub-paths, the same pages under `/o/<slug>/`, `/assets/*`) and `/management.html` (the upstream panel's old
@@ -573,17 +512,8 @@ Commissary keeps as little as it can and deletes at once; there is no grace peri
 - **Usage records** keep an upstream failure's status, type and code but not its body, and are pruned after the org's
   **retention period** (`usage_retention_days`, in days; `null` keeps them). A new org starts at 90 days; `global` keeps records until an org admin sets a period. The cron
   task `usage-retention` applies each org's period.
-- **Agent runs** (#228) are kept for the org's **run retention period** after their last activity
-  (`run_retention_days`, in days; `null` keeps them; every org starts at 30 days, `global` included; set it in the
-  panel's Settings, Retention): the cron task `agent-run-retention` deletes the older ones with their transcripts, one
-  run at a time on its own last activity, never while a turn runs. Removing an agent deletes all its runs at once, and
-  so does removing a member for their private agents' runs and every run they started, each with the runs it started:
-  they are refused from then on, the removal deletes up to 60 runs' transcripts before it answers, and the cron task
-  deletes the rest at its next run (every 3 hours). Preview deployments run no cron tasks, so there the rest waits for
-  the next removal or the org's deletion. A run's starter or watchers may delete it sooner (`DELETE /agent-runs/<id>`,
-  #234), with its transcript and the runs it started.
 - **Removing a member** (`DELETE /members/<id>`) deletes their API keys, private accounts and provider key groups, the
-  OAuth logins they started in that org, their private agents and agent runs, and their Spend limits and counters and
+  OAuth logins they started in that org, and their Spend limits and counters and
   those of their API keys.
 - **API keys** are deleted when revoked and when they expire (an expired key is purged when keys are listed or created,
   when one is checked, and by the cron task `api-key-expiry`); a deleted key's Spend limits and counters go with it.
@@ -608,8 +538,7 @@ Every proxied request produces one structured log line (Workers Logs) whose `pri
 `key:<key id>` for an API key, `mkey:<key id>` for a management key, `user:<email>` for people, `service:<client id>` for
 service tokens. Usage records in D1 store the same id. Emails are
 personal data: restrict who can read Workers Logs and the D1 database, and set the retention you need (each org's usage
-retention period, `PATCH /org` with `usage_retention_days`, its agent runs' with `run_retention_days`, and Workers Logs
-retention). Tokens, API keys, provider keys, JWTs, request bodies, headers and query strings are never
+retention period, `PATCH /org` with `usage_retention_days`, and Workers Logs retention). Tokens, API keys, provider keys, JWTs, request bodies, headers and query strings are never
 logged; scheduled-job failures are logged as a one-line summary with URL queries removed.
 
 ## 5. Optional: single-header service token
@@ -674,7 +603,7 @@ management keys work as above. What changes:
   serves it and however it ends. Token counting, video status polls and requests refused before any work
   (authentication, the rate ceiling, a spend limit, a plan limit, an unknown model, no credential) do not count. Each
   tool call counts once with requests toward the same 25,000, whatever its toolkit (the browser and sandbox toolkits'
-  included), credential or outcome and whether an agent run or a client makes it; one refused before any work (an
+  included), credential or outcome; one refused before any work (an
   unknown or ungranted tool, an approval refusal, a spend limit, a plan limit) does not. Browser hours count the time of
   Quick Actions and browser sessions, computer hours the time of the sandbox's computer; **Free has no computer hours,
   so on Free the computer is unavailable**: a command that would start it is refused with `plan_limit_reached` while
@@ -682,8 +611,7 @@ management keys work as above. What changes:
   up refuses further use of that unit only: a Free org out of browser hours still makes requests and tool calls. A
   tool call a plan limit refuses answers a tool error that names the limit, when free usage starts over and links to the
   billing page. **Ceilings** on concurrent use: browser sessions 1 on Free and 5 on Pay as you go, computers 0 and 3;
-  opening one more is refused with `plan_limit_reached`, a platform admin's raised ceilings apply, and agent runs stay
-  uncapped. A plan change reaches every isolate within 30 seconds (per-isolate caches, like suspension). A Free org
+  opening one more is refused with `plan_limit_reached`, a platform admin's raised ceilings apply. A plan change reaches every isolate within 30 seconds (per-isolate caches, like suspension). A Free org
   over its free usage is refused with `429 plan_limit_reached` and `Retry-After` until the first of the next month UTC;
   work in flight finishes. `GET /billing` (org admins) answers the plan, the payment state (`ok`, `past_due`), whether a
   card is on file and the month's usage against free usage; on a self-hosted Commissary there are no plans and it

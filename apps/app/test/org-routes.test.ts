@@ -28,7 +28,7 @@ afterAll(harness.dispose);
 const CAROL = "carol@example.com";
 
 /** A self-hosted Commissary without the browser or the computer bound (the test Worker binds neither, #212, #223). */
-const SELF_HOSTED = { hosted: false, browser: false, computer: false, agents: true };
+const SELF_HOSTED = { hosted: false, browser: false, computer: false };
 
 /** An admin of `global` through her membership there (`seedCarol`), and of no other org. */
 const asCarol = async () => ({ auth: await token(CAROL) });
@@ -79,8 +79,6 @@ describe("the org list", () => {
           created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
           // `global` keeps its history.
           usage_retention_days: null,
-          // Agent runs are kept 30 days after their last activity in every org (#228).
-          run_retention_days: 30,
         },
       ],
     });
@@ -110,7 +108,6 @@ describe("creating an org", () => {
       name: "Created Inc",
       created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
       usage_retention_days: 90,
-      run_retention_days: 30,
     });
 
     expect((await orgs()).find((org) => org.slug === "created")?.id).toBe(
@@ -314,29 +311,6 @@ describe("the org's own record and its retention period", () => {
     });
   });
 
-  it("sets and clears the agent runs' retention period beside the usage one (#228)", async () => {
-    await create({ slug: "ret-runs", name: "Runs" });
-    const prefix = "/v9/management/orgs/ret-runs";
-
-    expect(await retention(prefix, { run_retention_days: 7 })).toMatchObject({
-      status: 200,
-      body: { usage_retention_days: 90, run_retention_days: 7 },
-    });
-    expect(
-      await retention(prefix, { usage_retention_days: 10, run_retention_days: null }),
-    ).toMatchObject({ status: 200, body: { usage_retention_days: 10, run_retention_days: null } });
-    expect((await harness.json(`${prefix}/org`)).body).toMatchObject({
-      usage_retention_days: 10,
-      run_retention_days: null,
-    });
-
-    for (const days of [0, 3651, 1.5, "30"]) {
-      expect([400, 422]).toContain((await retention(prefix, { run_retention_days: days })).status);
-    }
-
-    expect((await harness.json(`${prefix}/org`)).body).toMatchObject({ run_retention_days: null });
-  });
-
   it("refuses a body that names nothing to change or something else", async () => {
     expect((await retention("/v9/management", {})).status).toBe(400);
     expect((await retention("/v9/management", { name: "X" })).status).toBe(400);
@@ -413,7 +387,6 @@ describe("who may manage the list of orgs", () => {
       orgs: [{ slug: "default", name: "Default" }],
       private_credentials: true,
       private_toolkits: true,
-      private_agents: true,
       deployment: SELF_HOSTED,
     });
     expect((await harness.json("/v9/management/orgs", { auth: false })).status).toBe(401);
@@ -498,7 +471,6 @@ describe("GET /me", () => {
       orgs: [{ slug: "default", name: "Default" }],
       private_credentials: true,
       private_toolkits: true,
-      private_agents: true,
       deployment: SELF_HOSTED,
     });
 
@@ -511,7 +483,6 @@ describe("GET /me", () => {
         orgs: [{ slug: "renamed-home", name: "Default" }],
         private_credentials: true,
         private_toolkits: true,
-        private_agents: true,
         deployment: SELF_HOSTED,
       });
     } finally {

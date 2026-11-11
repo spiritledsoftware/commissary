@@ -22,8 +22,7 @@ describe("seed", () => {
         name: "Default",
         createdAt: expect.any(Number),
         usageRetentionDays: null,
-        // Agent runs' default applies to global too (#228, ADR 0040).
-        runRetentionDays: 30,
+        runRetentionDays: null,
       },
     ]);
     expect((await platform.getOrgBySlug("default"))?.id).toBe(GLOBAL_ORG);
@@ -271,28 +270,51 @@ describe("usage retention", () => {
     });
   });
 
-  it("sets the agent runs' period beside the usage records', 30 days for a new org (#228)", async () => {
+  it("drops the retired agent runs' period column where the registry still has it", async () => {
     const platform = fresh();
-    const created = await platform.createOrg({ slug: "runs-kept", name: "Runs" }, NOW);
+
+    await runInDurableObject(platform, async (_instance, state) => {
+      state.storage.sql.exec("ALTER TABLE orgs ADD COLUMN run_retention_days INTEGER DEFAULT 30");
+    });
+
+    await evictDurableObject(platform);
+    expect(await platform.getOrgById(GLOBAL_ORG)).toMatchObject({ usageRetentionDays: null });
+
+    await runInDurableObject(platform, (_instance, state) => {
+      const columns = state.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(orgs)")
+        .toArray()
+        .map((column) => column.name);
+
+      expect(columns).not.toContain("run_retention_days");
+    });
+  });
+});
+
+describe("setRetention (kept for an app Worker from before ADR 0048)", () => {
+  it("applies the usage period, ignores the agent runs' one, and refuses what setUsageRetention refuses", async () => {
+    const platform = fresh();
+    const created = await platform.createOrg({ slug: "old-app", name: "Old app" }, NOW);
 
     if (!created.ok) throw new Error(created.message);
-    expect(created.org).toMatchObject({ usageRetentionDays: 90, runRetentionDays: 30 });
 
-    expect(await platform.setRetention(created.org.id, { runDays: 7 })).toMatchObject({
+    expect(await platform.setRetention(created.org.id, { usageDays: 7, runDays: 3 })).toMatchObject(
+      {
+        ok: true,
+        org: { usageRetentionDays: 7, runRetentionDays: null },
+      },
+    );
+    expect(await platform.setRetention(created.org.id, { runDays: 3 })).toMatchObject({
       ok: true,
-      org: { usageRetentionDays: 90, runRetentionDays: 7 },
+      org: { usageRetentionDays: 7 },
     });
-    expect(
-      await platform.setRetention(created.org.id, { usageDays: null, runDays: null }),
-    ).toMatchObject({ ok: true, org: { usageRetentionDays: null, runRetentionDays: null } });
-
-    // Nothing changes unless every period named is valid.
-    expect(
-      await platform.setRetention(created.org.id, { usageDays: 10, runDays: 0 }),
-    ).toMatchObject({ ok: false, error: "invalid_retention" });
-    expect(await platform.getOrgById(created.org.id)).toMatchObject({
-      usageRetentionDays: null,
-      runRetentionDays: null,
+    expect(await platform.setRetention(created.org.id, { usageDays: 0 })).toMatchObject({
+      ok: false,
+      error: "invalid_retention",
+    });
+    expect(await platform.setRetention("org-ghost", { usageDays: 7 })).toMatchObject({
+      ok: false,
+      error: "not_found",
     });
   });
 });

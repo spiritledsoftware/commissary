@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0041 (Browser Run is the first browser provider) and below (no session caps)
+status: accepted, amended by ADR-0041 (Browser Run is the first browser provider), below (no session caps) and ADR-0048 (no hosted agents)
 ---
 
 # The hosted browser is a built-in toolkit, not an area
@@ -63,3 +63,7 @@ The cost of Browser Run time lands on the deployment's Cloudflare account, and C
 ## Amendment: no session caps
 
 The decision first capped concurrent sessions per org and per member with a deployment setting, because Cloudflare's concurrency cap is account-wide. The cap is dropped, along with the limits on agent runs and computers (ADR 0040, ADR 0041). Spend limits, Cloudflare's plans and Commissary Cloud's billing tiers limit use, and fairness between orgs on Commissary Cloud is left to its plans. Limits that org admins configure may come later.
+
+## Amendment: no hosted agents
+
+ADR 0048 removes hosted agents, so there is no agent run whose browser sessions someone must watch, and its handoffs need no other answerer: a handoff is answered by the session's member, who alone is minted its Live View. The count of areas above is now two, Models and Tools.

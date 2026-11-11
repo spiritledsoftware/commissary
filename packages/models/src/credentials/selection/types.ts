@@ -69,12 +69,6 @@ export const PickRequest = Schema.Struct({
   memberId: optional(Schema.String),
   /** The API key the request came with: its Spend limits apply to whatever credential serves it. */
   apiKeyId: optional(Schema.String),
-  /**
-   * A shared agent's run (#227): the agent it acts as. Its reach is its definition, so every shared credential is a
-   * candidate whatever the grants; without `memberId`, no private credential is. The agent's own Spend limits apply
-   * (#228).
-   */
-  agentId: optional(Schema.String),
   requireAuthKind: optional(AuthKind),
   /** Skip Codex credentials on the free plan. */
   disallowFreeCodex: optional(Schema.Boolean),

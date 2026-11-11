@@ -58,7 +58,6 @@ const issuer = (principal: Principal) => {
     case "service":
       return { createdBy: `service:${principal.commonName}` };
     case "mkey":
-    case "run":
       return undefined;
   }
 };

@@ -4,15 +4,8 @@ import { misdirected } from "./http/hosts.ts";
 import { dispatchScheduled } from "./scheduled.ts";
 import { requestContext } from "./worker-env.ts";
 
-// Hosted agents' runs (#227): their Durable Object, which lives here (ADR 0030's amendment) and which the app Worker
-// binds by this Worker's script name, and the run gateway, the entrypoint through which a run reaches the client API
-// and the MCP endpoint as itself, over `ctx.exports` only (`http/run-gateway.ts`).
-export { AgentRun, AgentRunGateway } from "./http/run-gateway.ts";
-
-// Hosted agents' schedule triggers (#231): one object per schedule, whose alarm is its next tick and starts that tick's
-// run (`@commissary/agents/api`'s `AgentScheduleObject`); here beside the runs' objects, which the app Worker arms by
-// this Worker's script name.
-export { AgentScheduleObject as AgentSchedule } from "@commissary/agents/api";
+// The hosted agents' Durable Object classes, retired (ADR 0048): tombstones for this release, a follow-up removes them.
+export { AgentRun, AgentSchedule } from "./retired-objects.ts";
 
 /**
  * The API Worker (ADR 0030): the client API and the cron jobs. Its Durable Objects are the state Worker's (apps/state),

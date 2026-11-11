@@ -10,65 +10,13 @@
 // A request with {@link API_WORKER_HEADER} goes to the API Worker's handler (apps/api) instead, with the same bindings:
 // the client API as the zone routes send it to the API Worker on a stage with one host, so a test can follow an MCP
 // client from the app host's OAuth server to `/mcp` (test/hosted/mcp-oauth.test.ts).
-//
-// The agent runs (#227) are the API Worker's `AgentRun` and run gateway, exported here as the API Worker exports them: a
-// run's model and tool calls go through the API Worker's handler over this Worker's `ctx.exports`, with its bindings.
-// The schedule triggers' `AgentSchedule` (#231) is the API Worker's too. The run gateway here knows the panel's host
-// (`APP_DOMAIN`, {@link PANEL_HOST}), as on a deployed stage, so a run's waits link to the panel's pages (#232) for an
-// org the default Platform registry lists. An org's ControlPlane has a fake Browser Run binding (`BROWSER`) once its
-// storage holds {@link WITH_BROWSER} and it starts again, for the runs' browser handoffs (#232).
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { api, AgentRunGateway as ApiAgentRunGateway } from "@commissary/api";
+import { api } from "@commissary/api";
 import type { SignedInPerson, SignInService } from "@commissary/auth";
 import app from "../src/index.ts";
 
-export { AgentRun, AgentSchedule } from "@commissary/api";
-
-/** The panel's host the run gateway knows (`APP_DOMAIN`): a run's waits link to its pages (#232). */
-export const PANEL_HOST = "app.example.com";
-
-/** The API Worker's run gateway, on a stage whose panel is at {@link PANEL_HOST}. */
-export class AgentRunGateway extends ApiAgentRunGateway {
-  constructor(ctx: ExecutionContext, workerEnv: Cloudflare.Env) {
-    // SAFETY: the gateway reads the API Worker's bindings, which this test Worker's env holds, `APP_DOMAIN` added.
-    super(ctx, { ...workerEnv, APP_DOMAIN: PANEL_HOST } as unknown as ConstructorParameters<
-      typeof ApiAgentRunGateway
-    >[1]);
-  }
-}
-
-import { ControlPlane as StateControlPlane } from "@commissary/state-worker";
-import { fakeBrowserRun } from "@commissary/tools/testing";
-
-/** The key whose value `true` gives an org's ControlPlane a fake Browser Run binding when it next starts (#232). */
-export const WITH_BROWSER = "test:browser";
-
-/** The state Worker's ControlPlane, with the browser toolkit once its storage holds {@link WITH_BROWSER}. */
-export class ControlPlane extends StateControlPlane {
-  constructor(ctx: DurableObjectState, workerEnv: Cloudflare.Env) {
-    super(
-      ctx,
-      ctx.storage.kv.get(WITH_BROWSER) === true
-        ? // SAFETY: the env with a fake `BROWSER`, which the deployed state Worker binds as Browser Run.
-          ({ ...workerEnv, BROWSER: fakeBrowserRun() } as unknown as Cloudflare.Env)
-        : workerEnv,
-    );
-  }
-}
-
-/**
- * The state Worker's ControlPlane on a deployment without the Agents area (no `LOADER`): no agents toolkit (#229).
- * Bound as `CONTROL_PLANE_WITHOUT_AGENTS` (vitest.config.ts).
- */
-export class ControlPlaneWithoutAgents extends ControlPlane {
-  constructor(ctx: DurableObjectState, workerEnv: Cloudflare.Env) {
-    // SAFETY: the env without Dynamic Workers. Only the sandbox's session objects (another class) run code on them; the
-    // ControlPlane reads `LOADER` only as the Agents area's presence.
-    super(ctx, { ...workerEnv, LOADER: undefined } as unknown as Cloudflare.Env);
-  }
-}
-
 export {
+  ControlPlane,
   Platform,
   SandboxEgress,
   SandboxSession,

@@ -246,10 +246,7 @@ const list = Effect.gen(function* () {
 
   return jsonReply(
     200,
-    // This Worker decodes the agents toolkit's kind (#229).
-    yield* toolsControlPlane("listToolkits", (stub) =>
-      stub.tools().listToolkits(viewer, { agentsToolkit: true }),
-    ),
+    yield* toolsControlPlane("listToolkits", (stub) => stub.tools().listToolkits(viewer)),
   );
 });
 
@@ -592,7 +589,7 @@ const tools = Effect.gen(function* () {
   const id = yield* idParam;
 
   const result = yield* toolsControlPlane("listTools", (stub) =>
-    stub.tools().listTools(viewer, id, { agentsToolkit: true }),
+    stub.tools().listTools(viewer, id),
   );
 
   return jsonReply(200, yield* orRefuse(result));

@@ -503,7 +503,6 @@ describe("Access sign-ins on the client API", () => {
       auto_join: true,
       private_credentials: true,
       private_toolkits: true,
-      private_agents: true,
       access_clients: true,
     });
 
@@ -513,7 +512,6 @@ describe("Access sign-ins on the client API", () => {
       auto_join: false,
       private_credentials: false,
       private_toolkits: false,
-      private_agents: false,
     });
   });
 
@@ -535,7 +533,6 @@ describe("Access sign-ins on the client API", () => {
         auto_join: true,
         private_credentials: true,
         private_toolkits: true,
-        private_agents: true,
         access_clients: false,
       });
     } finally {

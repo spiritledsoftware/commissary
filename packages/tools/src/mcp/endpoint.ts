@@ -6,36 +6,21 @@
  * app Worker also mounts it on the app host, at `/mcp` (the org `global`) and `/o/<slug>/mcp`, behind its Access gate,
  * so a request comes with the person (or service token) Access signed in and the org its address names (#251). The
  * member's tools and the calls are the org's ControlPlane's (`ToolsPart.clientTools`, `ToolsPart.callTool`), where the
- * credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the member sees. The agents toolkit's
- * calls (#229) are the exception: the part decides who reaches them, and the Worker makes them
- * ({@link AgentsToolkitPort}), where it provides the port.
+ * credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the member sees.
  *
  * `GET` and `DELETE` answer `405`, as the 2026-07-28 revision's backward compatibility asks of a server that opens no
  * stream and keeps no session (and as the 2025 revisions allow).
  */
-import { Clock, Effect, Layer, Option, type Schema } from "effect";
+import { Clock, Effect, Layer, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import {
-  type AccessIdentity,
-  AccessPrincipal,
-  isSharedAgentRun,
-  usageRunOf,
-  viewerOf,
-} from "@commissary/auth";
+import { AccessPrincipal, viewerOf } from "@commissary/auth";
 import type { Approver } from "@commissary/contract/approvals";
-import { RUN_WAITS_META, type RunWaiting } from "@commissary/contract/run-waits";
-import {
-  RUN_EXECUTES_META,
-  RUN_SESSION_META,
-  RUN_TICKET_META,
-} from "@commissary/contract/sandbox-env";
 import {
   boundedBodyText,
   CurrentOrg,
   CurrentOutboundPolicy,
   MCP_PATH,
   PLAN_LIMIT_META,
-  SPEND_REFUSAL_META,
 } from "@commissary/core";
 import {
   type BillingEnv,
@@ -50,12 +35,10 @@ import type {
   ClientTool,
   FormAction,
   NotApprovedReason,
-  RunToolReach,
   ToolCall,
   ToolCallOutcome,
 } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
-import { AgentsToolkitPort } from "./agents-port.ts";
 import { handoffAnswerOf, handoffResult, SESSION_PAGE, sessionPagePath } from "./handoff.ts";
 import { writeToolCallRecord } from "../usage/record.ts";
 import {
@@ -117,30 +100,6 @@ const listed = (tool: ClientTool): Schema.JsonObject => ({
   ...(tool.toolClass === "read" ? { annotations: READ_ANNOTATIONS } : {}),
 });
 
-/**
- * A hosted agent's run (#227): its definition's tool scope, as the shared agent itself or as its member, its starter
- * (if anyone started it), the caller of its approvals, and the run as its usage records name it (#228: a shared
- * agent's Spend limits, a browser session's record); `undefined` for any other caller.
- */
-const runToolReach = (identity: AccessIdentity): RunToolReach | undefined => {
-  const usage = usageRunOf(identity.principal);
-
-  return identity.principal.kind === "run" && usage !== undefined
-    ? {
-        toolScope: identity.principal.reach.toolScope,
-        asAgent: isSharedAgentRun(identity.principal),
-        // A child run's (#229) is the member at the head of its chain; a principal without one names a member starter.
-        starterMember:
-          identity.principal.starterMember ??
-          (identity.principal.starter?.kind === "member"
-            ? identity.principal.starter.id
-            : undefined),
-        agentId: identity.principal.agentId,
-        usage,
-      }
-    : undefined;
-};
-
 /** What one request needs beyond its message: its era and the toolkits it narrows to. */
 interface Served {
   readonly era: Era;
@@ -155,15 +114,9 @@ const listTools = Effect.fnUntraced(function* (context: Served) {
   const identity = yield* AccessPrincipal;
   const viewer = viewerOf(identity);
   const apiKeyId = identity.principal.kind === "key" ? identity.principal.keyId : undefined;
-  const run = runToolReach(identity);
-  const agents = Option.isSome(yield* Effect.serviceOption(AgentsToolkitPort));
 
   const tools = yield* toolsControlPlane("clientTools", (stub) =>
-    agents
-      ? stub.tools().clientTools(viewer, apiKeyId, run, { agentsToolkit: true })
-      : run === undefined
-        ? stub.tools().clientTools(viewer, apiKeyId)
-        : stub.tools().clientTools(viewer, apiKeyId, run),
+    stub.tools().clientTools(viewer, apiKeyId),
   );
 
   return {
@@ -249,13 +202,6 @@ const toolError = (text: string, meta?: Schema.JsonObject): Schema.JsonObject =>
   ...(meta === undefined ? {} : { _meta: meta }),
 });
 
-/** A spend limit's refusal as an agent run gets it (#227): the tool error, and the refusal in `_meta`. */
-const runRefusal = (text: string, meta: Schema.JsonObject = {}): Schema.JsonObject => ({
-  content: [{ type: "text", text }],
-  isError: true,
-  _meta: Object.assign({}, meta, { [SPEND_REFUSAL_META]: text }),
-});
-
 /**
  * What the `_meta` of a plan refusal says of it (#241, {@link PLAN_LIMIT_META}): the code, the limit, the allowance.
  */
@@ -271,10 +217,9 @@ export const planLimitMeta = (refusal: PlanRefusal): Schema.JsonObject => ({
 /**
  * What a call the org's plan refused answers (#241): the code, the limit or ceiling, when free usage starts over and
  * the billing page (`planRefusalText`); and, when the browser session the call named was closed with it, or the sandbox
- * session it named had its computer stopped, or needed it, that, and that just-bash still runs commands. An agent run's
- * refusal, as the model routes' `plan_limit_reached`, carries the code in `_meta` too.
+ * session it named had its computer stopped, or needed it, that, and that just-bash still runs commands.
  */
-export const planLimitedText = (
+const planLimitedText = (
   name: string,
   outcome: Pick<
     Extract<ToolCallOutcome, { outcome: "plan_limited" }>,
@@ -293,38 +238,6 @@ export const planLimitedText = (
             ? ` It would run on the sandbox session's computer, which the plan keeps from it${outcome.computerStopped === true ? `, and the computer, which was running, is stopped` : ``}. Commands just-bash can run still run.`
             : ``),
   );
-
-/** Whether a `tools/call`'s `_meta` sets the flag `key` (#230: {@link RUN_EXECUTES_META}, {@link RUN_SESSION_META}). */
-const metaFlag = (params: Schema.JsonObject, key: string): boolean => {
-  const meta = params["_meta"];
-
-  return isJsonObject(meta) && meta[key] === true;
-};
-
-/** The keys of the input requests a client's retry answers (`inputResponses`, MRTR). */
-const answeredKeys = (params: Schema.JsonObject): ReadonlyArray<string> => {
-  const responses = params["inputResponses"];
-
-  return isJsonObject(responses) ? Object.keys(responses) : [];
-};
-
-/**
- * `result` with what the run's call waits on in its `_meta` (#232, `RUN_WAITS_META`): the run parks the call on it, and
- * shows its person the link, when there is one (the panel's URL known).
- */
-const waitingFor = (
-  result: Schema.JsonObject,
-  waiting: Omit<RunWaiting, "link">,
-  link: string,
-  fallback: string,
-): Schema.JsonObject => {
-  const { _meta: meta, ...fields } = result;
-  const own: Readonly<Record<string, Schema.Json>> = isJsonObject(meta) ? meta : {};
-
-  const value: RunWaiting = { ...waiting, ...(link === fallback ? {} : { link }) };
-
-  return { ...fields, _meta: { ...own, [RUN_WAITS_META]: value } };
-};
 
 /** Whether the client's retry says the member declined (or dismissed) the elicitation `key`. */
 const declined = (params: Schema.JsonObject, key: string): boolean => {
@@ -355,14 +268,8 @@ export const refusedText = (
         ? `: it would run on the sandbox session's computer, whose time counts toward the limit${outcome.computerStopped === true ? `, and the computer, which was running, is stopped` : ``}. Commands just-bash can run still run.`
         : `.`);
 
-/**
- * A call that ended: every outcome but an unknown tool, a form the caller is asked to answer first, and an agents
- * toolkit's call before the Worker made it.
- */
-type EndedCall = Exclude<
-  ToolCallOutcome,
-  { outcome: "unknown" } | { outcome: "approve" } | { outcome: "delegated" } | { outcome: "gated" }
->;
+/** A call that ended: every outcome but an unknown tool and a form the caller is asked to answer first. */
+type EndedCall = Exclude<ToolCallOutcome, { outcome: "unknown" } | { outcome: "approve" }>;
 
 /** What a call came to, as its usage record says it (#199, #201). */
 const recordedOutcome = (outcome: EndedCall) => {
@@ -438,15 +345,13 @@ const approvalForm = (
  * URL-mode elicitation is asked to open the connect link (an `InputRequiredResult`, MRTR) until it declines; any other
  * client gets the link as a tool error, a 2025 client too, as its elicitation would need the request's SSE stream
  * (docs/ARCHITECTURE.md, "Tools"), and so does every client when there is no URL to open. A pending call's link is
- * always a tool result: its approver may be someone else, and the call is made again once approved. An agent run's
- * (`run`) pending call and started handoff also say what they wait on in `_meta` (#232), where the run parks them.
+ * always a tool result: its approver may be someone else, and the call is made again once approved.
  */
 const toolResult = Effect.fnUntraced(function* (
   outcome: EndedCall,
   name: string,
   request: RpcRequest,
   context: Served,
-  run = false,
 ) {
   // A tool's own result (an upstream server's, or a built-in's): never with Commissary's `_meta` keys, which only the
   // endpoint adds.
@@ -465,7 +370,7 @@ const toolResult = Effect.fnUntraced(function* (
   if (outcome.outcome === "handoff") {
     const link = yield* sessionLink(outcome.sessionId);
 
-    const started = handoffResult({
+    return handoffResult({
       name,
       sessionId: outcome.sessionId,
       reason: outcome.reason,
@@ -473,21 +378,6 @@ const toolResult = Effect.fnUntraced(function* (
       link,
       elicitsUrls: elicitsUrls(context.era),
     });
-
-    // A run parks the call until its person is done (#232): its starter, or its watchers, act in the session.
-    return run
-      ? waitingFor(
-          started,
-          {
-            kind: "handoff",
-            id: outcome.sessionId,
-            until: new Date(outcome.until).toISOString(),
-            by_caller: true,
-          },
-          link,
-          SESSION_PAGE,
-        )
-      : started;
   }
 
   if (outcome.outcome === "pending") {
@@ -496,26 +386,11 @@ const toolResult = Effect.fnUntraced(function* (
 
     const where = link === APPROVAL_PAGE ? `on ${link}` : `at ${link}`;
 
-    const pending = toolText(
+    return toolText(
       `${name} was not called yet: the call waits for approval by ${approvedBy(outcome.approval.approver)}. ` +
         `It can be approved or denied ${where} until ${by}. Once it is approved, call ${name} again with the ` +
         `same arguments: it goes through once.`,
     );
-
-    // A run parks the call until it is decided (#232), and makes it again then.
-    return run
-      ? waitingFor(
-          pending,
-          {
-            kind: "approval",
-            id: outcome.approval.id,
-            until: by,
-            by_caller: outcome.approval.approver.kind === "caller",
-          },
-          link,
-          APPROVAL_PAGE,
-        )
-      : pending;
   }
 
   const link = yield* connectLink(outcome.toolkit.id);
@@ -576,14 +451,12 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   const policy = yield* CurrentOutboundPolicy;
   const org = yield* CurrentOrg;
   const requestedAt = yield* Clock.currentTimeMillis;
-  const agents = Option.getOrUndefined(yield* Effect.serviceOption(AgentsToolkitPort));
 
   const call: ToolCall = {
     name,
     arguments: args,
     toolkits: context.toolkits === undefined ? undefined : [...context.toolkits],
     apiKeyId: identity.principal.kind === "key" ? identity.principal.keyId : undefined,
-    run: runToolReach(identity),
     principalId: identity.principalId,
     // A 2025 client is never asked (see `toolResult`): it gets a pending approval's link.
     approvalForm: elicitsForms(context.era) ? approvalFormOf(request.params) : undefined,
@@ -592,15 +465,6 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     handoffOutcomes: true,
     handoffAnswer: elicitsUrls(context.era) ? handoffAnswerOf(request.params) : undefined,
     planOutcomes: true,
-    ...(agents === undefined ? {} : { agentsToolkit: true }),
-    // A run's call of its coding tools asks for a ticket rather than the call (#230); no other caller's.
-    ...(identity.principal.kind === "run" && metaFlag(request.params, RUN_EXECUTES_META)
-      ? { executes: true }
-      : {}),
-    // A run's opening of its own sandbox session, which lasts as long as the run (#230); no other caller's.
-    ...(identity.principal.kind === "run" && metaFlag(request.params, RUN_SESSION_META)
-      ? { runSession: true }
-      : {}),
   };
 
   const outcome = yield* toolsControlPlane("callTool", (stub) =>
@@ -610,65 +474,24 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   if (outcome.outcome === "unknown")
     return errorAnswer(200, request.id, RpcCode.invalidParams, `Unknown tool: ${name}`);
 
-  // A run's gated sandbox call (#230): the run executes it with the ticket, and its settling writes the record.
-  if (outcome.outcome === "gated")
-    return resultAnswer(
-      request.id,
-      framed(context.era, {
-        content: [],
-        _meta: { [RUN_TICKET_META]: { id: outcome.ticket.id } },
-      }),
-    );
-
   // The call goes on once the caller answers the form: its record is written then.
   if (outcome.outcome === "approve")
     return resultAnswer(request.id, framed(context.era, approvalForm(name, outcome)));
 
-  // The agents toolkit's call (#229): the Worker makes it, and its answer is the call's result.
-  const ended: EndedCall =
-    outcome.outcome === "delegated"
-      ? {
-          outcome: "result",
-          result:
-            agents === undefined
-              ? toolError(`${name} cannot be called here.`)
-              : yield* agents.call({
-                  identity,
-                  org,
-                  tool: outcome.tool,
-                  arguments: outcome.arguments,
-                  scopeAgents: outcome.scopeAgents,
-                  // A wait may ask the member to answer what their run waits on (#232).
-                  elicitsUrls: elicitsUrls(context.era),
-                  answered: answeredKeys(request.params),
-                }),
-          usage: outcome.usage,
-        }
-      : outcome;
-
-  // An agent run learns that a spend limit, or its org's plan (#241), refused the call, and ends its turn with the
-  // refusal as the answer (#227).
-  const value =
-    ended.outcome === "refused" && call.run !== undefined
-      ? runRefusal(refusedText(name, ended))
-      : ended.outcome === "plan_limited" && call.run !== undefined
-        ? runRefusal(yield* planLimitedText(name, ended), planLimitMeta(ended.refusal))
-        : yield* toolResult(ended, name, request, context, call.run !== undefined);
-
+  const value = yield* toolResult(outcome, name, request, context);
   const answeredAt = yield* Clock.currentTimeMillis;
-  const { usage } = ended;
+  const { usage } = outcome;
 
   yield* writeToolCallRecord({
     requestId: crypto.randomUUID(),
     orgId: org,
     principalId: identity.principalId,
     memberId: identity.memberId,
-    run: usageRunOf(identity.principal),
     toolkitId: usage.toolkitId,
     toolId: usage.toolId,
     credential: usage.credential,
     private: usage.private,
-    outcome: recordedOutcome(ended),
+    outcome: recordedOutcome(outcome),
     requestedAt,
     latencyMs: Math.max(0, answeredAt - requestedAt),
     requestBytes: jsonBytes(args),

@@ -4,9 +4,9 @@
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
 // of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions and crawls, the sessions of the
-// built-in sandbox toolkit with its network ceiling, the hosted agents, their runs and the runs' own objects, and the
-// browser profiles with their grants.
-// Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, profiles) adds one line there
+// built-in sandbox toolkit with its network ceiling, and the browser
+// profiles with their grants.
+// Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, profiles) adds one line there
 // (docs/DEVELOPMENT.md, "Tests").
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -69,7 +69,6 @@ import {
   serveFakeMcpServers,
   signInGrants,
 } from "@commissary/tools/testing";
-import { agentBody } from "@commissary/agents/testing";
 
 serveFakeMcpServers();
 
@@ -294,36 +293,8 @@ const sessionValues = new Map<string, string>();
 
 const OUTBOUND = { ownHosts: [], localDevelopment: false };
 
-/** A hosted agent's name for the suite's `name` (agent names take `[a-z0-9_]`). */
-const agentName = (name: string) => name.replaceAll("-", "_");
-
 /** The suite's member in `org`, as the Tools part sees them. */
 const isoViewer = (org: IsolationOrg) => ({ member: memberIds.get(org.slug), admin: false });
-
-/** The agent runs each case name's writes started, in every org (the agent runs' objects' case). */
-const runsByName = new Map<string, string[]>();
-
-const runsOf = (name: string): string[] => {
-  const known = runsByName.get(name) ?? [];
-
-  runsByName.set(name, known);
-
-  return known;
-};
-
-/** The value of each run the deleted runs' case started, by run id (its run is deleted with its agent). */
-const deletedRunValues = new Map<string, string>();
-
-/** The schedule triggers each case name's writes added, in every org (the schedules' objects' case). */
-const schedulesByName = new Map<string, string[]>();
-
-const schedulesOf = (name: string): string[] => {
-  const known = schedulesByName.get(name) ?? [];
-
-  schedulesByName.set(name, known);
-
-  return known;
-};
 
 /** The upstream session a call of the tool of `name` is in, through `org`'s Tools part; none without the toolkit. */
 const sessionOf = async (org: IsolationOrg, name: string): Promise<string | undefined> => {
@@ -401,21 +372,6 @@ const sandboxCall = async (
 
   return called.result;
 };
-
-/** The tickets of the agent runs' gated sandbox calls the case gated, by the suite's name, whichever org gated them. */
-const runCallTickets = new Map<string, ReadonlyArray<string>>();
-
-/** The grant of the sandbox toolkit the gated calls' case wrote in each org, to delete once it ran. */
-const runCallGrants = new Map<string, { readonly id: string; readonly revision: number }>();
-
-/** An agent run's reach of the sandbox toolkit, all its tools (#230). */
-const runReach = {
-  toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
-  asAgent: false,
-};
-
-/** The same run id in every org under the suite's name `name`: only the org tells its calls apart. */
-const isoRun = (name: string) => `ar_${name.replaceAll("-", "")}`;
 
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
@@ -1039,232 +995,6 @@ const STORES: ReadonlyArray<StoreCase> = [
         });
     },
   }),
-  // The Agents part's hosted agents (#226): each org saves a shared agent of the same name, its value as the agent's
-  // description, and lists its own only. Written on the part (the model it names is taken as served, a check of the
-  // routes'), read through the management API.
-  storeCase("controlplane: agents", {
-    write: async (org, name, value) => {
-      const created = await env.CONTROL_PLANE.getByName(org.id)
-        .agents()
-        .createAgent(
-          { ...isoViewer(org), admin: true },
-          {
-            ...agentBody(agentName(name), "shared-model"),
-            description: value,
-            subject: { kind: "everyone" },
-          },
-          { modelServed: true },
-          "iso",
-        );
-
-      expect(created.ok).toBe(true);
-    },
-    read: async (org, name) => {
-      const listed = await managed(org, "/agents");
-
-      expect(listed.status).toBe(200);
-
-      const agents = (
-        listed.body as { agents: ReadonlyArray<{ name: string; description: string }> }
-      ).agents;
-
-      return agents.find((agent) => agent.name === agentName(name))?.description;
-    },
-  }),
-  // The org's index of agent runs (#227), in its ControlPlane: each org's member starts a run, with the same idempotency
-  // key, of a shared agent named after the org's value; each lists its own run only. Written and read on the part (the
-  // run's object, named by its org and id, is the management routes' to start: `agent-runs.test.ts`).
-  storeCase("controlplane: agent runs", {
-    value: (index) => `run_value_${index}`,
-    write: async (org, name, value) => {
-      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
-
-      const created = await agents.createAgent(
-        { ...isoViewer(org), admin: true },
-        { ...agentBody(value, "shared-model"), subject: { kind: "everyone" } },
-        { modelServed: true },
-        "iso",
-      );
-
-      if (!created.ok) throw new Error(created.message);
-      const started = await agents.startRun(isoViewer(org), created.value.id, "chat", name);
-
-      expect(started.ok).toBe(true);
-    },
-    read: async (org) =>
-      (await env.CONTROL_PLANE.getByName(org.id).agents().listRuns(isoViewer(org))).runs.find(
-        (run) => run.agent.name?.startsWith("run_value_") === true,
-      )?.agent.name,
-  }),
-  // The queue of deleted agent runs whose objects are still to delete (#228), in the org's ControlPlane: each org deletes
-  // a shared agent with a run of its own; each org's queue holds its own run only. Written and read on the part (the
-  // sweep is `agent-runs.test.ts`').
-  storeCase("controlplane: deleted agent runs", {
-    write: async (org, name, value) => {
-      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
-      const admin = { ...isoViewer(org), admin: true };
-
-      const created = await agents.createAgent(
-        admin,
-        { ...agentBody(`del_${agentName(name)}`, "shared-model"), subject: { kind: "everyone" } },
-        { modelServed: true },
-        "iso",
-      );
-
-      if (!created.ok) throw new Error(created.message);
-      const started = await agents.startRun(isoViewer(org), created.value.id, "chat", name);
-
-      if (!started.ok) throw new Error(started.message);
-      deletedRunValues.set(started.value.run.id, value);
-
-      const removed = await agents.removeAgent(admin, created.value.id, created.value.revision);
-
-      expect(removed.ok).toBe(true);
-    },
-    read: async (org) => {
-      const queued = await env.CONTROL_PLANE.getByName(org.id).agents().deletedRuns(100);
-
-      return queued.map((id) => deletedRunValues.get(id)).find((value) => value !== undefined);
-    },
-  }),
-  // The triggers configured on hosted agents (#231), in the org's ControlPlane: each org gives a shared agent of the same
-  // name a webhook named after its value; each lists its own agent's trigger only. Written and read on the part (the
-  // routes are `agent-triggers.test.ts`').
-  storeCase("controlplane: agent triggers", {
-    write: async (org, name, value) => {
-      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
-      const admin = { ...isoViewer(org), admin: true };
-
-      const created = await agents.createAgent(
-        admin,
-        { ...agentBody(`trg_${agentName(name)}`, "shared-model"), subject: { kind: "everyone" } },
-        { modelServed: true },
-        "iso",
-      );
-
-      if (!created.ok) throw new Error(created.message);
-
-      const hook = await agents.createTrigger(
-        { viewer: admin, agentId: created.value.id, origin: "https://api.example.com", by: "iso" },
-        { kind: "webhook", name: value },
-      );
-
-      expect(hook.ok).toBe(true);
-    },
-    read: async (org, name) => {
-      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
-      const admin = { ...isoViewer(org), admin: true };
-
-      const agent = (await agents.listAgents(admin)).agents.find(
-        (found) => found.name === `trg_${agentName(name)}`,
-      );
-
-      if (agent === undefined) return undefined;
-
-      const listed = await agents.listTriggers({
-        viewer: admin,
-        agentId: agent.id,
-        origin: "https://api.example.com",
-        by: "iso",
-      });
-
-      return listed.ok ? listed.value.triggers[0]?.name : undefined;
-    },
-  }),
-  // The schedule triggers' own objects (#231), named by org and trigger, whose alarm is the schedule's next tick: each
-  // org's shared agent has a schedule at midnight UTC on the 1st of the month its value names, armed on its object;
-  // each org's objects answer its own schedule's next tick, and an object under this org's name for another org's
-  // trigger finds it gone (and deletes itself).
-  storeCase("agent schedules' objects", {
-    value: (index) => String(index),
-    write: async (org, name, value) => {
-      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
-      const admin = { ...isoViewer(org), admin: true };
-
-      const created = await agents.createAgent(
-        admin,
-        { ...agentBody(`sch_${agentName(name)}`, "shared-model"), subject: { kind: "everyone" } },
-        { modelServed: true },
-        "iso",
-      );
-
-      if (!created.ok) throw new Error(created.message);
-
-      const schedule = await agents.createTrigger(
-        { viewer: admin, agentId: created.value.id, origin: "https://api.example.com", by: "iso" },
-        {
-          kind: "schedule",
-          name: "Monthly",
-          input: "Report.",
-          schedule: { cron: `0 0 1 ${value} *`, time_zone: "UTC" },
-        },
-      );
-
-      if (!schedule.ok) throw new Error(schedule.message);
-      schedulesOf(name).push(schedule.value.id);
-
-      const armed = await env.AGENT_SCHEDULE.getByName(`${org.id}:${schedule.value.id}`).arm({
-        org: org.id,
-        trigger: schedule.value.id,
-      });
-
-      expect(armed.ok).toBe(true);
-    },
-    read: async (org, name) => {
-      for (const trigger of schedulesOf(name)) {
-        const armed = await env.AGENT_SCHEDULE.getByName(`${org.id}:${trigger}`).arm({
-          org: org.id,
-          trigger,
-        });
-
-        if (armed.ok && armed.value.next !== null)
-          return String(new Date(armed.value.next).getUTCMonth() + 1);
-      }
-
-      return undefined;
-    },
-  }),
-  // The agent runs' own objects (#227), named by org and run, which hold each run's transcript and turns: each org's
-  // member starts a run whose first input is the org's value; each org's objects show its own run's input, and the
-  // runs the other orgs started find nothing under this org's name.
-  storeCase("agent runs' objects", {
-    value: (index) => `run_input_${index}`,
-    write: async (org, name, value) => {
-      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
-
-      const created = await agents.createAgent(
-        { ...isoViewer(org), admin: true },
-        {
-          ...agentBody(`obj_${name.replaceAll("-", "_")}`, "shared-model"),
-          subject: { kind: "everyone" },
-        },
-        { modelServed: true },
-        "iso",
-      );
-
-      if (!created.ok) throw new Error(created.message);
-      const started = await agents.startRun(isoViewer(org), created.value.id, "chat", name);
-
-      if (!started.ok) throw new Error(started.message);
-      runsOf(name).push(started.value.run.id);
-
-      const first = await env.AGENT_RUN.getByName(`${org.id}:${started.value.run.id}`).start(
-        { org: org.id, id: started.value.run.id },
-        value,
-      );
-
-      expect(first.ok).toBe(true);
-    },
-    read: async (org, name) => {
-      for (const run of runsOf(name)) {
-        const shown = await env.AGENT_RUN.getByName(`${org.id}:${run}`).show();
-
-        if (shown.ok) return shown.value.turns[0]?.input;
-      }
-
-      return undefined;
-    },
-  }),
   // The browser toolkit's sessions (#213): each org opens a session of the same id, as the same member and API key, at
   // a page that carries its value; each reaches its own session's page, and an org that opened none finds it unknown.
   // `browser_open` through the part gives each session a random id, and the suite needs one id in every org: so it
@@ -1432,81 +1162,6 @@ const STORES: ReadonlyArray<StoreCase> = [
           await env.CONTROL_PLANE.getByName(org.id)
             .tools()
             .writeGrant({ id: grant.id, revision: grant.revision, value: null }, "iso");
-      }
-    },
-  }),
-  // An agent run's gated sandbox calls (#230): the same run in each org opens its session, writes the org's value to a
-  // file and gates an edit; every org then reads that file with every ticket gated under the name, and gets through
-  // with its own only, and settles none of another org's.
-  storeCase("controlplane: agent runs' gated sandbox calls", {
-    write: async (org, name, value) => {
-      const tools = env.CONTROL_PLANE.getByName(org.id).tools();
-      const principalId = `run:${isoRun(name)}`;
-
-      const granted = await tools.writeGrant(
-        {
-          revision: 0,
-          value: { subject: { kind: "everyone" }, toolkit: "sandbox", tools: { kind: "all" } },
-        },
-        "iso",
-      );
-
-      if (!granted.ok) throw new Error(granted.message);
-      runCallGrants.set(org.id, granted.value);
-
-      const call = async (tool: string, args: Schema.JsonObject, executes?: true) =>
-        await tools.callTool(
-          isoViewer(org),
-          {
-            name: tool,
-            arguments: args,
-            principalId,
-            run: runReach,
-            ...(tool === "sandbox_open" ? { runSession: true as const } : {}),
-            ...(executes === undefined ? {} : { executes }),
-          },
-          OUTBOUND,
-        );
-
-      const opened = await call("sandbox_open", {});
-
-      if (opened.outcome !== "result") throw new Error(`the call came to ${opened.outcome}`);
-      // SAFETY: `sandbox_open` answers the session id in its structured content.
-      const session = (opened.result["structuredContent"] as { session: string }).session;
-
-      await call("sandbox_write", { session, path: "value.txt", content: value });
-      const gated = await call("sandbox_edit", { session, path: "value.txt", edits: [] }, true);
-
-      if (gated.outcome !== "gated") throw new Error(`the call came to ${gated.outcome}`);
-      runCallTickets.set(name, [...(runCallTickets.get(name) ?? []), gated.ticket.id]);
-    },
-    read: async (org, name) => {
-      const tools = env.CONTROL_PLANE.getByName(org.id).tools();
-
-      for (const ticket of runCallTickets.get(name) ?? []) {
-        const read = await tools.runSandboxOperation(isoRun(name), ticket, {
-          op: "readText",
-          path: "/workspace/value.txt",
-        });
-
-        if (read.ok) return typeof read.value === "string" ? read.value : "not text";
-
-        // Another org's ticket is no ticket here: refused, and not settled.
-        if (read.reason !== "ticket") return `refused: ${read.reason}`;
-
-        if ((await tools.settleRunSandboxCall(isoRun(name), ticket)) !== undefined)
-          return "settled another org's call";
-      }
-
-      return undefined;
-    },
-    after: async (shared) => {
-      for (const org of shared) {
-        const tools = env.CONTROL_PLANE.getByName(org.id).tools();
-        const grant = runCallGrants.get(org.id);
-
-        if (grant !== undefined)
-          await tools.writeGrant({ id: grant.id, revision: grant.revision, value: null }, "iso");
       }
     },
   }),

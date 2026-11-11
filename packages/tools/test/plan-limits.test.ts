@@ -3,8 +3,8 @@
 // outcome, and a call refused before any work does not; browser time and computer time count toward browser and
 // computer hours, from calls and from sessions' alarms; a Free org out of browser hours still makes tool calls; the
 // Free plan has no computer, so a command that would run on one is refused while just-bash's run; and the ceilings on
-// concurrent browser sessions and computers refuse opening one more, but for agent runs'. The part and the sessions'
-// objects read one TestClock.
+// concurrent browser sessions and computers refuse opening one more. The part and the sessions' objects read one
+// TestClock.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Effect, type Schema } from "effect";
@@ -12,11 +12,7 @@ import { TestClock } from "effect/testing";
 import { browserSessionStub } from "../src/browser/session-object.ts";
 import { IDLE_TIMEOUT_MS } from "../src/browser/session-tools.ts";
 import { COMPUTER_IDLE_MS } from "../src/sandbox/cloudflare/computer.ts";
-import { BillingEnv } from "@commissary/billing/api";
-import { CurrentOrg, type OrgId } from "@commissary/core";
-import { ToolsEnv } from "../src/env.ts";
 import { planLimitMeta } from "../src/mcp/endpoint.ts";
-import { settleRunToolCall } from "../src/mcp/run-calls.ts";
 import { COMPUTER_STOPPED_BY_PLAN_NOTE } from "../src/sandbox/toolkit.ts";
 import { fakeHttpServer } from "./support/http-server.ts";
 import { fakeMcpServer, serveFakeMcpServers } from "./support/mcp-server.ts";
@@ -413,32 +409,6 @@ describe("the ceiling on concurrent browser sessions", () => {
     expect(await openBrowser(org)).toMatchObject({ outcome: "result" });
     expect(await openBrowser(org)).toMatchObject({ outcome: "plan_limited" });
   });
-
-  it("does not cap an agent run's sessions, nor count them toward its members'", async () => {
-    const org = await browserOrg();
-
-    const reach = {
-      toolScope: [{ toolkit: "browser", tools: { kind: "all" as const } }],
-      asAgent: true,
-      usage: { agentId: "ag_shared", runId: "ar_1", starter: "member:m_starter" },
-    };
-
-    const runOpens = () =>
-      org.stub
-        .tools()
-        .callTool(
-          { admin: false },
-          { name: "browser_open", principalId: "run:ar_1", run: reach, planOutcomes: true },
-          POLICY,
-        );
-
-    for (let opened = 0; opened < 3; opened += 1)
-      expect(await runOpens()).toMatchObject({ outcome: "result" });
-
-    // Alice's own first session is within Free's ceiling of one.
-    expect(await openBrowser(org)).toMatchObject({ outcome: "result" });
-    expect(await openBrowser(org)).toMatchObject({ outcome: "plan_limited" });
-  });
 });
 
 describe("the computer", () => {
@@ -774,26 +744,12 @@ describe("calls the plan does not count", () => {
     expect((await stub.billing().usage(Date.now())).used.requests).toBe(0);
   });
 
-  it("an agent run's own tool calls count, and a model request is refused once tool calls used up the shared counter", async () => {
+  it("tool calls count, and a model request is refused once tool calls used up the shared counter", async () => {
     const org = await browserOrg();
-
-    const reach = {
-      toolScope: [{ toolkit: "browser", tools: { kind: "all" as const } }],
-      asAgent: true,
-      usage: { agentId: "ag_shared", runId: "ar_1", starter: "member:m_starter" },
-    };
 
     await org.seed("requests", 25_000 - 1);
 
-    expect(
-      await org.stub
-        .tools()
-        .callTool(
-          { admin: false },
-          { name: "browser_profile_list", principalId: "run:ar_1", run: reach, planOutcomes: true },
-          POLICY,
-        ),
-    ).toMatchObject({ outcome: "result" });
+    expect(await org.call("browser_profile_list")).toMatchObject({ outcome: "result" });
     expect((await org.used()).requests).toBe(25_000);
 
     // The model routes count through the same part: the next request finds the free usage used up.
@@ -930,136 +886,6 @@ describe("a computer the plan stops", () => {
     expect(opened.outcome === "result" && textOf(opened.result)).toContain(
       "allows no computer time",
     );
-  });
-});
-
-describe("an agent run's gated sandbox calls (#230)", () => {
-  const reach = {
-    toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
-    asAgent: true,
-    starterMember: "m_starter",
-    usage: { agentId: "ag_shared", runId: "ar_1", starter: "member:m_starter" },
-  };
-
-  const runCall = (org: Org, tool: string, args: Schema.JsonObject, executes = false) =>
-    org.stub.tools().callTool(
-      { admin: false },
-      {
-        name: tool,
-        arguments: args,
-        principalId: "run:ar_1",
-        run: reach,
-        planOutcomes: true,
-        ...(executes ? { executes: true as const } : {}),
-        ...(tool === "sandbox_open" ? { runSession: true as const } : {}),
-      },
-      POLICY,
-    );
-
-  const runSession = async (org: Org) => {
-    const opened = await runCall(org, "sandbox_open", { computer: true });
-
-    if (opened.outcome !== "result") throw new Error(`the call came to ${opened.outcome}`);
-
-    // SAFETY: `sandbox_open` answers the session in its structured content.
-    return (opened.result["structuredContent"] as { session: string }).session;
-  };
-
-  const gate = async (org: Org, session: string, tool: string) => {
-    const gated = await runCall(org, tool, { session }, true);
-
-    if (gated.outcome !== "gated") throw new Error(`the call came to ${gated.outcome}`);
-
-    return gated.ticket.id;
-  };
-
-  const exec = (org: Org, ticket: string, command: string) =>
-    org.stub
-      .tools()
-      .runSandboxOperation("ar_1", ticket, { op: "exec", command, timeoutMs: 10_000 });
-
-  it("cannot start the computer on Free: the command is refused in the plan's words, which settling answers, and it is no tool call", async () => {
-    const org = await computerOrg();
-    const session = await runSession(org);
-    const ticket = await gate(org, session, "sandbox_bash");
-
-    // Opening and gating counted.
-    expect((await org.used()).requests).toBe(2);
-
-    expect(await exec(org, ticket, ON_COMPUTER)).toMatchObject({
-      ok: false,
-      message: expect.stringContaining("plan"),
-    });
-    // The refused command did no work: the gate's count is taken back, once, however many commands the live ticket
-    // has refused.
-    expect((await org.used()).requests).toBe(1);
-    expect(await exec(org, ticket, ON_COMPUTER)).toMatchObject({ ok: false });
-    expect((await org.used()).requests).toBe(1);
-
-    expect(await org.stub.tools().settleRunSandboxCall("ar_1", ticket)).toMatchObject({
-      planRefused: true,
-      planRefusal: { limit: "computer_hours", allowed: 0 },
-    });
-    expect((await org.used()).requests).toBe(1);
-
-    // just-bash's commands run on Free.
-    const echo = await gate(org, session, "sandbox_bash");
-
-    expect(await exec(org, echo, "echo hello")).toMatchObject({ ok: true });
-  });
-
-  it("counts a gated call once, and the computer time of its operations toward computer hours", async () => {
-    const org = await computerOrg("payg");
-    const session = await runSession(org);
-    const ticket = await gate(org, session, "sandbox_bash");
-
-    expect(await exec(org, ticket, ON_COMPUTER)).toMatchObject({ ok: true });
-    expect(await exec(org, ticket, ON_COMPUTER)).toMatchObject({ ok: true });
-    // The open and the gated call: two tool calls, however many operations the call made.
-    expect((await org.used()).requests).toBe(2);
-
-    await org.advance(5 * MINUTE);
-
-    const read = await gate(org, session, "sandbox_read");
-
-    expect(
-      await org.stub
-        .tools()
-        .runSandboxOperation("ar_1", read, { op: "stat", path: "/workspace/a" }),
-    ).toMatchObject({ ok: true });
-    expect((await org.used()).computerHours).toBeCloseTo(5 / 60, 4);
-  });
-  it("ends the run's turn in the plan's words when settling the call: its record says refused", async () => {
-    const org = await computerOrg();
-    const session = await runSession(org);
-    const ticket = await gate(org, session, "sandbox_bash");
-
-    expect(await exec(org, ticket, ON_COMPUTER)).toMatchObject({ ok: false });
-
-    const settled = await Effect.runPromise(
-      settleRunToolCall("ar_1", ticket, { outcome: "success", responseBytes: 12 }).pipe(
-        Effect.provideService(ToolsEnv, {
-          ...env,
-          CONTROL_PLANE: env.COMPUTER_SANDBOX_CONTROL_PLANE,
-        }),
-        Effect.provideService(BillingEnv, env),
-        // SAFETY: the org's name is a UUID, as an org id is.
-        Effect.provideService(CurrentOrg, org.name as OrgId),
-      ),
-    );
-
-    expect(settled).toMatchObject({ recorded: true });
-    expect(settled.refusal).toContain("plan_limit_reached");
-    expect(settled.refusal).toContain("no computer hours");
-    expect(settled.refusal).toContain("bash was not called");
-
-    const record = await env.USAGE.prepare(
-      `SELECT tool_outcome AS outcome FROM usage_records WHERE request_id = ?`,
-    )
-      .bind(ticket)
-      .first<{ outcome: string }>();
-
-    expect(record?.outcome).toBe("refused");
   });
 });
 

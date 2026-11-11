@@ -1,7 +1,6 @@
 // One approval (/approvals/$approvalId, #201): the page a pending tool call links to. It shows the tool, its toolkit,
 // the caller, the arguments (to an eligible approver, while it waits) and the time left, with approve and deny for
-// whoever may decide it. The server decides both (`can_decide`, `arguments`); anyone else gets `404`. A hosted agent
-// run's approval links its run's page (`run`, #234).
+// whoever may decide it. The server decides both (`can_decide`, `arguments`); anyone else gets `404`.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -9,7 +8,6 @@ import { Check, X } from "lucide-react";
 import { useState } from "react";
 import type { ApprovalDecision, ApprovalView } from "@commissary/contract/approvals";
 import { APPROVALS, approvalAtom, decideApprovalAtom, nowAtom } from "../api/client.ts";
-import { FromRun } from "../components/FromRun.tsx";
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import {
   approverLabel,
@@ -28,16 +26,9 @@ import styles from "./Approvals.module.css";
 const route = getRouteApi("/approvals/$approvalId");
 
 /**
- * Approve and Deny, for whoever may decide `approval` (`can_decide`); the run page's waits (#234) use it too, refetching
- * the run with the approvals (`keys`).
+ * Approve and Deny, for whoever may decide `approval` (`can_decide`).
  */
-export const Decide = ({
-  approval,
-  keys = APPROVALS,
-}: {
-  readonly approval: ApprovalView;
-  readonly keys?: ReadonlyArray<string>;
-}) => {
+export const Decide = ({ approval }: { readonly approval: ApprovalView }) => {
   const decide = useAction(decideApprovalAtom);
   const [problem, setProblem] = useState<string | undefined>(undefined);
   // The decision being sent: its button spins and says so, and both wait until it settles.
@@ -50,7 +41,7 @@ export const Decide = ({
     const outcome = await decide.run({
       params: { id: approval.id },
       payload: { decision },
-      reactivityKeys: keys,
+      reactivityKeys: APPROVALS,
     });
 
     setSending(undefined);
@@ -107,7 +98,6 @@ const Details = ({ approval }: { readonly approval: ApprovalView }) => {
 
   return (
     <>
-      <FromRun view={approval} />
       <dl className={styles["facts"]}>
         <dt>Status</dt>
         <dd role="status">{statusText(approval)}</dd>

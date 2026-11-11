@@ -239,7 +239,6 @@ describe("the optional pieces of the deployment", () => {
         hosted: true,
         browser: false,
         computer: false,
-        agents: true,
       });
       expect(body).not.toHaveProperty("hosted");
     }
