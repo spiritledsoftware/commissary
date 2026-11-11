@@ -1664,7 +1664,11 @@ Deviations from Go (all deliberate, documented in code headers):
   stream (awaited inline, never through `waitUntil`, because the next turn must see it); a stream without a finish reason commits
   nothing. Token counting only peeks (no TTL slide, no reservation, no write). An upstream 400 that mentions a signature clears
   the entry and surfaces the 400 (no retry; the conductor already fails a 400 over to another provider, which reads its own
-  ledger). A backend failure is a miss. Round trips per eligible request: 2 for a Claude or OpenAI chat client (read, commit), 3
+  ledger). A backend failure is a miss. What it stores is function calls and thought signatures only (no prompt or response text),
+  per session and model, 1 h after the last read or write (a read slides it); unlike Go it also has an absolute age: no entry lives
+  longer than 24 h from its first write however active the session is (a read past that wipes it and the turn writes a fresh
+  entry), so retention stays well inside ADR 0027's seven days. The org deletion removes the instances at once (they register with
+  the org's ControlPlane by name, and the isolation suite has a case per store). Round trips per eligible request: 2 for a Claude or OpenAI chat client (read, commit), 3
   for Responses (the text-signature prefetch, the ledger read and commit, plus one write per chunk that stored a text
   signature), 0 for Gemini and Interactions clients, 1 for token counting, +1 on a signature 400.
 - **Gemini responses (C6, Go `3f5d3a16`, `c5251b57`, `202b8b8c`, `e1fb2521`, `58257007`, `7f2f17d7`, `bdde391d`, `dfe0a0ef`)**:
@@ -2999,7 +3003,7 @@ two orgs never share an instance.
   session, 1 h sliding; it no longer holds the date), `claude/date-pin.ts` (store `claude-date-pin`, key org + caller scope + session,
   7 d TTL, one entry; read = 1 RPC, a compare-and-swap put only for the first anchor and then at most once a day),
   `devin/credentials.ts` (`incr`, one RPC per turn),
-  `gemini/replay.ts` (the per-caller text-signature cache: batched prefetch/flush), `antigravity/replay/ledger.ts` (the ledger of
+  `gemini/replay.ts` (the per-caller text-signature cache: batched prefetch/flush), `helps/reasoning-replay-ledger.ts` (the ledger of
   Antigravity, the Gemini API and Vertex: the store name is a parameter, `antigravity-replay`, `gemini-reasoning-replay` and
   `vertex-reasoning-replay`, so a session served by another target starts without replay state) and `gemini/antigravity-interactions.ts`.
   A store registers with the org's ControlPlane by the instance's own name, so the org wipe finds every one without a list.
@@ -3010,13 +3014,18 @@ two orgs never share an instance.
   index, context fingerprints, ledger items of the history), `apply.ts` (eligibility, locating parts by call id / opaque Claude id /
   context / occurrence, restoring native calls and signatures, inserting missing model calls), `provenance.ts` (degrading unresolved
   reserved ids to `call_<hash>`, signing first calls, `ValidateGeminiFunctionCallPairing`), `accumulator.ts` (turns the response
-  into items; committed only after a finish reason, before `response.completed` for Responses clients, otherwise before the EOF
-  completion), `ledger.ts` (normalisation, 1 h sliding TTL, snapshot-guarded replace/delete with _tombstones_, so a writer that read
+  into items; committed only after a finish reason, before the first translated chunk that carries a client-visible terminal event
+  (`terminal.ts`: `response.completed`, a chat `finish_reason`, `message_stop`, a Gemini `finishReason`; Go
+  `antigravityStreamChunksHaveTerminalCommitEvent`), otherwise before the EOF completion), `helps/reasoning-replay-ledger.ts`
+  (normalisation, 1 h sliding TTL with an absolute 24 h cap, snapshot-guarded replace/delete with _tombstones_, so a writer that read
   an older state cannot publish over a delete), `prepare.ts` (`prepareAntigravityGeminiReasoningReplayPayload`: replay, role
   normalisation, degrade, repair, pairing check; a replay that breaks pairing is dropped and the entry invalidated; an upstream 400
   mentioning a signature clears the entry; `peek` is the same read without the TTL slide, for token counting). Only Gemini-family
   models use it; on Antigravity the replay runs after the credits flag and before the boundary turns and the envelope, on the Gemini
-  API and Vertex after the boundary turns (see "Gemini, Vertex and Interactions", _Reasoning replay_).
+  API and Vertex after the boundary turns (see "Gemini, Vertex and Interactions", _Reasoning replay_). Token counting peeks the
+  ledger as well (no TTL slide, no reservation: Go `prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc`), and the symmetric
+  skip (Go `f36b195e`) applies here too: a request that comes in and goes out as Gemini or Interactions makes no ledger call unless
+  its history holds a Claude tool-provenance id.
 - **Interactions continuation** (`gemini/antigravity-interactions.ts`, Go `PrepareAntigravityInteractions`): for models starting
   with `antigravity` on the native Interactions path, a completed `requires_action` interaction is stored under the conversation
   key (caller, credential, endpoint, model, session identity or hash of the input up to the last user turn) and the sorted
