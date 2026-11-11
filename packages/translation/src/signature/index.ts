@@ -27,6 +27,12 @@ export {
   sanitizeClaudeMessagesForClaudeUpstream,
 } from "./claude-messages.ts";
 
+export {
+  decodeGeminiCodexThoughtSignature,
+  encodeGeminiCodexThoughtSignature,
+  GEMINI_CODEX_CARRIER_MAGIC,
+} from "./gemini-codex-carrier.ts";
+
 export { inspectGptReasoningSignature, isValidGptReasoningSignature } from "./gpt.ts";
 
 export { inspectGrokEncryptedContent, isValidGrokEncryptedContent } from "./grok.ts";

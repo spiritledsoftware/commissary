@@ -11,6 +11,7 @@ import { decodeBase64Raw } from "./base64.ts";
 import { entropyRatio } from "./entropy.ts";
 import { isValidClaudeCaisSignature, isValidClaudeThinkingSignature } from "./claude.ts";
 import { isKnownGeminiEnvelope } from "./gemini.ts";
+import { GEMINI_CODEX_CARRIER_MAGIC } from "./gemini-codex-carrier.ts";
 import { isValidMetaReasoningSignature } from "./meta.ts";
 import { splitRouterSuffix } from "./router-suffix.ts";
 import {
@@ -27,8 +28,6 @@ const MIN_GROK_DECODED_LEN = 32;
 const MIN_GROK_ENTROPY_RATIO = 0.85;
 
 const UNPADDED_BASE64 = /^[A-Za-z0-9+/]*$/;
-
-const GEMINI_CODEX_CARRIER_PREFIX = "cpa-codex-gemini-carrier-v1:";
 
 export interface GrokEncryptedContentInfo {
   /** The length of the whole value, router suffix included. */
@@ -75,8 +74,8 @@ export const inspectGrokEncryptedContent = (raw: string): GrokEncryptedContentIn
 
   // The Gemini Codex carrier (Go a68c7d8e) is base64 text of a prefixed string, never xAI ciphertext.
   if (
-    new TextDecoder().decode(decoded.subarray(0, GEMINI_CODEX_CARRIER_PREFIX.length)) ===
-    GEMINI_CODEX_CARRIER_PREFIX
+    new TextDecoder().decode(decoded.subarray(0, GEMINI_CODEX_CARRIER_MAGIC.length)) ===
+    GEMINI_CODEX_CARRIER_MAGIC
   ) {
     return undefined;
   }
