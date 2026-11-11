@@ -50,6 +50,13 @@ export const shortenNameIfNeeded = (name: string): string => {
   return sanitized.slice(0, NAME_LIMIT);
 };
 
+/** `customToolDefinition`: a custom declaration in either Chat Completions (`custom: {...}`) or Responses (flat) shape. */
+export const customToolDefinition = (tool: Json): Json => {
+  const nested = get(tool, "custom");
+
+  return isJsonObject(nested) ? nested : tool;
+};
+
 /** `collectRequestToolNames`: unique tool names across declarations, `tool_choice` and assistant tool calls. */
 export const collectRequestToolNames = (root: Json | undefined): string[] => {
   const names: string[] = [];
@@ -70,7 +77,7 @@ export const collectRequestToolNames = (root: Json | undefined): string[] => {
           add(asString(get(tool, "function.name")));
           break;
         case "custom":
-          add(asString(get(tool, "name")));
+          add(asString(get(customToolDefinition(tool), "name")));
           break;
       }
     }
@@ -89,7 +96,7 @@ export const collectRequestToolNames = (root: Json | undefined): string[] => {
       }
 
       case "custom":
-        add(asString(get(toolChoice, "name")));
+        add(asString(get(customToolDefinition(toolChoice), "name")));
         break;
     }
   }
@@ -301,7 +308,7 @@ export const convertOpenAIRequestToCodex = (
           functionToolNames.add(asString(get(tool, "function.name")));
           break;
         case "custom":
-          customToolNames.add(asString(get(tool, "name")));
+          customToolNames.add(asString(get(customToolDefinition(tool), "name")));
           break;
       }
     }
@@ -582,8 +589,15 @@ export const convertOpenAIRequestToCodex = (
       const toolType = asString(get(t, "type"));
 
       if (toolType === "custom") {
-        const item = cloneJson(t);
-        toolItems.push(set(item, "name", shortName(asString(get(t, "name")))));
+        const definition = customToolDefinition(t);
+        let item = set(cloneJson(definition), "type", "custom");
+        const grammar = get(definition, "format.grammar");
+
+        if (get(definition, "format.type") === "grammar" && isJsonObject(grammar)) {
+          item = set(item, "format", { ...cloneJson(grammar), type: "grammar" });
+        }
+
+        toolItems.push(set(item, "name", shortName(asString(get(definition, "name")))));
         continue;
       }
 
@@ -629,7 +643,7 @@ export const convertOpenAIRequestToCodex = (
       let tcType = asString(get(toolChoice, "type"));
 
       if (tcType === "function" || tcType === "custom") {
-        let name = asString(get(toolChoice, "name"));
+        let name = asString(get(customToolDefinition(toolChoice), "name"));
 
         if (tcType === "function") {
           name = asString(get(toolChoice, "function.name"));
