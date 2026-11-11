@@ -84,8 +84,7 @@ auth Worker, the app Worker.
    `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`, the MCP endpoint `/mcp`, toolkits' CIMD
    document `/oauth/toolkits/client.json`), `/healthz` and the cron trigger, under no Access
    application of its own: clients send API keys. It binds the Durable Objects by script name too, and the per-org rate limit
-   on Commissary Cloud. It defines no working Durable Object of its own, only two retired classes it still exports,
-   `AgentRun` and `AgentSchedule` (below, "Retired hosted agents"). Where it answers:
+   on Commissary Cloud. It defines no Durable Object of its own. Where it answers:
    - on the API host when there is one ([API host](#api-host)), as its custom domain;
    - else on the app host, through **zone routes** `<app host>/v1*`, `/openai/v1*`, `/backend-api/codex*`,
      `/chat/completions*`, `/completions*`, `/responses*`
@@ -107,31 +106,27 @@ app and the API Worker send each such call once more (`retryOnCodeUpdate`). Beca
 Worker with the old app and API Workers for a moment, state RPC changes are expand-then-contract
 (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract").
 
-**Retired hosted agents (ADR 0048).** Commissary no longer runs hosted agents, but some things of them stay for one
-release and a follow-up removes them:
+**Retired hosted agents (ADR 0048).** Commissary no longer runs hosted agents. They were removed in two releases, and
+a stage must deploy them **in order**: the release that removed the area (#450) first, then the one after it (#449).
 
-- **The tombstone classes.** The API Worker still exports the Durable Object classes `AgentRun` and `AgentSchedule`
-  (`apps/api/src/retired-objects.ts`) and keeps their bindings in `alchemy.run.ts`; the app Worker no longer binds them.
-  Cloudflare refuses to delete a class another Worker still binds (`tombstone_delete_blocked_by_external_bindings`), and
-  the API Worker deploys before the app Worker, which bound them until this release. A tombstone does nothing: if an alarm,
-  fetch or RPC wakes it, it deletes its alarm and all its storage. Only objects that wake empty themselves: a finished
-  run has no alarm and nothing wakes it, so its transcript stays in storage until the follow-up release removes the
-  classes and the bindings, when Alchemy emits `deleted_classes` and Cloudflare deletes the namespaces with their data.
-  That follow-up is what deletes the old runs' data (ADR 0027), so it must not be skipped.
-- **The usage columns.** The D1 usage table keeps its `agent_id`, `run_id` and `starter` columns and its
-  index `usage_records_org_run` (migrations 0011, 0013 and 0015). D1 migrations apply before the Workers deploy, so dropping them in
-  this release would break the previous API Worker's inserts while the deploy is half done. Nothing reads or writes them
-  any more, and a follow-up migration drops them. It must `DROP INDEX usage_records_org_run` before it drops
-  `run_id`, because SQLite refuses to drop an indexed column.
-- **State RPC shims.** The state Worker still answers `privateAgents: false` and an `OrgRecord` whose `runRetentionDays`
-  is `null` (and keeps `Platform.setRetention`), for an app Worker from before this release that meets the new state
-  Worker during the deploy. The follow-up removes them too. The other agent-only state RPC methods and outcomes are
-  removed now (ADR 0048): an older API or app Worker fails only on its agent paths during the deploy.
+- **#450** removed the area. The API Worker kept the Durable Object classes `AgentRun` and `AgentSchedule` as
+  tombstones and its own bindings of them, while the app Worker stopped binding them: Cloudflare refuses to delete a
+  class another Worker still binds (`tombstone_delete_blocked_by_external_bindings`), and the API Worker deploys before
+  the app Worker. The D1 columns `agent_id`, `run_id` and `starter` stayed unused, as D1 migrations apply before the
+  Workers deploy and the previous API Worker still wrote them. The state Worker answered a few retired values
+  (`privateAgents: false`, `OrgRecord.runRetentionDays: null`, `Platform.setRetention`) to an app Worker from before it.
+  Its other agent-only state RPC methods and outcomes went at once: an older API or app Worker failed only on its agent
+  paths during the deploy.
+- **#449** removed the rest. The API Worker no longer defines or binds the two classes, so Alchemy marks their exports
+  deleted and Cloudflare deletes their namespaces with every old run's and schedule's data (ADR 0027).
+  Migration `0016_usage_drop_agent_runs.sql` drops the index `usage_records_org_run` and then the three columns. The
+  state RPC no longer answers the retired values. A stage that deploys #449 without #450 having deployed first fails:
+  its app Worker would still bind the classes.
 
-The state Worker cleans up what it owns on each start, which is a no-op after the first: each ControlPlane drops the Agents tables (`agents`,
+Still in place: the state Worker cleans up what it owns on each start, which is a no-op after the first: each ControlPlane drops the Agents tables (`agents`,
 `agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers`, `agent_schedule_objects`; the Tools part's toolkit
 store drops `sandbox_run_calls`) , deletes the Spend limits and counters of kind `agent` and drops the `private_agents` column of its membership table, and the Platform registry drops its
-`run_retention_days` column. A run's sandbox sessions, which were kept until the run's purge, are cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set. An API key's tool scope that names the
+`run_retention_days` column. A run's sandbox sessions, which were kept until the run's purge, are cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set; once none is left, #451 removes this purge. An API key's tool scope that names the
 `agents` toolkit shows it as a missing toolkit (`tool_scope_missing`), like any removed toolkit, and a stored
 `private_agents` setting is ignored.
 

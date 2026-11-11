@@ -450,12 +450,6 @@ export default Alchemy.Stack(
           // point there. A preview and `alchemy dev` bind none, and the links name their pages in words.
           ...(!dev && !settings.preview ? { APP_DOMAIN: settings.appDomain } : {}),
           ...(split ? { API_DOMAIN: settings.apiDomain } : {}),
-          // Retired (ADR 0048): the hosted agents' classes, kept this release as tombstones (apps/api/src/retired-objects.ts)
-          // because Cloudflare refuses to delete a class another Worker still binds, and the previous app Worker
-          // does until it is deployed. A follow-up release removes these two bindings and the classes (Alchemy then
-          // emits `deleted_classes`).
-          AGENT_RUN: Cloudflare.DurableObject("AgentRun"),
-          AGENT_SCHEDULE: Cloudflare.DurableObject("AgentSchedule"),
           ...hostedApiEnv,
           ...mcpOAuthEnv,
         },

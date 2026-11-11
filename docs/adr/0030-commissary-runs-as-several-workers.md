@@ -1,5 +1,5 @@
 ---
-status: partly superseded by ADR-0031, amended below (#227: the agent runs' Durable Object lives in the API Worker; ADR-0048: it is retired)
+status: partly superseded by ADR-0031, amended below (#227: the agent runs' Durable Object lives in the API Worker; ADR-0048: it is retired, then deleted)
 ---
 
 # Commissary runs as several Workers
@@ -44,6 +44,6 @@ Hosted agents' runs (#227, ADR 0040) are one Durable Object each, `AgentRun`, an
 - The app Worker binds `AGENT_RUN` by the API Worker's `scriptName`, so on every stage the API Worker deploys before the app Worker: the state Worker, then the API Worker, then the auth Worker, then the app Worker.
 - Deploying the API Worker restarts the runs' objects, and every merge deploys it. A run resumes from its storage: a finished tool call is never made again, but a model call that was cut off is made again.
 
-## Amendment: the agent runs' objects are retired
+## Amendment: the agent runs' objects are retired and deleted
 
-ADR 0048 removes hosted agents, so nothing starts `AgentRun` or `AgentSchedule` objects any more. The API Worker still exports both as tombstone classes (`apps/api/src/retired-objects.ts`) and keeps its own bindings, and the app Worker no longer binds them. Cloudflare refuses to delete a class another Worker binds, and the API Worker deploys before the app Worker, so the classes can only go in a follow-up release. The deploy order above (the state Worker, then the API Worker, then the auth Worker, then the app Worker) is unchanged. A tombstone deletes its alarm and its storage when woken, but a finished run has no alarm and nothing wakes it, so the old runs' data goes only when the follow-up removes the classes.
+ADR 0048 removes hosted agents, so nothing starts `AgentRun` or `AgentSchedule` objects any more. The release that removed them kept both classes in the API Worker as tombstones, with its own bindings, while the app Worker stopped binding them: Cloudflare refuses to delete a class another Worker binds, and the API Worker deploys before the app Worker. The release after it (#449) removed the classes, which deleted their namespaces and the old runs' data, so the API Worker defines no Durable Object class of its own any more. The deploy order above (the state Worker, then the API Worker, then the auth Worker, then the app Worker) is unchanged.

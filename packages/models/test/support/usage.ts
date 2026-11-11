@@ -13,6 +13,7 @@ import browserTime from "../../../../migrations/usage/0012_usage_browser_time.sq
 import privateAgentRuns from "../../../../migrations/usage/0013_usage_private_agent_runs.sql?raw";
 import computerTime from "../../../../migrations/usage/0014_usage_computer_time.sql?raw";
 import runIndex from "../../../../migrations/usage/0015_usage_run_index.sql?raw";
+import dropAgentRuns from "../../../../migrations/usage/0016_usage_drop_agent_runs.sql?raw";
 import { GLOBAL_ORG } from "@commissary/core";
 import { emptyUsageDetail, type UsageRecord } from "../../src/usage/record.ts";
 
@@ -26,7 +27,7 @@ export const statementsOf = (sql: string): string[] =>
     .filter((statement) => statement !== "");
 
 /**
- * Applies the checked-in migrations of the usage records (0001 to 0007, 0010 to 0015) to the test D1 database
+ * Applies the checked-in migrations of the usage records (0001 to 0007, 0010 to 0016) to the test D1 database
  * (idempotent) and empties the table. Better Auth's old `auth_` tables (0008, dropped by 0009) are not part of the test
  * schema. `ALTER TABLE ... ADD COLUMN` has no IF NOT EXISTS, so a duplicate-column failure of an already migrated
  * database is ignored.
@@ -46,6 +47,7 @@ export const resetUsageDb = async (db: D1Database = env.USAGE): Promise<D1Databa
     ...statementsOf(privateAgentRuns),
     ...statementsOf(computerTime),
     ...statementsOf(runIndex),
+    ...statementsOf(dropAgentRuns),
   ]) {
     try {
       await db

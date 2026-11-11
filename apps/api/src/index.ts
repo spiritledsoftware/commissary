@@ -4,9 +4,6 @@ import { misdirected } from "./http/hosts.ts";
 import { dispatchScheduled } from "./scheduled.ts";
 import { requestContext } from "./worker-env.ts";
 
-// The hosted agents' Durable Object classes, retired (ADR 0048): tombstones for this release, a follow-up removes them.
-export { AgentRun, AgentSchedule } from "./retired-objects.ts";
-
 /**
  * The API Worker (ADR 0030): the client API and the cron jobs. Its Durable Objects are the state Worker's (apps/state),
  * bound by script name (alchemy.run.ts); a deploy of the state Worker resets them, and the calls cut off then are

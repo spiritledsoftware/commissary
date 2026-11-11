@@ -399,7 +399,6 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       autoJoin: this.#members.autoJoin(),
       privateCredentials: this.#members.privateCredentials(),
       privateToolkits: this.#members.privateToolkits(),
-      privateAgents: false,
       accessClients: this.#apiKeys.accessClients(),
     };
   }
@@ -409,9 +408,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
    * or on again at once; `privateToolkits` stops serving every private toolkit (kept, not deleted) or serves them again,
    * which the Tools part reads on every use.
    */
-  setMembershipSettings(
-    settings: Partial<Omit<MembershipSettingsWire, "privateAgents">>,
-  ): MembershipSettingsWire {
+  setMembershipSettings(settings: Partial<MembershipSettingsWire>): MembershipSettingsWire {
     this.#seedPlatformAdmins();
 
     if (settings.autoJoin !== undefined) this.#members.setAutoJoin(settings.autoJoin);
