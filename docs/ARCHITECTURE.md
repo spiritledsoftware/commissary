@@ -5174,7 +5174,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     below). A session a call found closed is kept, as its close's report is
     still to come. One whose close was never heard of is forgotten from the part's alarm `SESSION_IDLE_MS` +
     `CLOSE_REPORT_MS` (a day and a week) after its last use, so a session whose report keeps failing stays listed up to
-    eight days. A session a hosted agent's run opened (ADR 0048) has no idle day in the sandbox, so it is the exception: the Tools part's alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set (`hasRunSessions`, `runSessionsDue`, `purgeFailed`). A member who leaves takes their sessions at once (`memberLeft`: each used within the day is purged,
+    eight days. A member who leaves takes their sessions at once (`memberLeft`: each used within the day is purged,
     settled first as a close is, its last stretch of computer time charged and its usage record written (#224), then
     deleted with its files and no note; an older one is closed already, its files gone, and left to report its close),
     and the org's deletion purges every one (Tools' org-deletion step, `purgeSandboxSessions`, a page of 20 at a time
@@ -5435,5 +5435,7 @@ columns (_Usage accounting and observability_, "Dropped columns"). What stays:
   `agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers` and `agent_schedule_objects`; Tools' toolkit store
   drops `sandbox_run_calls`) and deletes the Spend limits and counters of kind `agent`; the Platform registry drops its
   `run_retention_days` column. An API key's tool scope naming the `agents` toolkit shows it as a missing toolkit
-  (`tool_scope_missing`), like any removed toolkit, and a stored `private_agents` setting is ignored. A sandbox session
-  a run held is cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set. Once none is left, #451 removes this purge.
+  (`tool_scope_missing`), like any removed toolkit, and a stored `private_agents` setting is ignored. The sandbox
+  sessions runs held were deleted at the provider by the Tools part's alarm for a time; #451 removed that purge, and its
+  columns (`purge_retry_at`, `purge_failures`) are dropped as the part starts. A run's session still listed then is
+  forgotten eight days after its last use, as any session.

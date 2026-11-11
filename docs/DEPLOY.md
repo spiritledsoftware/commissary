@@ -126,7 +126,8 @@ a stage must deploy them **in order**: the release that removed the area (#450) 
 Still in place: the state Worker cleans up what it owns on each start, which is a no-op after the first: each ControlPlane drops the Agents tables (`agents`,
 `agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers`, `agent_schedule_objects`; the Tools part's toolkit
 store drops `sandbox_run_calls`) , deletes the Spend limits and counters of kind `agent` and drops the `private_agents` column of its membership table, and the Platform registry drops its
-`run_retention_days` column. A run's sandbox sessions, which were kept until the run's purge, are cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set; once none is left, #451 removes this purge. An API key's tool scope that names the
+`run_retention_days` column. For a time the Tools part's alarm deleted at the provider the sandbox sessions runs had held; #451 removed that purge,
+and the Tools part drops its columns (`purge_retry_at`, `purge_failures`) as it starts. An API key's tool scope that names the
 `agents` toolkit shows it as a missing toolkit (`tool_scope_missing`), like any removed toolkit, and a stored
 `private_agents` setting is ignored.
 
