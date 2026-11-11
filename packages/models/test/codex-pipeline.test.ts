@@ -553,6 +553,36 @@ describe("upstream error classification", () => {
   });
 });
 
+// CLIProxyAPI 7795de19 (issue 6575): one event's JSON split across several `data:` lines.
+describe("an event split across data lines", () => {
+  const completedJson = JSON.stringify(completed([MESSAGE_ITEM]));
+  const cut = completedJson.indexOf('"output":');
+
+  const splitCompleted = `event: response.completed\r\ndata: ${completedJson.slice(0, cut)}\r\ndata: ${completedJson.slice(cut)}\r\n\r\n`;
+
+  it("is joined in a non-stream aggregation", async () => {
+    const p = pipeline(() => sseResponse([frame(created()), splitCompleted]));
+    const response = await p.call("/v1/responses", postJson({ model: "gpt-5.4", input: "hi" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: "resp_1", output: [{ id: "msg_1" }] });
+  });
+
+  it("is joined in a stream, so the split response.completed still ends it", async () => {
+    const p = pipeline(() => sseResponse([frame(created()), splitCompleted]));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", input: "hi", stream: true }),
+    );
+
+    const text = await response.text();
+    expect(text).toContain("event: response.completed");
+    expect(text).toContain('"id":"msg_1"');
+    expect(p.records[0]?.failed).toBe(false);
+  });
+});
+
 describe("POST /v1/responses/compact", () => {
   it("posts to /responses/compact without streaming and returns the JSON body", async () => {
     const compaction = {

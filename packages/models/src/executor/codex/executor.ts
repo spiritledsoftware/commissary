@@ -136,6 +136,7 @@ import {
 import { modelOverrideHeaders } from "../helps/model-headers.ts";
 import { configuredUpstreamNames, isCompatModel } from "./compat.ts";
 import { bootstrapTimeoutMs, isGrokClientHeaders } from "./bootstrap.ts";
+import { CodexSseAssembler } from "./sse-assembler.ts";
 import { CodexStreamReader } from "./stream.ts";
 import {
   codexWebsocketsEnabled,
@@ -641,7 +642,15 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     let sawOutputDelta = false;
     const modelLevelCooling = context.config.upstream.codex["model-level-cooling"];
 
-    for (const line of text.split("\n")) {
+    const assembler = new CodexSseAssembler();
+    const rawLines = text.split(/\r?\n/);
+
+    const eventLines = [
+      ...rawLines.flatMap((rawLine) => assembler.push(rawLine)),
+      ...assembler.end(),
+    ];
+
+    for (const line of eventLines) {
       if (!line.startsWith("data:")) continue;
 
       const event = tryParseJson(
@@ -782,8 +791,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       grokClient: isGrokClientHeaders(options.headers),
     });
 
+    // An event the upstream split across several `data:` lines is joined before the reader sees it.
+    const assembler = new CodexSseAssembler();
+
     const chunks = splitLines(response.stream).pipe(
       Stream.mapError(transportError),
+      Stream.flatMap((line: string) => Stream.fromIterable(assembler.push(line))),
+      Stream.concat(Stream.suspend(() => Stream.fromIterable(assembler.end()))),
       Stream.mapAccumEffect(
         () => reader,
         (state, line: string) =>
