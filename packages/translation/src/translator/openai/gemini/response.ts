@@ -19,7 +19,24 @@ interface ToolCallAccumulator {
   id: string;
   name: string;
   arguments: string;
+  thoughtSignature: string;
 }
+
+/** `openAIToolCallThoughtSignature`: the Gemini thought signature an OpenAI-compatible upstream attached to a tool call. */
+const openAIToolCallThoughtSignature = (toolCall: Json | undefined): string => {
+  for (const path of [
+    "extra_content.google.thought_signature",
+    "function.extra_content.google.thought_signature",
+    "thoughtSignature",
+    "thought_signature",
+  ]) {
+    const signature = get(toolCall, path);
+
+    if (signature !== undefined && str(signature) !== "") return str(signature);
+  }
+
+  return "";
+};
 
 /** Port of `ConvertOpenAIResponseToGeminiParams`. */
 interface GeminiStreamParams {
@@ -477,6 +494,8 @@ export const convertOpenAIResponseToGemini = (
     }
 
     const toolCalls = get(delta, "tool_calls");
+    const deltaFinish = get(choice, "finish_reason");
+    const deltaFinishes = typeof deltaFinish === "string" && deltaFinish !== "";
 
     if (isArr(toolCalls)) {
       for (const toolCall of toolCalls) {
@@ -484,18 +503,19 @@ export const convertOpenAIResponseToGemini = (
         const toolId = getStr(toolCall, "id");
         const toolType = getStr(toolCall, "type");
         const fn = get(toolCall, "function");
+        const thoughtSignature = openAIToolCallThoughtSignature(toolCall);
 
         // Skip non-function tool calls explicitly marked as other types.
         if (toolType !== "" && toolType !== "function") continue;
 
-        // Deltas may omit the type field while still carrying function data.
-        if (fn === undefined) continue;
+        // Deltas may omit the type field while still carrying function data, or only a thought signature.
+        if (fn === undefined && thoughtSignature === "") continue;
         const functionName = getStr(fn, "name");
         const functionArgs = getStr(fn, "arguments");
         let acc = param.toolCallsAccumulator.get(toolIndex);
 
         if (acc === undefined) {
-          acc = { id: toolId, name: functionName, arguments: "" };
+          acc = { id: toolId, name: functionName, arguments: "", thoughtSignature: "" };
           param.toolCallsAccumulator.set(toolIndex, acc);
         }
 
@@ -504,10 +524,13 @@ export const convertOpenAIResponseToGemini = (
         if (functionName !== "") acc.name = functionName;
 
         if (functionArgs !== "") acc.arguments += functionArgs;
+
+        if (thoughtSignature !== "") acc.thoughtSignature = thoughtSignature;
       }
 
-      // Nothing is emitted for tool call deltas: the call is output once the stream finishes.
-      continue;
+      // Nothing is emitted for tool call deltas: the call is output once the stream finishes, which is this very delta
+      // when it carries the finish_reason.
+      if (!deltaFinishes) continue;
     }
 
     const finishReason = get(choice, "finish_reason");
@@ -528,7 +551,11 @@ export const convertOpenAIResponseToGemini = (
           if (accumulator.id !== "") functionCall.id = accumulator.id;
           functionCall.name = accumulator.name;
           functionCall.args = parseArgsToObject(accumulator.arguments);
-          parts.push({ functionCall });
+          const part: JsonObject = { functionCall };
+
+          if (accumulator.thoughtSignature !== "")
+            part.thoughtSignature = accumulator.thoughtSignature;
+          parts.push(part);
         }
 
         candidateContent(candidate).parts = parts;
@@ -618,7 +645,12 @@ export const convertOpenAIResponseToGeminiNonStream = (
           if (functionID !== "") functionCall.id = functionID;
           functionCall.name = getStr(fn, "name");
           functionCall.args = parseArgsToObject(getStr(fn, "arguments"));
-          ensurePart(partIndex).functionCall = functionCall;
+          const part = ensurePart(partIndex);
+          part.functionCall = functionCall;
+
+          const thoughtSignature = openAIToolCallThoughtSignature(toolCall);
+
+          if (thoughtSignature !== "") part.thoughtSignature = thoughtSignature;
           partIndex++;
         }
       }

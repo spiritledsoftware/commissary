@@ -35,6 +35,23 @@ const deterministicToolCallId = (
 ): string =>
   `call_${createHash("sha256").update(`${kind}|${msgIdx}|${partIdx}|${name}|${payload}`).digest("hex").slice(0, 24)}`;
 
+/** `geminiFunctionCallThoughtSignature`: the signature of a functionCall part, wherever the client put it. */
+const geminiFunctionCallThoughtSignature = (part: Json | undefined): string => {
+  for (const path of [
+    "thoughtSignature",
+    "thought_signature",
+    "functionCall.thoughtSignature",
+    "functionCall.thought_signature",
+    "extra_content.google.thought_signature",
+  ]) {
+    const signature = get(part, path);
+
+    if (signature !== undefined && str(signature) !== "") return str(signature);
+  }
+
+  return "";
+};
+
 const explicitGeminiToolId = (node: Json | undefined): string => {
   const id = getStr(node, "id").trim();
 
@@ -331,11 +348,18 @@ export const convertGeminiRequestToOpenAI = (
             const queue = toolCallIdsByName.get(funcName) ?? [];
             queue.push(toolCallId);
             toolCallIdsByName.set(funcName, queue);
-            toolCallItems.push({
+
+            const toolCall: JsonObject = {
               id: toolCallId,
               type: "function",
               function: { name: funcName, arguments: argsRaw !== "" ? argsRaw : "{}" },
-            });
+            };
+
+            const thoughtSignature = geminiFunctionCallThoughtSignature(part);
+
+            if (thoughtSignature !== "")
+              toolCall.extra_content = { google: { thought_signature: thoughtSignature } };
+            toolCallItems.push(toolCall);
           }
 
           const functionResponse = geminiPartFunctionResponse(part);
