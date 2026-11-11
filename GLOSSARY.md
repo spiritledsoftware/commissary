@@ -451,12 +451,12 @@ An org-defined change to the body sent upstream. Payload rules are applied after
 _Avoid_: payload (on its own), payload config
 
 **Reasoning signature**:
-An opaque, provider-signed token on reasoning content. Only the provider that produced it accepts it back.
+An opaque, provider-signed token on reasoning content. Only the upstream that produced it accepts it back: for some providers that means the same endpoint or router, not just the same model family.
 _Avoid_: thought signature, signature (on its own)
 
 **Reasoning replay**:
 Putting a previous turn's reasoning back into a request, because the client did not send it back.
-_Avoid_: continuity, ledger
+_Avoid_: continuity, ledger, replay store, replay KV
 
 **Native compaction**:
 Compaction a provider performs itself: it replaces a conversation's earlier history with its own opaque compaction

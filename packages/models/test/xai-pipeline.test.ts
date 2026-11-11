@@ -22,6 +22,7 @@ import {
   type XaiPickerLog,
 } from "./support/xai.ts";
 import type { Json } from "@commissary/json";
+import { routerSuffixed } from "./support/signatures.ts";
 
 const YAML = `
 upstream:
@@ -545,6 +546,46 @@ describe("request shaping", () => {
     expect(upstream.input).toHaveLength(3);
     expect("encrypted_content" in upstream.input[0]!).toBe(false);
     expect(upstream.input[1]?.["encrypted_content"]).toBe(good);
+  });
+
+  // Go a68c7d8e: OpenRouter's private router suffix (`.slug`) survives on openrouter.ai only; every other upstream gets the
+  // native ciphertext.
+  describe.each([
+    ["the official API", xaiKey(), false],
+    [
+      "a third-party host",
+      xaiKey({ attributes: { api_key: "k", base_url: "https://grok.example.test/v1" } }),
+      false,
+    ],
+    [
+      "openrouter.ai",
+      xaiKey({ attributes: { api_key: "k", base_url: "https://openrouter.ai/api/v1" } }),
+      true,
+    ],
+  ])("router-suffixed reasoning on %s", (_name, credential, keepsSuffix) => {
+    it(
+      keepsSuffix ? "keeps the suffix" : "strips the suffix to the native ciphertext",
+      async () => {
+        const native = grokCiphertext(11);
+        const routed = routerSuffixed(native, 62);
+        const p = pipeline(() => sseResponse(TEXT_STREAM), { credentials: [credential] });
+
+        await p.call(
+          "/v1/responses",
+          postJson({
+            model: "grok-4.3",
+            input: [
+              { type: "reasoning", summary: [], content: null, encrypted_content: routed },
+              { type: "message", role: "user", content: "hi" },
+            ],
+          }),
+        );
+
+        const upstream = JSON.parse(p.calls[0]!.body) as { input: Array<Record<string, unknown>> };
+
+        expect(upstream.input[0]?.["encrypted_content"]).toBe(keepsSuffix ? routed : native);
+      },
+    );
   });
 
   it("applies payload rules after every built-in change", async () => {

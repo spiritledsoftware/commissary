@@ -14,6 +14,7 @@ import {
   isKnownGeminiEnvelope,
 } from "./gemini.ts";
 import { isValidGptReasoningSignature } from "./gpt.ts";
+import { isValidMetaReasoningSignature } from "./meta.ts";
 import {
   inspectClaudeCaisSignature,
   isValidClaudeCaisSignature,
@@ -29,7 +30,8 @@ export type SignatureProvider =
   | "gpt"
   | "kimi"
   | "grok"
-  | "swe";
+  | "swe"
+  | "meta";
 
 export type SignatureBlockKind =
   | "unknown"
@@ -56,10 +58,54 @@ export interface SignatureCompatibilityDecision {
   readonly reason: string;
 }
 
-/** `SignatureProviderFromModelName`. */
+/**
+ * `isMetaMuseModelName`: a Meta Muse model on a native or third-party provider (`muse`, `muse-*`, `muse_*`,
+ * `meta-muse-*`) without matching unrelated substrings such as `museum` or `amuse`.
+ */
+const isMetaMuseModelName = (lower: string): boolean => {
+  if (
+    lower === "muse" ||
+    lower.startsWith("muse-") ||
+    lower.startsWith("muse_") ||
+    lower.endsWith("/muse") ||
+    lower.includes("/muse-") ||
+    lower.includes("/muse_")
+  ) {
+    return true;
+  }
+
+  for (const prefix of ["meta-", "meta_"]) {
+    const index = lower.indexOf(`${prefix}muse`);
+
+    if (index < 0) continue;
+    const rest = lower.slice(index + prefix.length + 4);
+
+    if (rest === "" || "-_.:".includes(rest.charAt(0))) return true;
+  }
+
+  return false;
+};
+
+/**
+ * `SignatureProviderFromModelName`: the provider family whose signed history can be replayed for the model. A
+ * namespaced id's canonical model is its last `/` or `:` segment, so a vendor or router prefix such as
+ * `openai-compatible/` does not outrank the actual family (`openai-compatible/muse-spark-1.3` is Meta, not GPT); only
+ * when that segment names no family does the whole string get the substring treatment.
+ */
 export const signatureProviderFromModelName = (modelName: string): SignatureProvider => {
   const lower = modelName.trim().toLowerCase();
 
+  if (lower === "") return "unknown";
+  const cut = Math.max(lower.lastIndexOf("/"), lower.lastIndexOf(":"));
+  const candidate = cut >= 0 && cut < lower.length - 1 ? lower.slice(cut + 1) : lower;
+  const provider = providerFromModelNameValue(candidate);
+
+  if (provider !== "unknown" || candidate === lower) return provider;
+
+  return providerFromModelNameValue(lower);
+};
+
+const providerFromModelNameValue = (lower: string): SignatureProvider => {
   if (lower.includes("claude")) return "claude";
 
   if (lower.includes("gemini")) return "gemini";
@@ -85,6 +131,8 @@ export const signatureProviderFromModelName = (modelName: string): SignatureProv
   }
 
   if (lower.includes("grok")) return "grok";
+
+  if (isMetaMuseModelName(lower)) return "meta";
 
   if (lower.includes("swe-")) return "swe";
 
@@ -234,6 +282,8 @@ export const detectSignatureProvider = (
   if (maybeSelfDescribingSignatureEnvelope(sig)) {
     if (isValidGptReasoningSignature(sig)) return "gpt";
 
+    if (isValidMetaReasoningSignature(sig)) return "meta";
+
     if (isValidClaudeCaisSignature(sig)) return "claude";
 
     if (isValidClaudeThinkingSignature(sig, { strict: true })) return "claude";
@@ -253,6 +303,7 @@ const providerMatchesTarget = (target: SignatureProvider, detected: SignaturePro
     case "claude":
     case "gpt":
     case "swe":
+    case "meta":
     case "kimi":
       return detected === target;
     default:
@@ -283,6 +334,8 @@ const normalizeForProvider = (target: SignatureProvider, raw: string): string =>
       return isValidGptReasoningSignature(payload) ? payload : "";
     case "swe":
       return payload.startsWith("sealed.v1.") ? payload : "";
+    case "meta":
+      return isValidMetaReasoningSignature(payload) ? payload : "";
     case "kimi":
       return isValidKimiThinkingSignature(payload) ? payload : "";
     default:
@@ -418,6 +471,14 @@ export const decideSignatureCompatibility = (
         ...none,
         action: "drop_block",
         reason: "SWE requires sealed.v1 signature from its own backend",
+      };
+    case "meta":
+      return {
+        ...incompatible,
+        ...none,
+        action: "drop_block",
+        reason:
+          "Meta Muse requires its native encrypted_content envelope and has no cross-provider bypass sentinel",
       };
     case "grok":
       return {

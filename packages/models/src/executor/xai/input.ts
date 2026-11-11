@@ -19,7 +19,8 @@ import {
   parseJsonOrText,
   tryParseJson,
 } from "@commissary/json";
-import { isValidGrokEncryptedContent } from "@commissary/translation/signature";
+import { inspectGrokEncryptedContent, stripRouterSuffix } from "@commissary/translation/signature";
+import { isOpenRouterUpstreamUrl } from "../helps/responses-signature.ts";
 import { hasFunctionToolNamed, qualifyNamespaceToolName } from "./tools.ts";
 
 const trimmed = (value: Json | undefined, path: string): string =>
@@ -252,10 +253,13 @@ export const normalizeInputReasoningItems = (body: Json): Json => {
 };
 
 /**
- * `sanitizeXAIInputEncryptedContent`: reasoning/compaction blobs that are not replay-safe Grok ciphertext are
- * removed (the whole `compaction` item, only the `encrypted_content` of a `reasoning` item).
+ * `sanitizeXAIInputEncryptedContent[WithOptions]`: reasoning/compaction blobs that are not replay-safe Grok ciphertext
+ * are removed (the whole `compaction` item, only the `encrypted_content` of a `reasoning` item). A router suffix
+ * (OpenRouter's routing tag) is kept with `allowRouterSuffix`, otherwise stripped to the native ciphertext (Go
+ * a68c7d8e). Request preparation does not know the upstream yet and keeps it; `sanitizeInputEncryptedContentForBaseUrl`
+ * decides once the base URL is known.
  */
-export const sanitizeInputEncryptedContent = (body: Json): Json => {
+export const sanitizeInputEncryptedContent = (body: Json, allowRouterSuffix = false): Json => {
   const input = inputItems(body);
 
   if (input === undefined) return body;
@@ -275,8 +279,14 @@ export const sanitizeInputEncryptedContent = (body: Json): Json => {
     }
 
     const encrypted = item["encrypted_content"];
+    const grok = typeof encrypted === "string" ? inspectGrokEncryptedContent(encrypted) : undefined;
 
-    if (typeof encrypted === "string" && isValidGrokEncryptedContent(encrypted)) {
+    if (typeof encrypted === "string" && grok !== undefined) {
+      if (grok.routerSuffix !== "" && !allowRouterSuffix) {
+        item["encrypted_content"] = stripRouterSuffix(encrypted, grok.routerSuffix);
+        changed = true;
+      }
+
       items.push(item);
       continue;
     }
@@ -293,6 +303,10 @@ export const sanitizeInputEncryptedContent = (body: Json): Json => {
 
   return mergeAdjacentReasoningSummaries(body);
 };
+
+/** `sanitizeXAIInputEncryptedContentForBaseURL`: the suffix survives on OpenRouter only. */
+export const sanitizeInputEncryptedContentForBaseUrl = (body: Json, baseUrl: string): Json =>
+  sanitizeInputEncryptedContent(body, isOpenRouterUpstreamUrl(baseUrl));
 
 // ---------------------------------------------------------------------------------------------------------------
 // Image references

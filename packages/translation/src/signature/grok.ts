@@ -11,6 +11,9 @@ import { decodeBase64Raw } from "./base64.ts";
 import { entropyRatio } from "./entropy.ts";
 import { isValidClaudeCaisSignature, isValidClaudeThinkingSignature } from "./claude.ts";
 import { isKnownGeminiEnvelope } from "./gemini.ts";
+import { GEMINI_CODEX_CARRIER_MAGIC } from "./gemini-codex-carrier.ts";
+import { isValidMetaReasoningSignature } from "./meta.ts";
+import { splitRouterSuffix } from "./router-suffix.ts";
 import {
   detectSignatureProvider,
   isValidKimiThinkingSignature,
@@ -26,36 +29,67 @@ const MIN_GROK_ENTROPY_RATIO = 0.85;
 
 const UNPADDED_BASE64 = /^[A-Za-z0-9+/]*$/;
 
-/** `IsValidGrokEncryptedContent` (`InspectGrokEncryptedContent` returned no error). */
-export const isValidGrokEncryptedContent = (raw: string): boolean => {
+export interface GrokEncryptedContentInfo {
+  /** The length of the whole value, router suffix included. */
+  readonly rawLen: number;
+  readonly decodedLen: number;
+  /** The router suffix OpenRouter appends after the native ciphertext, `""` for a native value. */
+  readonly routerSuffix: string;
+}
+
+/**
+ * `InspectGrokEncryptedContent`: the description of a (router-suffixed) xAI `encrypted_content`, or `undefined` when
+ * `raw` fails the replay-safety check.
+ */
+export const inspectGrokEncryptedContent = (raw: string): GrokEncryptedContentInfo | undefined => {
   const sig = raw.trim();
 
-  if (sig === "" || sig.length > MAX_GROK_ENCRYPTED_CONTENT_LEN || sig !== raw) return false;
+  if (sig === "" || sig.length > MAX_GROK_ENCRYPTED_CONTENT_LEN || sig !== raw) return undefined;
 
-  if (sig.includes("=") || !UNPADDED_BASE64.test(sig)) return false;
+  if (sig.includes("=")) return undefined;
 
-  if (splitSignatureProviderPrefix(sig) !== undefined) return false;
+  if (splitSignatureProviderPrefix(sig) !== undefined) return undefined;
+  const split = splitRouterSuffix(sig);
+
+  if (split === undefined || !UNPADDED_BASE64.test(split.native)) return undefined;
+  const native = split.native;
 
   // Foreign envelopes can only start with one of the self-describing first characters.
-  if (maybeSelfDescribingSignatureEnvelope(sig)) {
-    if (sig.startsWith("gAAAA")) return false;
+  if (maybeSelfDescribingSignatureEnvelope(native)) {
+    if (native.startsWith("gAAAA")) return undefined;
 
-    if (isValidClaudeThinkingSignature(sig, { strict: true })) return false;
+    if (isValidMetaReasoningSignature(native)) return undefined;
 
-    if (isValidClaudeCaisSignature(sig)) return false;
+    if (isValidClaudeThinkingSignature(native, { strict: true })) return undefined;
 
-    if (isKnownGeminiEnvelope(sig)) return false;
+    if (isValidClaudeCaisSignature(native)) return undefined;
+
+    if (isKnownGeminiEnvelope(native)) return undefined;
   }
 
-  if (isValidKimiThinkingSignature(sig)) return false;
-  const decoded = decodeBase64Raw(sig);
+  if (isValidKimiThinkingSignature(native)) return undefined;
+  const decoded = decodeBase64Raw(native);
 
-  return (
-    decoded !== undefined &&
-    decoded.length >= MIN_GROK_DECODED_LEN &&
-    entropyRatio(decoded) >= MIN_GROK_ENTROPY_RATIO
-  );
+  if (decoded === undefined) return undefined;
+
+  // The Gemini Codex carrier (Go a68c7d8e) is base64 text of a prefixed string, never xAI ciphertext.
+  if (
+    new TextDecoder().decode(decoded.subarray(0, GEMINI_CODEX_CARRIER_MAGIC.length)) ===
+    GEMINI_CODEX_CARRIER_MAGIC
+  ) {
+    return undefined;
+  }
+
+  if (decoded.length < MIN_GROK_DECODED_LEN || entropyRatio(decoded) < MIN_GROK_ENTROPY_RATIO) {
+    return undefined;
+  }
+
+  return { rawLen: sig.length, decodedLen: decoded.length, routerSuffix: split.routerSuffix };
 };
+
+/** `IsValidGrokEncryptedContent` (`InspectGrokEncryptedContent` returned no error). */
+export const isValidGrokEncryptedContent = (raw: string): boolean =>
+  inspectGrokEncryptedContent(raw) !== undefined;
 
 /**
  * `IsRecognizedReasoningSignature`: a structurally valid reasoning signature or `encrypted_content` payload from any

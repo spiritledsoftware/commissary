@@ -27,14 +27,27 @@ export {
   sanitizeClaudeMessagesForClaudeUpstream,
 } from "./claude-messages.ts";
 
-export { isValidGptReasoningSignature } from "./gpt.ts";
+export {
+  decodeGeminiCodexThoughtSignature,
+  encodeGeminiCodexThoughtSignature,
+  GEMINI_CODEX_CARRIER_MAGIC,
+} from "./gemini-codex-carrier.ts";
 
-export { isValidGrokEncryptedContent } from "./grok.ts";
+export { inspectGptReasoningSignature, isValidGptReasoningSignature } from "./gpt.ts";
+
+export { inspectGrokEncryptedContent, isValidGrokEncryptedContent } from "./grok.ts";
+
+export { inspectMetaReasoningSignature, isValidMetaReasoningSignature } from "./meta.ts";
+
+export { isValidRouterSuffix, stripRouterSuffix } from "./router-suffix.ts";
 
 export {
+  compatibleSignatureForProvider,
   detectSignatureProvider,
   type SignatureProvider,
+  signaturePayloadWithoutProviderPrefix,
   signatureProviderFromModelName,
+  splitSignatureProviderPrefix,
 } from "./provider.ts";
 
 export {

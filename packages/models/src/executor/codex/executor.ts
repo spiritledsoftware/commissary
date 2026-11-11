@@ -123,9 +123,13 @@ import {
   normalizeCodexOutputBudget,
   normalizeParallelToolCalls,
   promptCacheId,
-  sanitizeReasoningEncryptedContent,
   setIfDifferent,
 } from "./request.ts";
+import {
+  reasoningOptionsForTarget,
+  resolveResponsesSignatureTargetModel,
+  sanitizeReasoningEncryptedContent,
+} from "../helps/responses-signature.ts";
 import {
   applyReplayCache,
   cacheReplayFromCompleted,
@@ -230,11 +234,15 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       isCompat: isCompatModel(context, request),
     };
 
+    // The translators see the model whose signature family decides which reasoning replays (an unmapped deployment
+    // alias takes the requested Meta, Grok or GPT model); the body is sent under the base model (Go a68c7d8e).
+    const signatureTarget = resolveResponsesSignatureTargetModel(baseModel, request, options);
+
     const translated = translateRequestForExecutor(
       registry,
       from,
       to,
-      { format: from, model: baseModel, stream, body: request.payload },
+      { format: from, model: signatureTarget, stream, body: request.payload },
       summary,
       rewrite,
     );
@@ -257,12 +265,15 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
           registry,
           from,
           to,
-          { format: from, model: baseModel, stream, body: options.originalRequest },
+          { format: from, model: signatureTarget, stream, body: options.originalRequest },
           summary,
           rewrite,
         );
 
-    return { translated, original };
+    return {
+      translated: { ...translated, body: setIfDifferent(translated.body, "model", baseModel) },
+      original: { ...original, body: setIfDifferent(original.body, "model", baseModel) },
+    };
   };
 
   const finalize = (
@@ -428,7 +439,6 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       if (!codexUsesProviderKey(context.credential)) body = stripHostedImageComplexity(body);
     }
 
-    body = sanitizeReasoningEncryptedContent(body, isCompat, isCompat);
     body = normalizeParallelToolCalls(body, options.headers);
     body = normalizeCodexToolSchemas(body);
 
@@ -453,6 +463,16 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
         });
 
     if (!mode.compact) yield* applyReplayCache(replayStore, replayScope, body);
+
+    // After the replay cache, so a replayed signature meets the same upstream policy as a client-sent one.
+    body = sanitizeReasoningEncryptedContent(
+      body,
+      reasoningOptionsForTarget({
+        isCompat,
+        targetModel: resolveResponsesSignatureTargetModel(baseModel, request, options),
+        baseUrl: codexBaseUrl(context.credential),
+      }),
+    );
 
     const translatedForResponse = cloneJson(body);
 

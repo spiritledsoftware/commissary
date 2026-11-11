@@ -33,6 +33,11 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  *   (Ticket C8, Go `c888ff72`): the Gemini -> OpenAI Chat request of a functionResponse-only turn drops the empty user
  *   message the fixture still keeps behind the tool messages. (Ticket C8, Go `00b76771`): the Responses -> OpenAI Chat
  *   request keeps the `developer` role of the "dev note" message, which the fixture still sends as `user`.
+ * - `portedResponse` (ticket C9, Go `674dbe8f`): the Interactions <- Codex stream case whose reasoning summary streamed as a
+ *   delta no longer repeats it on the reasoning item's done event.
+ * - `portedRequestEdit` (ticket C9, Go `772df04b`, `a68c7d8e`): every Interactions -> Codex request carries
+ *   `store: false` and asks for `reasoning.encrypted_content` in `include`, and a `thought` step without a replayable
+ *   signature is dropped instead of sent as a bare reasoning item (the fixtures still have both).
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -168,6 +173,13 @@ const geminiNonStreamWithoutBypassSignature = JSON.stringify({
 });
 
 const RESPONSE_ROWS: ReadonlyArray<readonly [string, PortedResponse]> = [
+  [
+    // C9, Go `674dbe8f`: a done event does not repeat the summary text that streamed as deltas.
+    "interactions->codex stream: text with reasoning, function call and image output (no terminal event)",
+    {
+      stream: new Map([[4, ['event: step.stop\ndata: {"index":0,"event_type":"step.stop"}\n\n']]]),
+    },
+  ],
   [
     // C8, Go `55c05f70`: a Claude signature Gemini cannot replay is omitted, not sent as the bypass sentinel.
     "gemini->claude response: streamed thinking, text and tool calls",
@@ -491,7 +503,43 @@ const keepDeveloperRole: GoldenEdit = (golden) => {
   }
 };
 
+/** Interactions -> Codex: `store: false`, encrypted reasoning requested, unsigned thought steps dropped (C9, `772df04b`, `a68c7d8e`). */
+const interactionsEncryptedReasoning: GoldenEdit = (golden) => {
+  if (golden["store"] === undefined) golden["store"] = false;
+  const include = golden["include"];
+
+  if (include === undefined) golden["include"] = ["reasoning.encrypted_content"];
+  else if (isJsonArray(include) && !include.includes("reasoning.encrypted_content"))
+    include.push("reasoning.encrypted_content");
+  const input = golden["input"];
+
+  if (isJsonArray(input)) {
+    golden["input"] = input.filter(
+      (item) =>
+        !(
+          isJsonObject(item) &&
+          item["type"] === "reasoning" &&
+          item["encrypted_content"] === undefined
+        ),
+    );
+  }
+};
+
 const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
+  ...[
+    "request: string input with system instruction, thinking config and a function declaration",
+    "request: steps with multimodal user content, function call/result and thought",
+    "request: nested steps object and unsupported-only user turn is refused",
+    "request: non-array tools pass through and generation_config reasoning is copied",
+    "stream: text with reasoning, function call and image output (no terminal event)",
+    "stream: output_item.done only (no deltas) emits full steps",
+    "stream: events without response.created still start the interaction",
+    "non-stream: message, reasoning, function call and image steps with usage",
+    "non-stream: bare response object with chat-style usage",
+  ].map((name): readonly [string, GoldenEdit] => [
+    `interactions->codex ${name}`,
+    interactionsEncryptedReasoning,
+  ]),
   [
     "openai-response->openai request: full Codex-style request (tools, namespaces, custom, shell, history, formats)",
     keepDeveloperRole,

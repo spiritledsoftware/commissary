@@ -12,6 +12,11 @@ import { get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
 import type { TranslatorRegistry } from "@commissary/translation";
 import { ensureMetaMuseToolNamespace } from "./muse-tools.ts";
 import { prepareResponsesRequest, type ResponsesPrepared } from "../helps/responses-request.ts";
+import {
+  reasoningOptionsForMeta,
+  resolveMetaSignatureTargetModel,
+} from "../helps/responses-signature.ts";
+import { metaCreds } from "./credentials.ts";
 import type { ExecutionContext, ExecutorOptions, ExecutorRequest } from "../types.ts";
 
 /** `SanitizeMetaWebSearchTools`: Meta rejects `search_content_types` on `web_search` tools (also inside namespaces). */
@@ -63,6 +68,12 @@ export const prepareMetaRequest = (
     context,
     request,
     options,
-    { provider, payloadProtocol: provider, prepareTools: prepareMetaTools(stream) },
+    {
+      provider,
+      payloadProtocol: provider,
+      prepareTools: prepareMetaTools(stream),
+      signatureTargetModel: resolveMetaSignatureTargetModel,
+      reasoning: (ctx) => reasoningOptionsForMeta(metaCreds(ctx.credential).baseUrl),
+    },
     stream,
   );

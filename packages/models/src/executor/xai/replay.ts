@@ -23,6 +23,7 @@ import {
   type SessionAddress,
 } from "@commissary/state";
 import { isValidGrokEncryptedContent } from "@commissary/translation/signature";
+import { canonicalGrokSignatureKey } from "../helps/responses-signature.ts";
 import {
   alignToolCallIds,
   comparableCallIds,
@@ -379,7 +380,7 @@ export const filterReplayItemsForInput = (body: Json, items: ReadonlyArray<Json>
     if (type === "reasoning") {
       const encrypted = get(item, "encrypted_content");
 
-      if (typeof encrypted === "string") inputReasoning.add(encrypted);
+      if (typeof encrypted === "string") inputReasoning.add(canonicalGrokSignatureKey(encrypted));
     }
 
     if (type === "function_call_output" || type === "custom_tool_call_output") {
@@ -394,7 +395,7 @@ export const filterReplayItemsForInput = (body: Json, items: ReadonlyArray<Json>
   for (const item of items) {
     switch (asString(get(item, "type")).trim()) {
       case "reasoning": {
-        const encrypted = asString(get(item, "encrypted_content"));
+        const encrypted = canonicalGrokSignatureKey(asString(get(item, "encrypted_content")));
 
         if (encrypted !== "" && inputReasoning.has(encrypted)) continue;
         break;

@@ -830,11 +830,13 @@ export const convertCodexResponseToClaude = (
       p.thinkingSummarySeen = true;
       break;
     case "response.reasoning_summary_text.delta":
+    case "response.reasoning_text.delta":
       out += stopTextBlock(p);
       out += finalizeCommentaryBlock(p);
       p.commentaryMessageOpen = false;
       out += startThinkingBlock(p);
       out += appendThinkingDelta(p, asString(get(root, "delta")));
+      p.thinkingSummarySeen = true;
       break;
     case "response.reasoning_summary_part.done":
       // Intentionally does not close the thinking block (see above).
@@ -1029,6 +1031,18 @@ export const convertCodexResponseToClaude = (
           const signature = asString(get(item, "encrypted_content"));
 
           if (signature !== "") p.thinkingSignature = signature;
+
+          // No summary streamed: the done item carries the text (summary, else reasoning_text content).
+          if (!p.thinkingSummarySeen) {
+            const doneText = reasoningItemText(item);
+
+            if (doneText !== "") {
+              out += startThinkingBlock(p);
+              out += appendThinkingDelta(p, doneText);
+              p.thinkingSummarySeen = true;
+            }
+          }
+
           out += p.thinkingSummarySeen
             ? finalizeThinkingBlock(p)
             : finalizeSignatureOnlyThinkingBlock(p);
@@ -1070,6 +1084,20 @@ export const convertCodexResponseToClaude = (
 // ---------------------------------------------------------------------------------------------------------------
 // Non-stream
 // ---------------------------------------------------------------------------------------------------------------
+
+/** `extractCodexReasoningItemText`: the summary text of a reasoning item, else its `content` text. */
+const reasoningItemText = (item: Json | undefined): string => {
+  const summary = get(item, "summary");
+  let text = summary === undefined ? "" : textOfParts(summary);
+
+  if (text === "") {
+    const content = get(item, "content");
+
+    if (content !== undefined) text = textOfParts(content);
+  }
+
+  return text;
+};
 
 const textOfParts = (value: Json): string => {
   let text = "";
@@ -1135,17 +1163,8 @@ export const convertCodexResponseToClaudeNonStream = (
     for (const item of output) {
       switch (asString(get(item, "type"))) {
         case "reasoning": {
-          let thinking = "";
+          const thinking = reasoningItemText(item);
           const signature = asString(get(item, "encrypted_content"));
-          const summary = get(item, "summary");
-
-          if (summary !== undefined) thinking += textOfParts(summary);
-
-          if (thinking === "") {
-            const content = get(item, "content");
-
-            if (content !== undefined) thinking += textOfParts(content);
-          }
 
           if (thinking.length > 0 || signature !== "") {
             const block: JsonObject = { type: "thinking", thinking };

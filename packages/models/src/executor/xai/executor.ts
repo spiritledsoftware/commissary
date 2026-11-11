@@ -82,7 +82,9 @@ import {
   normalizeInputReasoningItems,
   preserveOutputControls,
   sanitizeInputEncryptedContent,
+  sanitizeInputEncryptedContentForBaseUrl,
 } from "./input.ts";
+import { resolveXaiSignatureTargetModel } from "../helps/responses-signature.ts";
 import {
   executeImages,
   executeSpeech,
@@ -230,7 +232,11 @@ const finalizePrepared = (
   request: ExecutorRequest,
   options: ExecutorOptions,
   prepared: PreparedRequest,
+  /** The upstream base URL, when the request goes there: a router suffix survives on OpenRouter only. */
+  baseUrl?: string,
 ): void => {
+  if (baseUrl !== undefined)
+    prepared.body = sanitizeInputEncryptedContentForBaseUrl(prepared.body, baseUrl);
   prepared.body = makeFinalize(context, request, options)(
     prepared.baseModel,
     prepared.providerFormat,
@@ -282,11 +288,15 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
       isCompat: modelIsCompat(request),
     };
 
+    // The translators see the signature target (the requested Grok model when an alias hides it, else `grok`); the
+    // body is sent under the base model (Go a68c7d8e).
+    const signatureTarget = resolveXaiSignatureTargetModel(baseModel, request, options);
+
     const translated = translateRequestForExecutor(
       registry,
       from,
       to,
-      { format: from, model: baseModel, stream: mode.stream, body: request.payload },
+      { format: from, model: signatureTarget, stream: mode.stream, body: request.payload },
       thinking.summary,
       rewrite,
     );
@@ -306,13 +316,22 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
             registry,
             from,
             to,
-            { format: from, model: baseModel, stream: mode.stream, body: original },
+            { format: from, model: signatureTarget, stream: mode.stream, body: original },
             thinking.summary,
             rewrite,
           );
 
-    const originalTranslated = preserveOutputControls(originalEnvelope.body, original, from);
-    let body = preserveOutputControls(translated.body, request.payload, from);
+    const originalTranslated = setIfDifferent(
+      preserveOutputControls(originalEnvelope.body, original, from),
+      "model",
+      baseModel,
+    );
+
+    let body = setIfDifferent(
+      preserveOutputControls(translated.body, request.payload, from),
+      "model",
+      baseModel,
+    );
 
     body = yield* thinking.apply({
       body,
@@ -409,7 +428,7 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
     if (webSearchAlias !== "")
       body = aliasClientWebSearchInput(body, webSearchAlias, namespaceTools);
     body = normalizeInputReasoningItems(body);
-    body = sanitizeInputEncryptedContent(body);
+    body = sanitizeInputEncryptedContent(body, true);
     body = normalizeCodexInstructions(body, false);
     // stop is supported by Chat Completions but not by xAI's Responses API.
     body = del(body, "stop");
@@ -464,7 +483,7 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
     ttft: "first-byte" | "token-event" = "first-byte",
   ) {
     const prepared = yield* prepare(context, request, options, { stream: true, to: Formats.Codex });
-    finalizePrepared(context, request, options, prepared);
+    finalizePrepared(context, request, options, prepared, xaiChatBaseUrl(context.credential));
     const headers = yield* chatHeaders(context, options, prepared, true);
 
     const response = yield* sendUpstream(context, {
@@ -635,7 +654,7 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
 
     if (previousResponseId !== "") body = set(body, "previous_response_id", previousResponseId);
     prepared.body = body;
-    finalizePrepared(context, request, options, prepared);
+    finalizePrepared(context, request, options, prepared, xaiCompactBaseUrl(context.credential));
 
     // Official API / custom compact endpoints use standard API headers, not the chat proxy identity.
     const headers = buildXaiHeaders({
@@ -867,7 +886,7 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
         prepared.baseModel,
         prepared.providerFormat,
         prepared.originalTranslated,
-        body,
+        sanitizeInputEncryptedContentForBaseUrl(body, xaiChatBaseUrl(context.credential)),
       ),
     replayStore,
     codexTarget: Formats.Codex,

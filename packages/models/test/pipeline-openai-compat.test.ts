@@ -25,6 +25,7 @@ import {
   sseResponse,
 } from "./support/pipeline.ts";
 import { GLOBAL_ORG } from "@commissary/core";
+import { gptSignature, metaSignature, routerSuffixed } from "./support/signatures.ts";
 
 const YAML = `
 api-keys:
@@ -388,8 +389,9 @@ describe("Responses client -> OpenAI-compatible upstream", () => {
     expect(at(upstream, "max_output_tokens")).toBe(9);
     expect(at(upstream, "max_tokens")).toBeUndefined();
     expect(at(upstream, "prompt_cache_key")).toBeUndefined();
-    // Reasoning cleartext never reaches the upstream.
-    expect(at(upstream, "input.1.content")).toEqual([]);
+    // A third-party Responses upstream replays the reasoning text it issued (Go 674dbe8f: the compact path is is-compat).
+    expect(at(upstream, "input.1.content.0.text")).toBe("secret");
+    expect(at(upstream, "input.1.id")).toBe("rs_1");
     const body: Json = await response.json();
     expect(at(body, "object")).toBe("response.compaction");
     expect(at(body, "output.0.encrypted_content")).toBe("opaque");
@@ -961,5 +963,107 @@ describe("Responses compaction on an OpenAI-compatible route", () => {
 
     expect(sealed).toBe(written);
     expect(h.calls).toHaveLength(0);
+  });
+});
+
+// Go 7a0b7563, 674dbe8f, cc5682c5, be9fbd94, a68c7d8e: which reasoning signature replays to a third-party Responses
+// upstream. The family comes from the upstream model, a router suffix survives on OpenRouter hosts only, and a Meta target
+// takes Meta envelopes and nothing else.
+describe("reasoning signatures on a Responses compaction to an OpenAI-compatible upstream", () => {
+  const ROUTED_YAML = `
+api-keys:
+  openai-compatibility:
+    - name: OpenRouter
+      base-url: https://openrouter.ai/api/v1
+      models:
+        - name: openai/gpt-5.4
+          alias: or-gpt
+        - name: meta/muse-wonder
+          alias: or-muse
+      keys:
+        - api-key: sk-or
+    - name: Plain
+      base-url: https://other.test/v1
+      models:
+        - name: gpt-5.4
+          alias: plain-gpt
+      keys:
+        - api-key: sk-plain
+`;
+
+  let routed: Config;
+
+  beforeAll(async () => {
+    routed = await loadConfig(ROUTED_YAML);
+  });
+
+  const COMPACTION = { id: "resp_c", object: "response.compaction", output: [], usage: {} };
+
+  const sentEncrypted = async (model: string, signatures: ReadonlyArray<string>) => {
+    const p = makePipeline({ config: routed, respond: () => jsonResponse(COMPACTION) });
+
+    const response = await p.call(
+      "/v1/responses/compact",
+      postJson({
+        model,
+        stream: false,
+        input: [
+          { type: "message", role: "user", content: "hi" },
+          ...signatures.map((encrypted_content) => ({
+            type: "reasoning",
+            summary: [],
+            encrypted_content,
+          })),
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await p.dispose();
+    const upstream: Json = JSON.parse(p.calls[0]!.body);
+
+    return {
+      url: p.calls[0]!.url,
+      encrypted: signatures.map((_, index) => at(upstream, `input.${index + 1}.encrypted_content`)),
+    };
+  };
+
+  const gptRouted = routerSuffixed(gptSignature(), 79);
+
+  it("keeps a GPT router suffix on an openrouter.ai base URL", async () => {
+    const sent = await sentEncrypted("or-gpt", [gptRouted]);
+
+    expect(sent.url).toBe("https://openrouter.ai/api/v1/responses/compact");
+    expect(sent.encrypted).toEqual([gptRouted]);
+  });
+
+  it("strips the suffix down to the native envelope on any other host", async () => {
+    const sent = await sentEncrypted("plain-gpt", [gptRouted]);
+
+    expect(sent.url).toBe("https://other.test/v1/responses/compact");
+    expect(sent.encrypted).toEqual([gptSignature()]);
+  });
+
+  it("replays Meta envelopes to a Muse target, native or routed, and drops GPT and unknown ones", async () => {
+    const sent = await sentEncrypted("or-muse", [
+      metaSignature(),
+      routerSuffixed(metaSignature()),
+      gptSignature(),
+      "opaque-blob",
+    ]);
+
+    expect(sent.encrypted).toEqual([
+      metaSignature(),
+      routerSuffixed(metaSignature()),
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("drops a Meta envelope sent to a GPT target", async () => {
+    const sent = await sentEncrypted("or-gpt", [metaSignature(), gptSignature()]);
+
+    expect(sent.encrypted).toEqual([undefined, gptSignature()]);
   });
 });

@@ -2,8 +2,12 @@
  * GPT/Codex reasoning signature validation.
  *
  * Go source: internal/signature/gpt_validation.go (`InspectGPTReasoningSignature`, `IsValidGPTReasoningSignature`).
- * This is only the Fernet-like outer transport shape of `encrypted_content`; it does not prove decryptability.
+ * This is only the Fernet-like outer transport shape of `encrypted_content`; it does not prove decryptability. A router
+ * such as OpenRouter may append `.<alphanumeric suffix>` to the native value (Go be9fbd94); it is reported, not validated
+ * as part of the Fernet token.
  */
+import { splitRouterSuffix } from "./router-suffix.ts";
+
 const MAX_GPT_REASONING_SIGNATURE_LEN = 32 * 1024 * 1024;
 
 const BASE64_URL = /^[A-Za-z0-9\-_=]*$/;
@@ -46,17 +50,31 @@ const decodeBase64UrlHead = (
   };
 };
 
-/** `IsValidGPTReasoningSignature`: Fernet-like outer format check of Codex `encrypted_content`. */
-export const isValidGptReasoningSignature = (raw: string): boolean => {
+export interface GptReasoningSignatureInfo {
+  /** The router suffix, `""` for a native value. */
+  readonly routerSuffix: string;
+}
+
+/** `InspectGPTReasoningSignature`: `undefined` when `raw` is not a (router-suffixed) Fernet-like `encrypted_content`. */
+export const inspectGptReasoningSignature = (
+  raw: string,
+): GptReasoningSignatureInfo | undefined => {
   const sig = raw.trim();
 
-  if (sig === "" || sig.length > MAX_GPT_REASONING_SIGNATURE_LEN) return false;
+  if (sig === "" || sig.length > MAX_GPT_REASONING_SIGNATURE_LEN) return undefined;
 
-  if (!sig.startsWith("gAAAA") || !BASE64_URL.test(sig)) return false;
-  const decoded = decodeBase64UrlHead(sig);
+  if (!sig.startsWith("gAAAA")) return undefined;
+  const split = splitRouterSuffix(sig);
 
-  if (decoded === undefined || decoded.length < 73 || decoded.first !== 0x80) return false;
+  if (split === undefined || !BASE64_URL.test(split.native)) return undefined;
+  const decoded = decodeBase64UrlHead(split.native);
+
+  if (decoded === undefined || decoded.length < 73 || decoded.first !== 0x80) return undefined;
   const ciphertext = decoded.length - 1 - 8 - 16 - 32;
 
-  return ciphertext > 0 && ciphertext % 16 === 0;
+  return ciphertext > 0 && ciphertext % 16 === 0 ? { routerSuffix: split.routerSuffix } : undefined;
 };
+
+/** `IsValidGPTReasoningSignature`: Fernet-like outer format check of Codex `encrypted_content`. */
+export const isValidGptReasoningSignature = (raw: string): boolean =>
+  inspectGptReasoningSignature(raw) !== undefined;

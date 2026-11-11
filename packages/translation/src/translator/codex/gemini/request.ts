@@ -15,7 +15,12 @@ import {
   type JsonObject,
   set,
 } from "@commissary/json";
+import { decodeGeminiCodexThoughtSignature } from "../../../signature/gemini-codex-carrier.ts";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import {
+  codexReplaySignatureForTarget,
+  resolveCodexReplayTargetModel,
+} from "../../common/codex-replay-signature.ts";
 import {
   geminiPartFunctionCall,
   geminiPartFunctionResponse,
@@ -138,6 +143,13 @@ const messageWithPart = (role: string, part: Json): JsonObject => ({
   content: [part],
 });
 
+/** `geminiPartThoughtSignature`: a part's thought signature under the camelCase or snake_case spelling. */
+const partThoughtSignature = (part: Json): string => {
+  const camel = asString(get(part, "thoughtSignature")).trim();
+
+  return camel !== "" ? camel : asString(get(part, "thought_signature")).trim();
+};
+
 /** `cleanGeminiCodexToolParameters`: drops `$schema` and forbids additional properties unless set to false. */
 const cleanToolParameters = (parameters: Json): Json => {
   const cleaned = cloneJson(normalizeJsonSchemaNumericConstraints(parameters));
@@ -236,6 +248,8 @@ export const convertGeminiRequestToCodex = (
   // Sequential pairing of generated call ids across possibly multiple in-flight functionCalls.
   let pendingCallIds: string[] = [];
   let callCounter = 0;
+  const emittedThoughtSignatures = new Set<string>();
+  const signatureTargetModel = resolveCodexReplayTargetModel(modelName, request);
   const nextCallId = () => `call_gemini_${String(++callCounter).padStart(16, "0")}`;
 
   const geminiCallId = (value: Json | undefined): string => {
@@ -279,8 +293,51 @@ export const convertGeminiRequestToCodex = (
       if (!isJsonArray(parts)) continue;
       const role = normalizeGeminiTurnRole(asString(get(item, "role")), parts, previousRole);
       previousRole = role;
+      let pendingThoughtSummaryParts: Json[] = [];
 
       for (const p of parts) {
+        // A thoughtSignature is replayable reasoning state, not visible content. It is restored as a reasoning item
+        // only when its detected family matches the target model's, so a Muse (or GPT, Grok) signature never replays
+        // to the wrong upstream through the Gemini ingress. An unmatched one falls through to the hidden-thought drop.
+        if (role === "assistant") {
+          const rawSignature = partThoughtSignature(p);
+
+          if (rawSignature !== "") {
+            const normalized = codexReplaySignatureForTarget(
+              signatureTargetModel,
+              decodeGeminiCodexThoughtSignature(rawSignature),
+            );
+
+            if (normalized !== undefined && !emittedThoughtSignatures.has(normalized)) {
+              const summaryParts = pendingThoughtSummaryParts;
+              pendingThoughtSummaryParts = [];
+
+              if (isGeminiThoughtPart(p)) {
+                const thoughtText = asString(get(p, "text"));
+
+                if (thoughtText !== "")
+                  summaryParts.push({ type: "summary_text", text: thoughtText });
+              }
+
+              inputItems.push({
+                type: "reasoning",
+                encrypted_content: normalized,
+                summary: summaryParts,
+              });
+              emittedThoughtSignatures.add(normalized);
+            } else {
+              pendingThoughtSummaryParts = [];
+            }
+          } else if (isGeminiThoughtPart(p)) {
+            const thoughtText = asString(get(p, "text"));
+
+            if (thoughtText !== "")
+              pendingThoughtSummaryParts.push({ type: "summary_text", text: thoughtText });
+          } else {
+            pendingThoughtSummaryParts = [];
+          }
+        }
+
         if (isGeminiThoughtPart(p)) continue;
         const text = get(p, "text");
 
