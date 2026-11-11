@@ -17,7 +17,12 @@ import { deriveClaudeUserID } from "../../common/claude-user-id.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { sanitizeClaudeFunctionName } from "../../common/claude-util.ts";
 import { exists, isArr, isObj, str, trimmed } from "../../common/gjson.ts";
-import { isGeminiThoughtPart } from "../../common/gemini-parts.ts";
+import {
+  geminiPartFunctionCall,
+  geminiPartFunctionResponse,
+  isGeminiThoughtPart,
+  normalizeGeminiTurnRole,
+} from "../../common/gemini-parts.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
 
 const first = (...values: Array<Json | undefined>): Json | undefined =>
@@ -202,16 +207,15 @@ export const convertGeminiRequestToClaude = (
   const contents = get(root, "contents");
 
   if (isArr(contents)) {
+    let previousRole = "";
+
     for (const content of contents) {
-      let role = str(get(content, "role"));
-
-      if (role === "model") role = "assistant";
-
-      if (role === "function" || role === "tool") role = "user";
+      const parts = get(content, "parts");
+      const role = normalizeGeminiTurnRole(str(get(content, "role")), parts, previousRole);
+      previousRole = role;
 
       const contentItems: JsonObject[] = [];
       let sendable = 0;
-      const parts = get(content, "parts");
 
       if (isArr(parts)) {
         for (const part of parts) {
@@ -226,7 +230,7 @@ export const convertGeminiRequestToClaude = (
             continue;
           }
 
-          const fc = get(part, "functionCall");
+          const fc = geminiPartFunctionCall(part);
 
           if (exists(fc) && role === "assistant") {
             let toolId = toolIdOf(fc);
@@ -245,7 +249,7 @@ export const convertGeminiRequestToClaude = (
             continue;
           }
 
-          const fr = get(part, "functionResponse");
+          const fr = geminiPartFunctionResponse(part);
 
           if (exists(fr)) {
             let toolId: string;

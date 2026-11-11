@@ -398,7 +398,7 @@ describe("message-level cache_control helper", () => {
       { type: "text", text: " \n " },
     ],
   ])("skips a message whose content is all empty (%j)", (content) => {
-    const msg: JsonObject = { role: "user", content: content as Json };
+    const msg: JsonObject = { role: "user", content: content };
 
     attachMessageCacheControl(msg, cc);
 

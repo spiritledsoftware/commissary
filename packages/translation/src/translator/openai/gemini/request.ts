@@ -14,6 +14,11 @@ import {
   type JsonObject,
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import {
+  geminiPartFunctionCall,
+  geminiPartFunctionResponse,
+  normalizeGeminiTurnRole,
+} from "../../common/gemini-parts.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { getStr, isArr, isObj, raw, str } from "../common/read.ts";
 
@@ -258,12 +263,12 @@ export const convertGeminiRequestToOpenAI = (
 
   if (isArr(contents)) {
     let msgIdx = 0;
+    let previousRole = "";
 
     for (const content of contents) {
-      let role = getStr(content, "role");
       const parts = get(content, "parts");
-
-      if (role === "model") role = "assistant";
+      const role = normalizeGeminiTurnRole(getStr(content, "role"), parts, previousRole);
+      previousRole = role;
 
       const msg: JsonObject = { role, content: "" };
       let text = "";
@@ -271,6 +276,7 @@ export const convertGeminiRequestToOpenAI = (
       let onlyTextContent = true;
       const toolCallItems: Json[] = [];
       let droppedThought = false;
+      let hasFunctionResponse = false;
 
       if (isArr(parts)) {
         let partIdx = 0;
@@ -306,7 +312,7 @@ export const convertGeminiRequestToOpenAI = (
             contentItems.push(file);
           }
 
-          const functionCall = get(part, "functionCall");
+          const functionCall = geminiPartFunctionCall(part);
 
           if (functionCall !== undefined) {
             const funcName = getStr(functionCall, "name");
@@ -332,7 +338,7 @@ export const convertGeminiRequestToOpenAI = (
             });
           }
 
-          const functionResponse = get(part, "functionResponse");
+          const functionResponse = geminiPartFunctionResponse(part);
 
           if (functionResponse !== undefined) {
             const funcName = getStr(functionResponse, "name");
@@ -371,6 +377,7 @@ export const convertGeminiRequestToOpenAI = (
             }
 
             messageItems.push(toolMsg);
+            hasFunctionResponse = true;
           }
         }
       }
@@ -379,7 +386,11 @@ export const convertGeminiRequestToOpenAI = (
 
       if (toolCallItems.length > 0) msg.tool_calls = toolCallItems;
 
-      if (droppedThought && contentItems.length === 0 && toolCallItems.length === 0) {
+      if (
+        (droppedThought || hasFunctionResponse) &&
+        contentItems.length === 0 &&
+        toolCallItems.length === 0
+      ) {
         msgIdx++;
         continue;
       }

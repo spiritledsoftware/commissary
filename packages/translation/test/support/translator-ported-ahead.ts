@@ -24,6 +24,8 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
  * - `portedRequestEdit` (ticket C8, Go `45501610`): the Gemini requests of the cases that mix built-in tools with function
  *   declarations (OpenAI Chat `google_search`; Responses `web_search`) carry `toolConfig.includeServerSideToolInvocations`.
+ *   (Ticket C8, Go `c888ff72`): the Gemini -> OpenAI Chat request of a functionResponse-only turn drops the empty user
+ *   message the fixture still keeps behind the tool messages.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -369,7 +371,30 @@ const serverSideToolInvocations: GoldenEdit = (golden) => {
   else golden["toolConfig"] = { includeServerSideToolInvocations: true };
 };
 
+/** A functionResponse-only Gemini turn no longer leaves an empty `{role, content: ""}` message behind its tool messages (C8, `c888ff72`). */
+const dropEmptyMessageAfterToolMessages: GoldenEdit = (golden) => {
+  const messages = golden["messages"];
+
+  if (!isJsonArray(messages)) return;
+
+  golden["messages"] = messages.filter(
+    (message, index) =>
+      !(
+        isJsonObject(message) &&
+        message["content"] === "" &&
+        message["role"] === "user" &&
+        index > 0 &&
+        isJsonObject(messages[index - 1]) &&
+        (messages[index - 1] as JsonObject)["role"] === "tool"
+      ),
+  );
+};
+
 const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
+  [
+    "gemini->openai request: system, generation config, parts, tools and tool results",
+    dropEmptyMessageAfterToolMessages,
+  ],
   ...[
     "openai->gemini request: multimodal user turn, tool round trip, reasoning, structured output, modalities, builtin tools",
     "openai->gemini stream: reasoning, text, tool calls, image output and final usage",
