@@ -17,7 +17,7 @@ import { redactSecrets } from "../credentials/redact.ts";
 import type { RefreshTarget } from "../credentials/pool.ts";
 import { DEFAULT_BASE_URL as CLAUDE_DEFAULT_BASE_URL } from "../executor/claude/credentials.ts";
 import { CODEX_DEFAULT_BASE_URL } from "../executor/codex/headers.ts";
-import { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL } from "../executor/gemini/targets.ts";
+import { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL } from "../executor/gemini/endpoints.ts";
 import { META_DEFAULT_BASE_URL } from "../executor/meta/credentials.ts";
 import { XAI_DEFAULT_API_BASE_URL } from "../executor/xai/credentials.ts";
 import { OPENCODE_SPECS } from "../executor/opencode/providers.ts";

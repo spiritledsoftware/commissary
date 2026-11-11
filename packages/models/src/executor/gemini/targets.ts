@@ -16,14 +16,13 @@ import {
 
 import type { ExecutionContext } from "../types.ts";
 import type { GoogleTarget, GoogleVariant } from "./google.ts";
+import { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL } from "./endpoints.ts";
 
-export const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com";
+export { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL };
 
 export const GEMINI_API_VERSION = "v1beta";
 
 export const VERTEX_API_VERSION = "v1";
-
-export const VERTEX_DEFAULT_BASE_URL = "https://aiplatform.googleapis.com";
 
 const trimSlash = (value: string): string => value.replace(/\/+$/, "");
 
