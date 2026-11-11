@@ -23,7 +23,6 @@ import {
   type JsonObject,
   set,
 } from "@commissary/json";
-import { parseSuffix } from "../../../thinking/suffix.ts";
 import { claudeOutputEffort } from "../../../thinking/claude-effort-directive.ts";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
 import {
@@ -38,11 +37,11 @@ import {
   SCHEMA_VALUE_KEYWORDS,
 } from "../../common/schema.ts";
 import { isCodexCommentarySignatureMarker } from "../../../signature/claude-messages.ts";
-import { isValidGrokEncryptedContent } from "../../../signature/grok.ts";
+import { detectSignatureProvider } from "../../../signature/provider.ts";
 import {
-  compatibleSignatureForProvider,
-  detectSignatureProvider,
-} from "../../../signature/provider.ts";
+  codexReplaySignatureForTarget,
+  resolveCodexReplayTargetModel,
+} from "../../common/codex-replay-signature.ts";
 
 const NAME_LIMIT = 64;
 
@@ -437,9 +436,6 @@ const claudeDocumentDataUrl = (part: Json): string | undefined => {
   return data === "" ? undefined : `data:${mediaType};base64,${data}`;
 };
 
-const targetAcceptsGrokSignature = (modelName: string): boolean =>
-  parseSuffix(modelName).modelName.trim().toLowerCase().includes("grok");
-
 const toolResultImagePart = (source: Json): JsonObject | undefined => {
   let data = asString(get(source, "data"));
 
@@ -741,7 +737,11 @@ const convertClaudeRequest = (
           return;
         }
 
-        let signature = compatibleSignatureForProvider("gpt", rawSignature);
+        // The family comes from the model, else from the client's requested one (an unmapped deployment alias).
+        let signature = codexReplaySignatureForTarget(
+          resolveCodexReplayTargetModel(modelName, request),
+          rawSignature,
+        );
 
         if (
           signature === undefined &&
@@ -754,14 +754,8 @@ const convertClaudeRequest = (
         }
 
         if (signature === undefined) {
-          if (preserveEmptyThinkingBlocks && rawSignature.trim() === "") {
-            signature = rawSignature;
-          } else {
-            if (!targetAcceptsGrokSignature(modelName)) return;
-
-            if (!isValidGrokEncryptedContent(rawSignature)) return;
-            signature = rawSignature;
-          }
+          if (preserveEmptyThinkingBlocks && rawSignature.trim() === "") signature = rawSignature;
+          else return;
         }
 
         flushMessage();
