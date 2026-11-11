@@ -24,6 +24,12 @@ export const ErrorCode = {
    */
   streamTruncated: "stream_truncated",
   modelNotFound: "model_not_found",
+  /**
+   * A transient per-model capacity or admission 429 (CLIProxyAPI 9a35fa12, `ErrorCodeTransientRateLimit`, e.g. Codex
+   * `turn_rate_limit_exceeded`). The status stays 429, but the credential quota is not exhausted: only the reporting
+   * model cools until the provider hint, with no quota labelling or exponential backoff.
+   */
+  transientRateLimit: "transient_rate_limit",
 } as const;
 
 export interface ClassifiableError {

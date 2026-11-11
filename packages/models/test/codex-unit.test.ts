@@ -27,7 +27,8 @@ import { uuidV5Oid } from "../src/executor/helps/uuid.ts";
 import type { ExecutionContext, ExecutorOptions } from "../src/executor/types.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import { responsesFramer } from "../src/handlers/responses/framer.ts";
-import { get, type Json } from "@commissary/json";
+import { get, type Json, tryParseJson } from "@commissary/json";
+import { parseCodexWebsocketError } from "../src/executor/codex/websocket.ts";
 import { builtinTranslators, makeTranslationState } from "@commissary/translation";
 import { UsageReporter } from "../src/usage/reporter.ts";
 import { oauthCredential } from "./support/codex.ts";
@@ -306,9 +307,10 @@ describe("tool schema normalisation", () => {
       headers: new Headers({ "user-agent": "codex-tui/1" }),
     };
 
-    const forOpenAI = finalizePayload(config, "openai-compatible-x", request, make());
+    const noUsage = { setServiceTierFromBody: () => undefined };
+    const forOpenAI = finalizePayload(config, "openai-compatible-x", request, make(), noUsage);
     expect(JSON.stringify(forOpenAI)).toContain('"integer"');
-    const forCodex = finalizePayload(config, "codex", request, make());
+    const forCodex = finalizePayload(config, "codex", request, make(), noUsage);
     expect(JSON.stringify(forCodex)).toContain('"number"');
   });
 });
@@ -511,6 +513,123 @@ describe("helpers", () => {
     expect(uuidV5Oid("cli-proxy-api\u0000codex\u0000derived-session\u0000abc")).toBe(
       "744b54df-ddd6-5aad-b158-0290b4ee91fa",
     );
+  });
+
+  // CLIProxyAPI 9a35fa12 (codex_turn_rate_limit_issue7017_test.go)
+  describe("turn_rate_limit_exceeded is transient model capacity", () => {
+    const now = Date.parse("2026-01-01T00:00:00Z");
+
+    const body =
+      '{"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}';
+
+    const options = { modelLevelCooling: false, nowMs: now };
+
+    it("honours the Retry-After header and is not credential scoped", () => {
+      const error = newCodexStatusError(429, body, {
+        ...options,
+        headers: { "retry-after": "256" },
+      });
+
+      expect(error).toMatchObject({
+        status: 429,
+        code: "transient_rate_limit",
+        retryAfterMs: 256_000,
+      });
+      expect(error.credentialScoped).toBeUndefined();
+    });
+
+    it("keeps an explicit zero hint and ignores an invalid header", () => {
+      expect(
+        newCodexStatusError(429, body, { ...options, headers: { "retry-after": "0" } })
+          .retryAfterMs,
+      ).toBe(0);
+      expect(
+        newCodexStatusError(429, body, { ...options, headers: { "retry-after": "soon" } })
+          .retryAfterMs,
+      ).toBeUndefined();
+      expect(newCodexStatusError(429, body, options)).toMatchObject({
+        code: "transient_rate_limit",
+      });
+    });
+
+    it("reads the nested body.error layout and forces 429", () => {
+      const nested = '{"body":{"error":{"code":"turn_rate_limit_exceeded","message":"x"}}}';
+
+      expect(newCodexStatusError(500, nested, options)).toMatchObject({
+        status: 429,
+        code: "transient_rate_limit",
+      });
+    });
+
+    it("accepts a rate_limit_error that says it is at capacity, but not a generic rate limit", () => {
+      const noCode = '{"error":{"type":"rate_limit_error","message":"Codex is at capacity"}}';
+
+      const generic =
+        '{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Codex is at capacity"}}';
+
+      expect(newCodexStatusError(429, noCode, options).code).toBe("transient_rate_limit");
+      expect(newCodexStatusError(429, generic, options).code).toBeUndefined();
+    });
+
+    it("keeps usage_limit_reached on the quota path, its reset beating the header", () => {
+      const usage =
+        '{"body":{"error":{"type":"usage_limit_reached","code":"turn_rate_limit_exceeded","message":"usage","resets_in_seconds":3600}}}';
+
+      const error = newCodexStatusError(429, usage, {
+        modelLevelCooling: false,
+        nowMs: now,
+        headers: { "retry-after": "30" },
+      });
+
+      expect(error).toMatchObject({ status: 429, retryAfterMs: 3_600_000, credentialScoped: true });
+      expect(error.code).toBeUndefined();
+    });
+
+    describe("on an upstream WebSocket error frame (TestIssue7017TurnRateLimitWebsocket)", () => {
+      const frame = (extra: string) =>
+        tryParseJson(
+          `{"type":"error","status":429,${extra}"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}`,
+        );
+
+      it("reads the frame's Retry-After header", () => {
+        const parsed = parseCodexWebsocketError(frame('"headers":{"Retry-After":"120"},'), options);
+
+        expect(parsed?.error).toMatchObject({
+          status: 429,
+          code: "transient_rate_limit",
+          retryAfterMs: 120_000,
+        });
+        expect(parsed?.error.credentialScoped).toBeUndefined();
+      });
+
+      it("is transient without a hint, also in the nested body layout", () => {
+        expect(parseCodexWebsocketError(frame(""), options)?.error).toMatchObject({
+          code: "transient_rate_limit",
+        });
+
+        const nested = tryParseJson(
+          '{"type":"error","status":429,"body":{"error":{"code":"turn_rate_limit_exceeded","message":"x"}}}',
+        );
+
+        const error = parseCodexWebsocketError(nested, options)?.error;
+        expect(error).toMatchObject({ code: "transient_rate_limit" });
+        expect(error?.retryAfterMs).toBeUndefined();
+      });
+
+      it("keeps the connection-limit immediate retry ahead of the header", () => {
+        const limit = tryParseJson(
+          '{"type":"error","status":429,"headers":{"Retry-After":"9"},"error":{"code":"websocket_connection_limit_reached","message":"x"}}',
+        );
+
+        expect(parseCodexWebsocketError(limit, options)?.error.retryAfterMs).toBe(0);
+      });
+    });
+
+    it("a model-at-capacity rejection is transient too", () => {
+      expect(
+        newCodexStatusError(503, '{"error":{"message":"Selected model is at capacity"}}', options),
+      ).toMatchObject({ status: 429, code: "transient_rate_limit" });
+    });
   });
 
   it("classifies status errors, capacity errors and terminal failures", () => {

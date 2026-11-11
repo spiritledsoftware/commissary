@@ -506,6 +506,7 @@ export const makeAntigravityExecutor = (
         original: originalTranslatedBody,
       },
       body,
+      context.usage,
     );
 
     return {
@@ -1016,6 +1017,7 @@ export const makeAntigravityExecutor = (
         original: originalTranslated,
       },
       body,
+      context.usage,
     );
 
     const prepared: PreparedRequest = {

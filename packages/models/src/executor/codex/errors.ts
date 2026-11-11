@@ -4,7 +4,8 @@
  * Go source: internal/runtime/executor/codex_executor_terminal.go (newCodexStatusErrWithCooling,
  * classifyCodexStatusError, codexStatusErrorClassification, isCodexModelCapacityError, isCodexUsageLimitError,
  * parseCodexRetryAfter, codexTerminalFailureBody/Status/Err, codexTerminalStreamErrShouldHandle and the
- * incomplete-stream errors).
+ * incomplete-stream errors; isCodexTurnRateLimitError, codexErrorCodeOf and isCodexTransientCapacityError of
+ * CLIProxyAPI 9a35fa12).
  */
 import {
   asInt,
@@ -17,7 +18,9 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { statusText } from "../../http/status.ts";
+import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 import { ExecutionError } from "../errors.ts";
+import { parseRetryAfterMs } from "../helps/retry-after.ts";
 import {
   annotateImageGenerationError,
   statusFromErrorTypeAndCode,
@@ -78,12 +81,67 @@ export const isCodexModelCapacityError = (bodyText: string): boolean => {
   return false;
 };
 
-/** `isCodexUsageLimitError`: `error.type` (or `type`) is `usage_limit_reached`. */
+/** The trimmed string at each of `paths` (the layouts the Codex upstream uses; blank when absent). */
+const trimmedValuesAt = (parsed: Json | undefined, paths: readonly string[]): string[] =>
+  paths.map((path) => str(parsed, path));
+
+/**
+ * `isCodexTurnRateLimitError`: the per-turn admission rejection (the upstream is at capacity for this turn while the
+ * credential quota is not exhausted). The stable signal is the `turn_rate_limit_exceeded` code; with no code at all, a
+ * `rate_limit_error` whose message says "at capacity" is accepted. A generic `rate_limit_exceeded` is not.
+ */
+export const isCodexTurnRateLimitError = (bodyText: string): boolean => {
+  if (bodyText === "") return false;
+  const parsed = tryParseJson(bodyText);
+
+  const codes = trimmedValuesAt(parsed, ["error.code", "code", "body.error.code"]).filter(
+    (c) => c !== "",
+  );
+
+  if (codes.some((code) => code.toLowerCase() === "turn_rate_limit_exceeded")) return true;
+
+  if (codes.length > 0) return false;
+
+  const rateLimitTyped = trimmedValuesAt(parsed, ["error.type", "type", "body.error.type"]).some(
+    (type) => type.toLowerCase() === "rate_limit_error",
+  );
+
+  if (!rateLimitTyped) return false;
+
+  return trimmedValuesAt(parsed, ["error.message", "message", "body.error.message"]).some(
+    (message) => message.toLowerCase().includes("at capacity"),
+  );
+};
+
+/**
+ * `isCodexTransientCapacityError`: every capacity rejection that is transient and model scoped (the model-at-capacity
+ * wording and the per-turn admission rejection). An explicit other error code keeps its handling.
+ */
+export const isCodexTransientCapacityError = (bodyText: string): boolean => {
+  const code = trimmedValuesAt(tryParseJson(bodyText), [
+    "error.code",
+    "code",
+    "body.error.code",
+  ]).find((candidate) => candidate !== "");
+
+  if (
+    code !== undefined &&
+    !["turn_rate_limit_exceeded", "model_at_capacity", "model_is_at_capacity"].includes(
+      code.toLowerCase(),
+    )
+  ) {
+    return false;
+  }
+
+  return isCodexModelCapacityError(bodyText) || isCodexTurnRateLimitError(bodyText);
+};
+
+/** `isCodexUsageLimitError`: `error.type` (or `type`, `body.error.type`) is `usage_limit_reached`. */
 export const isCodexUsageLimitError = (bodyText: string): boolean => {
   if (bodyText === "") return false;
   const parsed = tryParseJson(bodyText);
 
-  return [get(parsed, "error.type"), get(parsed, "type")].some(
+  return [get(parsed, "error.type"), get(parsed, "type"), get(parsed, "body.error.type")].some(
     (candidate) => asString(candidate).trim().toLowerCase() === "usage_limit_reached",
   );
 };
@@ -97,7 +155,7 @@ export const parseCodexRetryAfterMs = (
   if (status !== 429 || bodyText === "") return undefined;
   const parsed = tryParseJson(bodyText);
 
-  for (const quota of [get(parsed, "error"), parsed]) {
+  for (const quota of [get(parsed, "error"), parsed, get(parsed, "body.error")]) {
     if (asString(get(quota, "type")).trim().toLowerCase() !== "usage_limit_reached") continue;
     const resetsAt = asInt(get(quota, "resets_at"));
 
@@ -202,14 +260,23 @@ export const newCodexStatusError = (
   let code = status;
   const isUsageLimit = isCodexUsageLimitError(bodyText);
   const credentialScoped = isUsageLimit && !options.modelLevelCooling;
+  const transientCapacity = !isUsageLimit && isCodexTransientCapacityError(bodyText);
 
-  if (isCodexModelCapacityError(bodyText) || isUsageLimit) code = 429;
+  if (transientCapacity || isUsageLimit) code = 429;
   const body = classifyCodexStatusError(code, bodyText);
-  const retryAfterMs = parseCodexRetryAfterMs(code, body, options.nowMs);
+
+  // A usage_limit_reached body reset describes quota recovery and wins over the generic header; every other 429
+  // honours the upstream `Retry-After` so per-turn admission limits cool until their real deadline.
+  const retryAfterMs =
+    parseCodexRetryAfterMs(code, body, options.nowMs) ??
+    (code === 429
+      ? parseRetryAfterMs(options.headers?.["retry-after"] ?? null, options.nowMs)
+      : undefined);
 
   return new ExecutionError({
     status: code,
     message: body,
+    ...(transientCapacity ? { code: ErrorCode.transientRateLimit } : {}),
     ...(credentialScoped ? { credentialScoped: true } : {}),
     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     ...(options.headers !== undefined ? { headers: options.headers } : {}),
@@ -338,7 +405,7 @@ const streamErrShouldHandle = (body: Json): boolean => {
   if (errorIsContextLength(body)) return true;
   const text = JSON.stringify(body);
 
-  if (isCodexUsageLimitError(text) || isCodexModelCapacityError(text)) return true;
+  if (isCodexUsageLimitError(text) || isCodexTransientCapacityError(text)) return true;
 
   return codexStatusErrorClassification(400, text)?.code === "thinking_signature_invalid";
 };

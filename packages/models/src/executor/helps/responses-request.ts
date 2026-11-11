@@ -156,6 +156,7 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
       original,
     },
     body,
+    context.usage,
   );
 
   const effective = get(body, "model");

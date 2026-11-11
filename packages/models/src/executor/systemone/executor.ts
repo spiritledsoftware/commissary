@@ -143,6 +143,7 @@ export const prepareSystemOneBody = Effect.fnUntraced(function* (input: {
       original: cloneJson(built.json),
     },
     built.json,
+    context.usage,
   );
 
   return { ...built, json } satisfies SystemOneBody;

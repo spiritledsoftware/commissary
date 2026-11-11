@@ -166,6 +166,70 @@ describe("deadlines (conductor_quota_clock_test.go, conductor_subsecond_cooldown
   });
 });
 
+describe("transient rate limit (CLIProxyAPI 9a35fa12, conductor_issue7017_test.go)", () => {
+  const transient = (extra: Partial<ReportResult> = {}): ReportResult =>
+    fail(429, "at capacity", {
+      error: {
+        code: "transient_rate_limit",
+        message: "at capacity",
+        retryable: false,
+        httpStatus: 429,
+      },
+      ...extra,
+    });
+
+  it("cools only the model until the hint, with no quota state or backoff", () => {
+    const state = mark(emptyState(), "gpt-5", transient({ retryAfterMs: 256_000 }));
+    const model = state.modelStates["gpt-5"];
+
+    expect(model).toMatchObject({ nextRetryAfter: NOW + 256_000, unavailable: true });
+    expect(model?.quota).toMatchObject({ exceeded: false, backoffLevel: 0 });
+    expect(state.quota.exceeded).toBe(false);
+    expect(blocked(state, "gpt-5", NOW + 1000)).toBe(true);
+    expect(blocked(state, "other", NOW + 1000)).toBe(false);
+  });
+
+  it("falls back to the transient cooldown without a hint and never escalates", () => {
+    let state = mark(emptyState(), "m", transient());
+
+    state = mark(state, "m", transient(), { now: NOW + 60_000 });
+    expect(state.modelStates.m?.quota).toMatchObject({ exceeded: false, backoffLevel: 0 });
+    expect(state.modelStates.m?.nextRetryAfter).toBe(NOW + 60_000 + 60_000);
+  });
+
+  it("an explicit zero hint means no cooldown", () => {
+    const state = mark(emptyState(), "m", transient({ retryAfterMs: 0 }));
+
+    expect(state.modelStates.m?.nextRetryAfter).toBe(0);
+    expect(blocked(state, "m", NOW + 1)).toBe(false);
+  });
+
+  it("a live genuine quota deadline keeps blocking", () => {
+    let state = mark(emptyState(), "m", fail(429, "quota", { retryAfterMs: HOUR }));
+
+    state = mark(state, "m", transient({ retryAfterMs: 5000 }), { now: NOW + 1000 });
+    expect(state.modelStates.m?.nextRetryAfter).toBe(NOW + HOUR);
+    expect(state.modelStates.m?.quota.exceeded).toBe(true);
+  });
+
+  it("without a model key it degrades to a credential-level transient cooldown", () => {
+    const state = mark(emptyState(), "", transient({ retryAfterMs: 30_000 }));
+
+    expect(state.nextRetryAfter).toBe(NOW + 30_000);
+    expect(state.quota.exceeded).toBe(false);
+  });
+
+  it("a credential-scoped failure stays on the quota path", () => {
+    const state = mark(
+      emptyState(),
+      "m",
+      transient({ retryAfterMs: HOUR, credentialScoped: true }),
+    );
+
+    expect(state.quota.exceeded).toBe(true);
+  });
+});
+
 describe("monotonic deadlines (conductor_cooldown_monotonic_test.go)", () => {
   const models = ["model-a", "model-b"];
 

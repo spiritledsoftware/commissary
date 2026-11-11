@@ -525,7 +525,12 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
 - **Selection** (`selection/`, pure and deterministic, clock injected): candidate set -> availability (`availability.ts`,
   incl. "never an expired OAuth token") -> highest priority tier -> strategy (`strategies.ts`: round-robin, smooth
   weighted round-robin, fill-first) -> optional session affinity (`affinity.ts`, TTL cache keyed
-  `callerScope::providers::session::model`). Model prefixes, `force-model-prefix`, exclusions, OAuth/API-key aliases,
+  `callerScope::providers::session::model`). A **Codex Guardian review** (`X-Openai-Subagent: guardian`, by the header and
+  not the configurable review model; CLIProxyAPI `2f6f2924`) has another model and so another key: with
+  `session-affinity-subagents` on, a subagent session without a binding of its own takes its parent's **newest live selection on
+  any model** (the cache keeps a per-session sequence of real selections, which TTL refreshes do not reorder) on a provider the
+  request may use, so the review keeps the parent's credential and prompt cache; ordinary subagents and forks stay as they were.
+  Model prefixes, `force-model-prefix`, exclusions, OAuth/API-key aliases,
   `force-mapping` and alias pools are resolved per credential in `routing.ts`. The caller still resolves the provider set
   (`PickRequest.providers`) from the model registry; the DO enforces the per-credential rules.
 - **Grants** (ADR 0023, _Grants_ below): `pick` takes the caller's `Reach` (`CredentialPool` option `reach(member)`,
@@ -807,6 +812,22 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Multi-agent v2, orphan delegation, `is-compat`** (slice #26, see "Codex client rewriting and compat variants"): the executor
   optimises collaboration tools/namespace (`optimizeCodexMultiAgentV2RequestForAuth`, restored in stream, non-stream and WebSocket
   events) and compat models use the `claude -> codex` compat transform.
+- **Transient capacity** (CLIProxyAPI `9a35fa12`, `errors.ts` + `credentials/cooldown/mark-result.ts`): a `turn_rate_limit_exceeded`
+  429 (or a `rate_limit_error` that says "at capacity" with no other code) and the model-at-capacity wording are
+  **transient model-scoped capacity**: status 429, `code: transient_rate_limit` (`ErrorCode.transientRateLimit`), the nested
+  `body.error` layout read too, and the `Retry-After` header (behind a `usage_limit_reached` body reset) as the hint. `markResult`
+  cools only the reporting model until the hint: no quota state, no quota backoff, an explicit zero hint means no cooldown, a live
+  genuine quota deadline is never shortened, and without a model key it degrades to a credential-level transient cooldown. A local
+  `Retry-After` of the cooldown outranks the upstream one the `passthrough-headers` option forwards. Not ported: Go's trusted-deadline
+  error wrapper for terminal clients and Home aggregation (Commissary's `withRetryAfter` already writes the conductor's value).
+- **Split SSE events** (CLIProxyAPI `7795de19`, `sse-assembler.ts`): a data line that opens a JSON object or array without
+  closing it collects the following data lines until the JSON closes (a blank line, the end of the stream or the line limit also end
+  it), and is delivered compacted on one line, before the reader and in the non-stream aggregation; complete, empty and `[DONE]`
+  lines pass as read. Deviations: no invalid-event warning, and the bootstrap budgets count an assembled event as one frame of its
+  joined size, not its physical lines.
+- **Replayed `web_search_call` history** (CLIProxyAPI `e7d4c731`, `ensureWebSearchToolForHistory`): input items of that type without a
+  `web_search` / `web_search_preview*` tool get `{"type":"web_search"}` appended (on `/responses/compact` too); a Responses-Lite request
+  has the replayed items dropped instead. The compaction summary request is skipped, like the image tool.
 - **Stream bootstrap buffering** (`upstream.codex.stream-bootstrap-buffering` / `-timeout`, `bootstrap.ts` +
   `stream.ts`/`websocket.ts`): frames that carry nothing observable (handshake preamble, keepalives, empty `*.added`
   frames; a closed allow-list like Go's `isCodexBootstrapBufferableEvent`) are held until the first real event, within
@@ -947,7 +968,19 @@ WebSocket transports"). Reuses the Codex translators
 
 Port of `openai_responses_websocket*.go` (inbound `GET /v1/responses` and `GET /backend-api/codex/responses` with
 `Upgrade: websocket`), `codex_websockets_*.go` and `xai_websockets_executor.go`. The Access gate authenticates the
-upgrade request like any other (default-deny prefixes); the principal is captured for the socket's lifetime.
+upgrade request like any other (default-deny prefixes); the principal is captured for the socket's lifetime, but the
+API Worker's client gate also provides `RequestReauthorizer` (`@commissary/auth`, `reauthorizeClient`), which authenticates the
+upgrade again before **every client frame** (the hand-off in `socket.ts`, steering frames included; CLIProxyAPI `b9bb031d`), so
+a key revoked, or a member removed or suspended, after the upgrade stops working on the live socket: the frame is answered with an
+error frame (401/403/429, tied to its `event_id`; `refusalToExecutionError`), not run, and the socket stays open. An API key is
+verified again. An Access sign-in is not verified again (no signature or JWKS check); it is **bounded by the upgrade token's own
+`exp`**: before it, the revocable state is checked (the person is still a member of the org and the org still takes Access
+sign-ins from clients); from it on, every frame is refused with a 401 "Access token expired", so the client reconnects with a
+fresh token. That keeps an identity provider's offboarding within the Access session duration. A dev-bypass sign-in has no token
+and has only the membership check. A **grant** withdrawn
+mid-socket is not this check's business: grants decide what a pick may use, so the next turn's `pick` refuses it. Deviations from
+Go: the check reads the upgrade's headers and not the frame (Commissary's gate looks at no body), is not counted against the plan's
+request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
 
 - **Where the socket lives (decision)**: in the Worker invocation that accepts it (`WebSocketPair` + `server.accept()`,
   `routes.ts`), **not** in a `SessionState` Durable Object. Per-socket state (previous request/response chaining, pending tool
@@ -1223,7 +1256,7 @@ Port of `auto_refresh_loop.go` + `conductor_refresh.go` + the per-provider `Refr
 (Cloudflare-free, unit tested with a fake host/alarm/clock) is owned by the `ControlPlane` DO, which is the only writer:
 
 - **Scheduling** (`schedule.ts`): `nextRefreshCheckAt` is a pure function of (now, credential, state) with the Go leads
-  (codex 24 h, claude 4 h, antigravity 30 min, xai/kimi/kimi-ai/kimi.ai 5 min; devin, meta, kimi.com, vertex never).
+  (codex 96 h, claude 4 h, antigravity 30 min, xai/kimi/kimi-ai/kimi.ai 5 min; devin, meta, kimi.com, vertex never).
   One alarm is multiplexed over all credentials: `rearm()` takes the minimum over the stored credentials (no heap) and
   is called after every credential mutation, after each alarm run and by the cron `sweepRefresh()`. `alarm()` refreshes
   what is due (`oauth.auth-auto-refresh-workers`, default 16, concurrently) and always re-arms, never sooner than 30 s
@@ -2339,6 +2372,11 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   payload rules (`extractTranslatedReasoningEffort`). The last mid-conversation effort directive (a `role: system` turn
   carrying `output_config.effort`) wins over the top-level value that clients keep fixed for prompt caching, and
   `disabled` and `between_tools` record `none` (Go `fb30a9e8`); a thinking suffix still wins.
+- **`service_tier`** (CLIProxyAPI `07b5a7a1`): the record reports the tier of the **outbound** body, read after the payload rules
+  (`UsageReporter.setServiceTierFromBody`: `service_tier`, `request.service_tier` or `interaction.service_tier`), so a rule that
+  sets or overrides it shows. A body without one leaves the client's tier. Go keeps both in separate fields
+  (`ServiceTier`, `EffectiveServiceTier`); here the one `service_tier` column holds the effective tier (no migration), and the
+  tier the upstream answered with stays in `response_service_tier`. Every executor records it right after its `finalizePayload`.
 - **TTFT** (`ttft.ts` + reporter): `markFirstByte` (non-stream: effective TTFT), `recordFirstPacket` /
   `observeTokenEvent(now, isToken)` (streams: first substantive token event, first packet as fallback). Codex streams use
   `isResponsesTokenEvent`; OpenAI-compatible and Claude executors still mark the first response byte (hook the matching
@@ -3490,7 +3528,7 @@ time and computer time, counts and decides.
   cross-request locks, which workerd forbids). `ACCESS_DEV_BYPASS` only applies when the request host is loopback (i.e.
   `alchemy dev`) and is refused (warning logged once per isolate) whenever `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is set.
 - **`@commissary/auth`** (`packages/auth`, #132): request-side authentication with two entry points,
-  `authenticateClient(headers, url)` (the client API) and `authenticateManagement(headers, url, {needs, slug})` (the
+  `authenticateClient(headers, url)` (the client API; `reauthorizeClient` authenticates it again while it runs, for a Responses WebSocket) and `authenticateManagement(headers, url, {needs, slug})` (the
   management API and the panel), each picking the Access gate (`auth/access-gate.ts`) or Commissary Cloud's
   (`auth/hosted-gate.ts`); the API Worker calls the first, the app Worker the second. Each Worker owns its routes and passes in what a path needs: the app Worker the zone (`management/zones.ts`
   `classifyPath`: public, management, or the client API it refuses), the role (`management/policy.ts`), the addressed org's slug and, for the cross-site

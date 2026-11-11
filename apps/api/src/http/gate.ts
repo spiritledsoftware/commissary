@@ -24,10 +24,14 @@ import {
   AccessJwks,
   AccessPrincipal,
   authenticateClient,
+  type AuthConfig,
+  type AuthDirectory,
   crossSiteRejection,
+  reauthorizeClient,
   PUBLIC_ROUTE_IDENTITY,
   authenticateRun,
   refusalResponse,
+  RequestReauthorizer,
 } from "@commissary/auth";
 import { runPrincipal } from "@commissary/agents/api";
 import { limitClientRate } from "@commissary/billing/api";
@@ -128,10 +132,13 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           );
 
         const headers = swapped.success;
+        const ambient = yield* Effect.context<AuthConfig | AuthDirectory | CurrentOrg>();
+
+        const withJwks = Effect.provideService(AccessJwks, jwks);
 
         const authenticated = yield* Effect.result(
           authenticateClient(headers, request.originalUrl).pipe(
-            Effect.provideService(AccessJwks, jwks),
+            withJwks,
             // After authentication and standing: only an org's own requests count against its ceiling.
             Effect.tap((identity) => limitClientRate(identity.org)),
           ),
@@ -145,8 +152,18 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
             : refusal;
         }
 
+        // A request that outlives its authentication (a Responses WebSocket) authenticates again per turn, but not
+        // against the ceiling: the upgrade was counted. An Access sign-in is re-checked for membership only, since its
+        // token expires while the person stays valid (`reauthorizeClient`).
+        const reauthorize = reauthorizeClient(
+          headers,
+          request.originalUrl,
+          authenticated.success,
+        ).pipe(withJwks, Effect.provideContext(ambient));
+
         return yield* app.pipe(
           Effect.provideService(AccessPrincipal, authenticated.success),
+          Effect.provideService(RequestReauthorizer, reauthorize),
           Effect.provideService(CurrentOrg, authenticated.success.org),
         );
       });

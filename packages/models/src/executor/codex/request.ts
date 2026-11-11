@@ -2,7 +2,7 @@
  * Codex request body shaping.
  *
  * Go source: internal/runtime/executor/codex_executor_request.go (normalizeCodexInstructions,
- * ensureImageGenerationTool, normalizeCodexParallelToolCalls, cacheHelper prompt cache identity),
+ * ensureImageGenerationTool, ensureWebSearchToolForHistory, normalizeCodexParallelToolCalls, cacheHelper prompt cache identity),
  * openai_responses_signature.go (sanitizeOpenAIResponsesReasoningEncryptedContent, non-compat variant),
  * helps/derived_session.go (ProviderSessionUUID), helps/claude_code_session.go (ClaudeCodePromptCache).
  * All functions mutate the parsed body in place and return it.
@@ -108,6 +108,49 @@ export const ensureImageGenerationTool = (
   }
 
   tools.push({ type: "image_generation", output_format: "png" });
+
+  return body;
+};
+
+/** `isCodexWebSearchToolType`. */
+const isWebSearchToolType = (type: string): boolean =>
+  type === "web_search" ||
+  type === "web_search_preview" ||
+  type === "web_search_preview_2025_03_11";
+
+/**
+ * `ensureWebSearchToolForHistory` (CLIProxyAPI e7d4c731): reconciles replayed `web_search_call` input items with the
+ * tool declarations, so Codex does not fail with "response protection is unavailable". A standard request without a
+ * web search tool gets `{"type":"web_search"}` appended; a Responses-Lite request (which omits top-level hosted tools)
+ * has the replayed search items stripped instead.
+ */
+export const ensureWebSearchToolForHistory = (body: Json, route: LiteRouteInput): Json => {
+  const input = get(body, "input");
+
+  if (
+    !isJsonArray(input) ||
+    !input.some((item) => asString(get(item, "type")).trim() === "web_search_call")
+  )
+    return body;
+
+  const tools = get(body, "tools");
+
+  if (
+    isJsonArray(tools) &&
+    tools.some((tool) => isWebSearchToolType(asString(get(tool, "type")).trim()))
+  )
+    return body;
+
+  if (responsesLiteRequestForAuth(body, route)) {
+    return set(
+      body,
+      "input",
+      input.filter((item) => asString(get(item, "type")).trim() !== "web_search_call"),
+    );
+  }
+
+  if (!isJsonArray(tools)) return set(body, "tools", [{ type: "web_search" }]);
+  tools.push({ type: "web_search" });
 
   return body;
 };

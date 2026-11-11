@@ -10,6 +10,10 @@ import {
   AccessJwks,
   AccessPrincipal,
   authenticateClient,
+  reauthorizeClient,
+  type AuthConfig,
+  type AuthDirectory,
+  RequestReauthorizer,
 } from "@commissary/auth";
 import { CurrentOrg } from "@commissary/core";
 
@@ -41,6 +45,9 @@ const PUBLIC_ROUTE_IDENTITY: AccessIdentity = {
     return noPrincipal();
   },
 };
+
+/** A test hook: while set, every re-authorisation of a running request fails with it (a key revoked mid-socket). */
+export const reauthorization = { failure: undefined as AccessError | undefined };
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 
@@ -81,6 +88,8 @@ const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
         if (isPublic(request.originalUrl))
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);
 
+        const ambient = yield* Effect.context<AuthConfig | AuthDirectory | CurrentOrg>();
+
         const authenticated = yield* Effect.result(
           authenticateClient(request.headers, request.originalUrl).pipe(
             Effect.provideService(AccessJwks, jwks),
@@ -91,6 +100,14 @@ const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
 
         return yield* app.pipe(
           Effect.provideService(AccessPrincipal, authenticated.success),
+          Effect.provideService(
+            RequestReauthorizer,
+            Effect.suspend(() =>
+              reauthorization.failure === undefined
+                ? reauthorizeClient(request.headers, request.originalUrl, authenticated.success)
+                : Effect.fail(reauthorization.failure),
+            ).pipe(Effect.provideService(AccessJwks, jwks), Effect.provideContext(ambient)),
+          ),
           Effect.provideService(CurrentOrg, authenticated.success.org),
         );
       });

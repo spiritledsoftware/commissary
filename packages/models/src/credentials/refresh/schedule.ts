@@ -18,7 +18,8 @@ const HOUR = 3_600_000;
 
 /** Provider refresh leads. Providers absent here (devin, meta, kimi.com, vertex, ...) are never auto-refreshed. */
 const REFRESH_LEADS_MS = new Map<string, number>([
-  ["codex", 24 * HOUR],
+  // 96 h (CLIProxyAPI feb63984): the upstream invalidates tokens it has not seen refreshed for about a week.
+  ["codex", 96 * HOUR],
   ["claude", 4 * HOUR],
   ["antigravity", 30 * MINUTE],
   ["xai", 5 * MINUTE],

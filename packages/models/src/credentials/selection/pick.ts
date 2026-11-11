@@ -128,6 +128,26 @@ const highestPriority = (candidates: ReadonlyArray<Candidate>): Candidate[] => {
   return candidates.filter((candidate) => candidate.priority === best);
 };
 
+/**
+ * `latestSessionAuth`'s provider filter for a guardian review (CLIProxyAPI 2f6f2924): the executor keys of the candidates
+ * on the one provider the request names, or on any of them when it names several (a mixed pool).
+ */
+const eligibleProviders = (
+  requested: ReadonlySet<string>,
+  candidates: ReadonlyArray<Candidate>,
+): Set<string> => {
+  const mixed = requested.size !== 1;
+  const eligible = new Set<string>();
+
+  for (const candidate of candidates) {
+    const provider = executorKey(candidate.entry.credential);
+
+    if (mixed || requested.has(provider)) eligible.add(provider);
+  }
+
+  return eligible;
+};
+
 /** Selects one credential for `request`, or explains why none is selectable. */
 export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const { request, settings, runtime, now } = input;
@@ -416,11 +436,19 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const isFork = session?.isFork === true;
   const isSubagent = !isFork && isSubagentSession(primaryId, parentId);
 
+  // The session's selections are recorded with the provider that served them, for guardian inheritance below.
+  const sessionKey = `${scope}::${primaryId}`;
+
   const bind = (authId: string): string[] => {
-    runtime.affinity.set(cacheKey, authId, now);
+    const candidate = find(authId);
+
+    const provider =
+      candidate === undefined ? providerLabel : executorKey(candidate.entry.credential);
+
+    runtime.affinity.setSelection(cacheKey, authId, now, sessionKey, provider);
 
     if (fallbackKey !== undefined && !isSubagent && !isFork) {
-      runtime.affinity.set(fallbackKey, authId, now);
+      runtime.affinity.setSelection(fallbackKey, authId, now, sessionKey, provider);
 
       return [cacheKey, fallbackKey];
     }
@@ -432,6 +460,26 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const bound = find(cachedId);
 
   if (bound !== undefined) return done(bound, bind(bound.id));
+
+  // A Guardian review runs another model, so it has no binding of its own; it takes the parent's newest live selection
+  // (on any model, on a provider this request may use) so the review keeps the parent's credential and prompt cache.
+  // The header decides, not the review model, which is configurable (CLIProxyAPI 2f6f2924).
+  if (
+    cachedId === undefined &&
+    isSubagent &&
+    settings.sessionAffinitySubagents &&
+    session?.isGuardian === true
+  ) {
+    const inheritedId = runtime.affinity.latestSessionAuth(
+      `${scope}::${parentId}`,
+      eligibleProviders(providers, available),
+      now,
+    );
+
+    const parent = find(inheritedId);
+
+    if (parent !== undefined) return done(parent, bind(parent.id));
+  }
 
   // A stale binding is re-picked straight away; the parent alias is only consulted without a binding.
   if (

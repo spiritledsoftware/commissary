@@ -67,6 +67,8 @@ export interface PickSession {
   readonly id: string;
   readonly parentId?: string;
   readonly isFork?: boolean;
+  /** A Codex Guardian review: it inherits the parent's latest binding across models (CLIProxyAPI 2f6f2924). */
+  readonly isGuardian?: boolean;
 }
 
 export interface PickRequest {

@@ -177,6 +177,7 @@ export const makeFinalize =
         ...(original !== undefined ? { original } : {}),
       },
       body,
+      context.usage,
     );
 
 /** `xaiResolveComposerSessionID`. */

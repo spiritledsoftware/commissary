@@ -121,6 +121,11 @@ export interface SocketDeps<R> {
    * full duplex (`executor/codex/duplex.ts`).
    */
   readonly steering?: boolean;
+  /**
+   * Authorises one client frame again before it is run (CLIProxyAPI b9bb031d): the refusal answers the frame with an error
+   * frame (the socket stays open) and the frame is not run. Absent, the upgrade's authentication stands for the socket.
+   */
+  readonly authorize?: Effect.Effect<ExecutionError | undefined>;
   /** Whether a credential may still carry traffic (Go `WithWebsocketAuthCheck`); defaults to true. */
   readonly authEnabled?: (credentialId: string) => boolean;
   /** Runs one turn through the conductor. */
@@ -290,7 +295,7 @@ export const runResponsesSocket = <R>(
       /**
        * The hand-off of a client frame to whoever runs it: the main loop, or the steering executor through
        * `duplexInput.next`. The checks run in order, and a frame that fails one is answered here and never handed on:
-       * first the stale-frame fence; per-request re-authorisation (B7) is the next check, after it.
+       * first the stale-frame fence, then the re-authorisation of the request (`deps.authorize`).
        */
       const handOff: Effect.Effect<Option.Option<string>> = Effect.gen(function* () {
         while (true) {
@@ -300,6 +305,20 @@ export const runResponsesSocket = <R>(
 
           if (next.value.epoch < epoch) {
             answerStale(next.value.text);
+            continue;
+          }
+
+          const refusal = deps.authorize === undefined ? undefined : yield* deps.authorize;
+
+          if (refusal !== undefined) {
+            const parsed = tryParseJson(next.value.text);
+
+            write(
+              withEventId(
+                buildErrorPayload(refusal),
+                isJsonObject(parsed) ? eventIdOf(parsed) : "",
+              ),
+            );
             continue;
           }
 

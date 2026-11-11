@@ -155,8 +155,8 @@ export const finalizeForOpenCode = (
   protocol: string,
   original: Json,
   body: Json,
-): Json =>
-  finalizePayload(
+): Json => {
+  const final = finalizePayload(
     shaping.context.config,
     shaping.provider,
     {
@@ -169,7 +169,11 @@ export const finalizeForOpenCode = (
       original,
     },
     body,
+    shaping.context.usage,
   );
+
+  return final;
+};
 
 /** Translator response context of an attempt. */
 export const openCodeResponseContext = (

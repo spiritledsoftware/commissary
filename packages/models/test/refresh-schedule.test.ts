@@ -33,7 +33,7 @@ const subject = (
 
 describe("provider leads", () => {
   it.each([
-    ["codex", 24 * HOUR],
+    ["codex", 96 * HOUR],
     ["claude", 4 * HOUR],
     ["antigravity", 30 * MIN],
     ["xai", 5 * MIN],
@@ -79,7 +79,7 @@ describe("provider leads", () => {
 describe("expiry sources", () => {
   it("falls back to last_refresh + lead when no expiry is known, and is due when nothing is known", () => {
     const withLast = subject("codex", { refresh_token: "r", last_refresh: iso(T0 - 2 * HOUR) });
-    expect(nextRefreshCheckAt(T0, withLast, emptyState())).toBe(T0 - 2 * HOUR + 24 * HOUR);
+    expect(nextRefreshCheckAt(T0, withLast, emptyState())).toBe(T0 - 2 * HOUR + 96 * HOUR);
     expect(shouldRefresh(T0, withLast, emptyState())).toBe(false);
     const nothing = subject("codex", { refresh_token: "r" });
     expect(nextRefreshCheckAt(T0, nothing, emptyState())).toBe(T0);

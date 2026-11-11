@@ -9,13 +9,15 @@
  * ({@link ManagementRoute}), and whether a request is for the client API at all. Cross-site checks (`csrf.ts`) come
  * before either.
  */
-import { Effect } from "effect";
-import type { CurrentOrg, OrgId } from "@commissary/core";
-import { accessGate } from "./access-gate.ts";
+import { Clock, Effect } from "effect";
+import { decodeJwt } from "jose";
+import { type CurrentOrg, type OrgId, UnauthorizedError } from "@commissary/core";
+import { ACCESS_JWT_HEADER, ACCESS_TOKEN_HEADER, accessGate } from "./access-gate.ts";
+import { presentedCredentials } from "./api-key.ts";
 import type { AccessJwks } from "./access/jwks.ts";
 import { AuthConfig } from "./config.ts";
 import type { AuthDirectory } from "./directory.ts";
-import type { AccessError, ManagementRoute } from "./gate.ts";
+import { type AccessError, admitted, type ManagementRoute } from "./gate.ts";
 import { hostedClientGate, hostedManagementGate, type SignInSessions } from "./hosted-gate.ts";
 import { isHosted } from "./mode.ts";
 import { type AccessIdentity, type RunPrincipal, runIdentity } from "./principal.ts";
@@ -37,6 +39,56 @@ export const authenticateClient = (
     return isHosted(yield* AuthConfig)
       ? yield* hostedClientGate(headers, requestUrl)
       : yield* accessGate(headers, requestUrl, undefined);
+  });
+
+/** The `exp` (seconds) of a token the gate verified at the upgrade; `undefined` when it carries none. */
+const tokenExpiry = (token: string): number | undefined => {
+  try {
+    return decodeJwt(token).exp;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Authenticates a client API request again after it was admitted as `upgraded`, while it is still running (a Responses
+ * WebSocket, CLIProxyAPI b9bb031d). An API key is verified again, so a revoked key, a withdrawn membership or a
+ * suspended person stops at once. An Access sign-in is not verified again (its signature was checked at the upgrade,
+ * and a rotated JWKS key says nothing about the person): it is bounded by its token's own `exp`, read from the upgrade's
+ * token, after which it is refused with a 401 so the client reconnects with a fresh one, which keeps an identity
+ * provider's offboarding within the Access session duration. Before `exp` the revocable state is checked again: the
+ * person is still a member of the org, which still takes Access sign-ins from clients.
+ */
+export const reauthorizeClient = (
+  headers: Readonly<Record<string, string | undefined>>,
+  requestUrl: string,
+  upgraded: AccessIdentity,
+): Effect.Effect<
+  AccessIdentity,
+  AccessError,
+  AuthConfig | AuthDirectory | CurrentOrg | AccessJwks
+> =>
+  Effect.gen(function* () {
+    const { principal } = upgraded;
+
+    if (
+      (principal.kind === "user" || principal.kind === "service") &&
+      !isHosted(yield* AuthConfig)
+    ) {
+      const token =
+        headers[ACCESS_JWT_HEADER]?.trim() || headers[ACCESS_TOKEN_HEADER]?.trim() || "";
+
+      const exp = token === "" ? undefined : tokenExpiry(token);
+
+      if (exp !== undefined && (yield* Clock.currentTimeMillis) >= exp * 1000)
+        return yield* new UnauthorizedError({ message: "Access token expired" });
+
+      return yield* admitted(principal, upgraded.org, upgraded.platformAdmin, "member", {
+        credentialSent: presentedCredentials(headers, requestUrl).any,
+      });
+    }
+
+    return yield* authenticateClient(headers, requestUrl);
   });
 
 /**

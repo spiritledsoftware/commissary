@@ -21,6 +21,13 @@ export interface SessionInfo {
   readonly isSubagent: boolean;
 }
 
+/**
+ * `isGuardianRequest` (CLIProxyAPI 2f6f2924): a Codex Guardian review, by its `X-Openai-Subagent: guardian` header
+ * (case and surrounding whitespace ignored), deliberately not by the review model, which is configurable.
+ */
+export const isGuardianRequest = (headers: Headers): boolean =>
+  (headers.get("x-openai-subagent") ?? "").trim().toLowerCase() === "guardian";
+
 const encoder = new TextEncoder();
 
 /** `NormalizeExplicitID`: printable, trimmed, at most 256 bytes. */

@@ -118,6 +118,7 @@ import {
 } from "./output.ts";
 import {
   ensureImageGenerationTool,
+  ensureWebSearchToolForHistory,
   normalizeCodexInstructions,
   normalizeCodexOutputBudget,
   normalizeParallelToolCalls,
@@ -136,6 +137,7 @@ import {
 import { modelOverrideHeaders } from "../helps/model-headers.ts";
 import { configuredUpstreamNames, isCompatModel } from "./compat.ts";
 import { bootstrapTimeoutMs, isGrokClientHeaders } from "./bootstrap.ts";
+import { CodexSseAssembler } from "./sse-assembler.ts";
 import { CodexStreamReader } from "./stream.ts";
 import {
   codexWebsocketsEnabled,
@@ -286,6 +288,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
         ...(original !== undefined ? { original } : {}),
       },
       body,
+      context.usage,
     );
 
   /**
@@ -402,6 +405,11 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     }
 
     body = normalizeCodexInstructions(body, nativeOutput);
+
+    // Replayed `web_search_call` history needs a declaration (or, on Responses-Lite, no search items). A summary asks
+    // for text and keeps its own contract, like the image tool below.
+    if (mode.summary !== true)
+      body = ensureWebSearchToolForHistory(body, liteRoute(context, request, options));
 
     let autoInjection: AutoInjection | undefined;
 
@@ -641,7 +649,15 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     let sawOutputDelta = false;
     const modelLevelCooling = context.config.upstream.codex["model-level-cooling"];
 
-    for (const line of text.split("\n")) {
+    const assembler = new CodexSseAssembler();
+    const rawLines = text.split(/\r?\n/);
+
+    const eventLines = [
+      ...rawLines.flatMap((rawLine) => assembler.push(rawLine)),
+      ...assembler.end(),
+    ];
+
+    for (const line of eventLines) {
       if (!line.startsWith("data:")) continue;
 
       const event = tryParseJson(
@@ -782,8 +798,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       grokClient: isGrokClientHeaders(options.headers),
     });
 
+    // An event the upstream split across several `data:` lines is joined before the reader sees it.
+    const assembler = new CodexSseAssembler();
+
     const chunks = splitLines(response.stream).pipe(
       Stream.mapError(transportError),
+      Stream.flatMap((line: string) => Stream.fromIterable(assembler.push(line))),
+      Stream.concat(Stream.suspend(() => Stream.fromIterable(assembler.end()))),
       Stream.mapAccumEffect(
         () => reader,
         (state, line: string) =>

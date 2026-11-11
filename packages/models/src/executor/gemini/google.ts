@@ -358,7 +358,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       options.metadata.requestedModel !== "" ? options.metadata.requestedModel : request.model;
 
     // User payload rules: the final semantic mutation of the business payload (AGENTS.md).
-    return applyPayloadRules(
+    const { payload } = applyPayloadRules(
       context.config,
       {
         model: baseModel,
@@ -370,7 +370,11 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
         original: original ?? body,
       },
       body,
-    ).payload;
+    );
+
+    context.usage.setServiceTierFromBody(payload);
+
+    return payload;
   };
 
   /** Generate/stream/count preparation in the order of the Go executors. */

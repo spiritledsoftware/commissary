@@ -10,12 +10,19 @@
  * socket, exactly like the goroutine-per-connection state in Go. A Durable Object with the hibernation API would add
  * nothing here: the outbound upstream WebSocket and the running turn keep the object awake anyway, and outbound sockets
  * cannot hibernate. The Access gate has already authenticated the upgrade request (the principal is captured for the
- * socket's lifetime).
+ * socket's lifetime); the gate's `RequestReauthorizer`, when it provides one, authenticates every client frame again
+ * (CLIProxyAPI b9bb031d), so a key revoked after the upgrade stops working on the live socket.
  */
-import { type Cause, Effect, Queue, Result, type Scope } from "effect";
+import { type Cause, Effect, Option, Queue, Result, type Scope } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import { AccessPrincipal } from "@commissary/auth";
+import {
+  type AccessRefusal,
+  accessRefusal,
+  AccessPrincipal,
+  RequestReauthorizer,
+} from "@commissary/auth";
 import { invalidRequestBody } from "../../../http/errors.ts";
+import { ExecutionError } from "../../../executor/errors.ts";
 import { executeStream, type ExecutionInput, hasAlternativeTarget } from "../../execute.ts";
 import { currentConfig } from "../../request.ts";
 import { prepareCodexResponsesRequest } from "../codex-prepare.ts";
@@ -37,6 +44,16 @@ const frameText = (data: string | ArrayBuffer | ArrayBufferView): string | undef
   return undefined;
 };
 
+/** What a refused frame is answered with: the refusal's status and message, and its `Retry-After` when rate limited. */
+export const refusalToExecutionError = (refusal: AccessRefusal): ExecutionError =>
+  new ExecutionError({
+    status: refusal.status,
+    message: refusal.message,
+    ...(refusal.retryAfterSeconds === undefined
+      ? {}
+      : { safeHeaders: { "retry-after": String(refusal.retryAfterSeconds) } }),
+  });
+
 /** Accepts the upgrade and starts the socket fiber. Requires the per-request services of the turn (see header). */
 export const handleResponsesSocket = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -50,6 +67,7 @@ export const handleResponsesSocket = Effect.gen(function* () {
   }
 
   const identity = yield* AccessPrincipal;
+  const reauthorizer = yield* Effect.serviceOption(RequestReauthorizer);
   const services = yield* Effect.context<TurnServices>();
   // `upstream.codex.response-steering`; an unreadable config surfaces from the turn itself.
   const config = yield* Effect.result(currentConfig);
@@ -88,6 +106,18 @@ export const handleResponsesSocket = Effect.gen(function* () {
       toolSessionKey: downstreamSessionKey(headers, identity.callerScope),
       toolCaches: defaultToolCaches,
       steering,
+      ...(Option.isSome(reauthorizer)
+        ? {
+            authorize: reauthorizer.value.pipe(
+              Effect.result,
+              Effect.flatMap((result) =>
+                Result.isSuccess(result)
+                  ? Effect.succeed(undefined)
+                  : Effect.map(accessRefusal(result.failure), refusalToExecutionError),
+              ),
+            ),
+          }
+        : {}),
       prepare: (payload) => prepareCodexResponsesRequest(payload, headers, true, false),
       execute: (input: Omit<ExecutionInput, "request">) => executeStream({ ...input, request }),
       hasAlternative: (input: Omit<ExecutionInput, "request">, excludedId: string) =>
