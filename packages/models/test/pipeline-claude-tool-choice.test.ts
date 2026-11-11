@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { prepareLocalCountBody } from "../src/executor/claude/pipeline.ts";
 import { makeSessionStateContinuityStore } from "../src/executor/claude/continuity.ts";
 import { makeSessionStateDatePinStore } from "../src/executor/claude/date-pin.ts";
+import { makeMemoryWebSearchResultStore } from "../src/executor/claude/web-search-results.ts";
 import { makeSessionStateDeviceProfileStore } from "../src/executor/claude/device-profile.ts";
 import { makeMemoryReplayStore } from "../src/executor/claude/thinking-replay.ts";
 import { makeSessionStateToolAliasStore } from "../src/executor/claude/thread.ts";
@@ -125,6 +126,7 @@ const prepareLocal = (config: Config, model: string, payload: JsonObject) =>
         continuity: makeSessionStateContinuityStore(),
         datePin: makeSessionStateDatePinStore(),
         replay: makeMemoryReplayStore(),
+        webSearchResults: makeMemoryWebSearchResultStore(),
         deviceProfiles: makeSessionStateDeviceProfileStore(),
         toolAliases: makeSessionStateToolAliasStore(),
         now: () => new Date(0),

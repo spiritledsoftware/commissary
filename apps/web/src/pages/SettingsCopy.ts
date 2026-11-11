@@ -261,6 +261,10 @@ const COPY = {
     "Rewrite multi-agent v2 messages for other providers",
     "For every provider other than Codex, accounts and provider keys alike.",
   ),
+  "client.codex.web-search-result-cache.enabled": flag(
+    "Keep Claude web search results for 24 hours",
+    "For Responses clients that name their session: restores the results a replayed history lost, per upstream account. Off keeps nothing (zero data retention).",
+  ),
   "upstream.xai.inject-x-search": flag("Add the x_search tool when a request has none"),
   "upstream.opencode.disable-cloaking": flag(
     "Turn off cloaking for OpenCode Zen's free models",

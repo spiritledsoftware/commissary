@@ -38,6 +38,12 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  * - `portedRequestEdit` (ticket C9, Go `772df04b`, `a68c7d8e`): every Interactions -> Codex request carries
  *   `store: false` and asks for `reasoning.encrypted_content` in `include`, and a `thought` step without a replayable
  *   signature is dropped instead of sent as a bare reasoning item (the fixtures still have both).
+ * - `portedStreamOutputs` (ticket C10, Go `ede07caf`): the Interactions stream cases of Antigravity and Gemini emit
+ *   `done` right after the `interaction.completed` of the usage frame (the golden emits it on the `[DONE]` line), and a
+ *   bare `[DONE]` line terminates the Antigravity stream (Go used to read it as a broken JSON array).
+ * - `portedItemIdPrefix` (ticket C10, Go `b0db5448`): the Responses -> Interactions stream cases' fallback item ids carry
+ *   a per-response random prefix (`item_<uuid>_<index>`) where the golden has `item_<index>`; the prefix is stripped from
+ *   the translated chunks.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -421,6 +427,108 @@ export const portedChunkEdit = (key: string, line: number): ((chunk: string) => 
       : applyEdit(edit, chunk, key);
 };
 
+const ITEM_ID_PREFIX = /item_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_(\d+)/g;
+
+/** The translated chunk with the per-response prefix of its fallback item ids removed (C10, `b0db5448`). */
+export const portedItemIdPrefix = (chunk: string): string =>
+  chunk.replace(ITEM_ID_PREFIX, "item_$1");
+
+/** The distinct per-response prefixes of the fallback item ids in the chunks: one stream has at most one. */
+export const itemIdPrefixes = (chunks: ReadonlyArray<string>): Set<string> =>
+  new Set(
+    chunks.flatMap((chunk) =>
+      [
+        ...chunk.matchAll(
+          /item_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_\d+/g,
+        ),
+      ].map((match) => match[1] ?? ""),
+    ),
+  );
+
+type StreamOutputs = ReadonlyArray<ReadonlyArray<string>>;
+
+const DONE_CHUNK = "event: done\ndata: [DONE]\n\n";
+
+/**
+ * The Interactions streams now close with `done` right after the `interaction.completed` of the usage frame (C10, Go
+ * `ede07caf`): the golden still emits it on the `[DONE]` line. Moves it.
+ */
+const doneFollowsCompleted = (outputs: StreamOutputs): StreamOutputs => {
+  const completedLine = outputs.findIndex((chunks) =>
+    chunks.some((chunk) => chunk.startsWith("event: interaction.completed")),
+  );
+
+  if (completedLine < 0) return outputs;
+
+  return outputs.map((chunks, line) => {
+    const kept = chunks.filter((chunk) => chunk !== DONE_CHUNK);
+
+    return line === completedLine ? [...kept, DONE_CHUNK] : kept;
+  });
+};
+
+/**
+ * A bare `[DONE]` line now terminates the Antigravity Interactions stream, where Go used to read it as a broken JSON
+ * array and emit nothing (C10, Go `ede07caf`): the first `[DONE]` line of the golden closes the open step, completes
+ * the interaction without usage and emits `done`.
+ */
+const bareDoneTerminates = (outputs: StreamOutputs): StreamOutputs => {
+  const created = /^event: interaction\.created\ndata: (.*)\n\n$/s.exec(outputs[0]?.[0] ?? "");
+  const interaction = JSON.parse(created?.[1] ?? "{}").interaction ?? {};
+
+  const completed = {
+    interaction: {
+      id: interaction.id,
+      status: "completed",
+      usage: {},
+      created: "2026-01-01T00:00:00Z",
+      updated: "2026-01-01T00:00:00Z",
+      service_tier: "standard",
+      object: "interaction",
+      model: interaction.model,
+    },
+    event_type: "interaction.completed",
+  };
+
+  const closing = [
+    `event: step.stop\ndata: ${JSON.stringify({ index: 0, event_type: "step.stop" })}\n\n`,
+    `event: interaction.completed\ndata: ${JSON.stringify(completed)}\n\n`,
+    DONE_CHUNK,
+  ];
+
+  return outputs.map((chunks, line) => (line === 1 ? closing : chunks));
+};
+
+const STREAM_OUTPUT_ROWS: ReadonlyArray<
+  readonly [string, (outputs: StreamOutputs) => StreamOutputs]
+> = [
+  ["interactions->antigravity stream: steps, deltas, completion and done", doneFollowsCompleted],
+  [
+    "interactions->antigravity stream: array payloads, [DONE] without usage completes",
+    bareDoneTerminates,
+  ],
+  [
+    "interactions->gemini stream: thought, text, function call and result steps, completion with usage",
+    doneFollowsCompleted,
+  ],
+];
+
+const STREAM_OUTPUT_EDITS: ReadonlyMap<string, (outputs: StreamOutputs) => StreamOutputs> = new Map(
+  STREAM_OUTPUT_ROWS,
+);
+
+/** The golden stream outputs of case `key`, edited when they predate a port (the per-line chunks stay golden). */
+export const portedStreamOutputs = (key: string, outputs: StreamOutputs): StreamOutputs => {
+  const edit = STREAM_OUTPUT_EDITS.get(key);
+
+  if (edit === undefined) return outputs;
+  const edited = edit(outputs);
+
+  if (JSON.stringify(edited) !== JSON.stringify(outputs)) effectiveEdits.add(key);
+
+  return edited;
+};
+
 /** The `loc` property of the `claude->gemini` schema-cleaning cases: its local `$ref` is inlined now (C7, `c558d320`). */
 const inlinedLocRef: GoldenEdit = setPath(
   ["tools", 0, "functionDeclarations", 0, "parametersJsonSchema", "properties", "loc"],
@@ -593,6 +701,6 @@ export const portedRequestEdit = (key: string, expected: JsonObject): void => {
  * `translator-fixtures-ids.test.ts`, the others in `translator-fixtures.test.ts`.
  */
 export const staleGoldenEditEntries = (inScope: (key: string) => boolean): string[] =>
-  [...CHUNK_EDITS.keys(), ...REQUEST_EDITS.keys()].filter(
+  [...CHUNK_EDITS.keys(), ...REQUEST_EDITS.keys(), ...STREAM_OUTPUT_EDITS.keys()].filter(
     (key) => inScope(key) && !effectiveEdits.has(key),
   );

@@ -107,6 +107,8 @@ const newCall = (init: Partial<CallState> = {}): CallState => ({
 
 interface State {
   id: string;
+  /** Per-response prefix of the generated fallback item ids, so ids do not collide across responses (b0db5448). */
+  itemIdPrefix: string;
   environmentId: string;
   functionCalls: Map<number, CallState>;
   itemIds: Map<number, string>;
@@ -128,8 +130,12 @@ interface State {
   identityMapReady: boolean;
 }
 
+/** `interactionsFallbackItemID`. */
+const fallbackItemId = (st: State, index: number): string => `item_${st.itemIdPrefix}_${index}`;
+
 const newState = (): State => ({
   id: "",
+  itemIdPrefix: crypto.randomUUID(),
   environmentId: "",
   functionCalls: new Map(),
   itemIds: new Map(),
@@ -588,7 +594,8 @@ const updateFunctionCall = (
   } else {
     call.argumentFragments = [];
 
-    if (!call.itemIdSeen && !call.added) call.id = firstNonEmpty(call.callId, `item_${index}`);
+    if (!call.itemIdSeen && !call.added)
+      call.id = firstNonEmpty(call.callId, fallbackItemId(st, index));
 
     if (!call.callIdSeen && !call.added) call.callId = call.id;
   }
@@ -672,7 +679,7 @@ const finishPatchCalls = (st: State): string[] => {
 
     if (call.patchCall === undefined) {
       // Freeze the compatibility mapping of an absent id/call_id only at the response terminal.
-      if (!call.itemIdSeen) call.id = firstNonEmpty(call.callId, `item_${index}`);
+      if (!call.itemIdSeen) call.id = firstNonEmpty(call.callId, fallbackItemId(st, index));
 
       if (!call.callIdSeen) call.callId = call.id;
       call.identityFinalized = true;
@@ -957,7 +964,11 @@ const stepStart = (root: Json, st: State): string[] => {
     return updateFunctionCall(index, step, st, true);
   }
 
-  const itemId = firstNonEmpty(getStr(step, "id"), getStr(step, "call_id"), `item_${index}`);
+  const itemId = firstNonEmpty(
+    getStr(step, "id"),
+    getStr(step, "call_id"),
+    fallbackItemId(st, index),
+  );
 
   if (stepType === "function_call") return updateFunctionCall(index, step, st, true);
   st.itemIds.set(index, itemId);

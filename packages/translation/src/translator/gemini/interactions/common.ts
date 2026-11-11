@@ -473,8 +473,9 @@ export const interactionsUsage = (root: Json | undefined): Json | undefined =>
 const firstUsage = (usage: Json, ...paths: string[]): Json | undefined =>
   firstExistingPath(usage, paths);
 
-const geminiUsageNode = (root: Json): Json | undefined =>
-  get(root, "usageMetadata") ?? get(root, "usage_metadata");
+// `cpaUsageMetadata` is the spelling executors give non-terminal usage; it is read as `usageMetadata` (upstream ede07caf).
+export const geminiUsageNode = (root: Json): Json | undefined =>
+  get(root, "usageMetadata") ?? get(root, "usage_metadata") ?? get(root, "cpaUsageMetadata");
 
 /** `setInteractionsUsageFromGemini`. */
 export const setInteractionsUsageFromGemini = (out: Json, path: string, root: Json): Json => {

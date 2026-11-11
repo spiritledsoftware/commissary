@@ -89,6 +89,7 @@ const convertResponsesWebSearchCallToClaudeBlocksWithQuery = (
   item: Json,
   fallbackQuery: string,
   withResult: boolean,
+  lookup?: ReadonlyMap<string, Json>,
 ): JsonObject[] => {
   const toolUseID = claudeWebSearchToolUseID(str(get(item, "id")).trim());
 
@@ -115,7 +116,8 @@ const convertResponsesWebSearchCallToClaudeBlocksWithQuery = (
     content: [],
   };
 
-  const content = responsesWebSearchResultsToClaude(get(item, "results"));
+  // A result the client dropped is restored from the session's cache, when the executor found one (9d453bc0).
+  const content = responsesWebSearchResultsToClaude(get(item, "results")) ?? lookup?.get(toolUseID);
 
   if (content !== undefined) result.content = content;
 
@@ -127,23 +129,17 @@ const isPausedItem = (item: Json): boolean =>
   str(get(item, "status")).trim().toLowerCase() === "in_progress" &&
   get(item, "results") === undefined;
 
-/** A user turn or a tool output ends the assistant run a paused search can continue in. */
+/**
+ * A user turn ends the assistant run an open search can continue in. Tool outputs do not: Anthropic runs a deferred
+ * search right after them (upstream df860eb9).
+ */
 const isTurnBoundary = (item: Json): boolean => {
   let type = str(get(item, "type"));
   const role = str(get(item, "role"));
 
   if (type === "" && role !== "") type = "message";
 
-  switch (type) {
-    case "message":
-      return role !== "assistant";
-    case "function_call_output":
-    case "custom_tool_call_output":
-    case "tool_search_output":
-      return true;
-    default:
-      return false;
-  }
+  return type === "message" && role !== "assistant";
 };
 
 /**
@@ -152,21 +148,24 @@ const isTurnBoundary = (item: Json): boolean => {
  *
  * - while the paused turn is the tail of the history, the search goes back as a `server_tool_use` without a result,
  *   unchanged, as Anthropic requires;
- * - when the continuation delivered the result under the same id within the same assistant run (no user turn or tool
- *   output in between), the paused item is skipped and the continuation item emits the full pair, keeping the query
+ * - when the continuation delivered the result under the same id within the same assistant run (no user turn in
+ *   between; a `tool_use`-deferred search stays open across tool outputs), the paused item is skipped and the continuation item emits the full pair, keeping the query
  *   the paused item recorded.
  *
  * Every other `web_search_call`, repeated ids across separate turns included, keeps its one-pair-per-item replay.
  */
 export class ResponsesWebSearchHistory {
-  /** `boundaryAfter[i]`: a user turn or a tool output follows index i. */
+  /** `boundaryAfter[i]`: a user turn follows index i. */
   private readonly boundaryAfter: boolean[];
   /** Paused items a later continuation item replaces. */
   private readonly skip = new Set<number>();
   /** The paused item's query, carried to its continuation item. */
   private readonly pausedQuery = new Map<number, string>();
 
-  constructor(items: ReadonlyArray<Json>) {
+  constructor(
+    items: ReadonlyArray<Json>,
+    private readonly lookup?: ReadonlyMap<string, Json>,
+  ) {
     this.boundaryAfter = items.map(() => false);
     let boundary = false;
 
@@ -215,6 +214,7 @@ export class ResponsesWebSearchHistory {
       item,
       query,
       !(isPausedItem(item) && tail),
+      this.lookup,
     );
   }
 }
@@ -265,4 +265,57 @@ export const attachClaudeCitations = (
   textBlock.citations = citations;
 
   return textBlock;
+};
+
+/** `claudeWebSearchResultContentEmpty`: a `web_search_tool_result` content that is missing, null or an empty array. */
+export const claudeWebSearchContentEmpty = (content: Json | undefined): boolean =>
+  content === undefined || content === null || (isArr(content) && content.length === 0);
+
+/** Whether a `web_search_tool_result` among the blocks has no content (Go `claudeBlocksHaveEmptyWebSearchResult`). */
+export const claudeBlocksHaveEmptyWebSearchResult = (blocks: ReadonlyArray<Json>): boolean =>
+  blocks.some(
+    (block) =>
+      str(get(block, "type")) === "web_search_tool_result" &&
+      claudeWebSearchContentEmpty(get(block, "content")),
+  );
+
+/**
+ * Removes `web_search_result_location` citations from text blocks (Go `stripClaudeWebSearchCitationsFromParts`).
+ * Anthropic intermittently rejects a citation whose `encrypted_index` has no matching search result in the turn.
+ */
+export const stripClaudeWebSearchCitations = (blocks: ReadonlyArray<JsonObject>): void => {
+  for (const block of blocks) {
+    if (str(block.type) !== "text" || !isArr(block.citations)) continue;
+
+    const kept = block.citations.filter(
+      (citation) => str(get(citation, "type")) !== "web_search_result_location",
+    );
+
+    if (kept.length === block.citations.length) continue;
+
+    if (kept.length === 0) delete block.citations;
+    else block.citations = kept;
+  }
+};
+
+/**
+ * The Claude `server_tool_use` ids of the `web_search_call` items of a Responses input that carry no usable results:
+ * the ones a session cache could restore (`web-search-results.ts` in the Claude executor).
+ */
+export const responsesWebSearchCallsWithoutResults = (input: Json | undefined): string[] => {
+  const items = get(input, "input");
+  const ids: string[] = [];
+
+  if (!isArr(items)) return ids;
+
+  for (const item of items) {
+    if (str(get(item, "type")) !== "web_search_call") continue;
+
+    if (responsesWebSearchResultsToClaude(get(item, "results")) !== undefined) continue;
+    const id = claudeWebSearchToolUseID(str(get(item, "id")).trim());
+
+    if (id !== "" && !ids.includes(id)) ids.push(id);
+  }
+
+  return ids;
 };

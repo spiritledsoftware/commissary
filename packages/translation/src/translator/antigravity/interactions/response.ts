@@ -29,6 +29,9 @@ interface StreamState {
   completed: boolean;
   done: boolean;
   activeStepOpen: boolean;
+  /** The latest frame carrying usage (the fallback for an explicit `[DONE]`). */
+  pendingUsage: Json | undefined;
+  usageAfterSeen: boolean;
   id: string;
   stepId: string;
   activeStepType: string;
@@ -99,8 +102,8 @@ const streamPayloads = (line: string): Array<Json | undefined> => {
 
   if (isData) trimmed = trimmed.slice(5).trim();
 
-  // Only `data: [DONE]` is a terminator: a bare `[DONE]` line is read as a (broken) JSON array by Go and yields nothing.
-  if (isData && trimmed === "[DONE]") return ["[DONE]"];
+  // The bare sentinel is a terminator too (upstream ede07caf: Go no longer misparses it as a JSON array).
+  if (trimmed === "[DONE]") return ["[DONE]"];
   const root = tryParseJson(trimmed);
 
   if (isJsonArray(root)) {
@@ -411,6 +414,8 @@ export const convertAntigravityResponseToInteractions = (
       completed: false,
       done: false,
       activeStepOpen: false,
+      pendingUsage: undefined,
+      usageAfterSeen: false,
       id: nanoId("interaction"),
       stepId: "",
       activeStepType: "",
@@ -429,7 +434,7 @@ export const convertAntigravityResponseToInteractions = (
 
   for (const payload of streamPayloads(line)) {
     if (payload === "[DONE]") {
-      if (!st.completed) out.push(...stepStop(st), completed(st, modelName, undefined));
+      if (!st.completed) out.push(...stepStop(st), completed(st, modelName, st.pendingUsage));
       out.push(...done(st));
       continue;
     }
@@ -446,15 +451,28 @@ export const convertAntigravityResponseToInteractions = (
     const parts = get(root, "candidates.0.content.parts");
 
     if (isJsonArray(parts)) for (const part of parts) out.push(...partToStream(st, part));
-    const hasFinish = get(root, "candidates.0.finishReason") !== undefined;
-    const hasUsage = hasStreamUsage(root);
+    const finishReason = get(root, "candidates.0.finishReason");
+    const hasFinish = finishReason !== undefined && asString(finishReason).trim() !== "";
+    const frameHasUsage = hasStreamUsage(root);
+
+    if (frameHasUsage) {
+      st.pendingUsage = root;
+
+      if (st.finished) st.usageAfterSeen = true;
+    }
 
     if (hasFinish && !st.finished) {
       out.push(...stepStop(st));
       st.finished = true;
+
+      if (frameHasUsage) st.usageAfterSeen = true;
     }
 
-    if (hasUsage && st.finished && !st.completed) out.push(completed(st, modelName, root));
+    // Complete only on usage observed at or after the finish frame; usage cached from earlier content frames is the
+    // fallback for an explicit `[DONE]`, not a completion trigger (a later frame may carry the final usage).
+    if (st.usageAfterSeen && st.finished && !st.completed) {
+      out.push(completed(st, modelName, st.pendingUsage), ...done(st));
+    }
   }
 
   return out;

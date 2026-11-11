@@ -523,6 +523,39 @@ const appendStep = (ctx: InputContext, step: Json, defaultRole: string): void =>
   }
 };
 
+/**
+ * `appendInteractionsContentBlockItem` (upstream 37bd18b0): input as a bare list of content blocks, which have no step
+ * envelope and would otherwise be dropped (images and files with them). Envelope and explicit-role items keep the step
+ * dispatch, so system/developer content still closes the open user turn.
+ */
+const appendContentBlockItem = (ctx: InputContext, item: Json): boolean => {
+  switch (asString(get(item, "type")).trim().toLowerCase()) {
+    case "text":
+    case "image":
+    case "audio":
+    case "video":
+    case "document":
+      break;
+    default:
+      return false;
+  }
+
+  if (
+    get(item, "content") !== undefined ||
+    get(item, "steps") !== undefined ||
+    get(item, "parts") !== undefined ||
+    get(item, "role") !== undefined
+  ) {
+    return false;
+  }
+
+  leaveModelTurn(ctx);
+  appendContentPart(ctx, "user", item, userRun(ctx, "user"));
+  ctx.lastStepType = "user_input";
+
+  return true;
+};
+
 type ConvertInputResult = { items: JsonObject[]; run: UserRun };
 
 /** `appendInteractionsInputToAntigravity`: the conversation items and the unsupported-part tracker. */
@@ -545,7 +578,9 @@ const convertInput = (input: Json | undefined): ConvertInputResult => {
   }
 
   if (isJsonArray(input)) {
-    for (const item of input) appendStep(ctx, item, "user");
+    for (const item of input) {
+      if (!appendContentBlockItem(ctx, item)) appendStep(ctx, item, "user");
+    }
   } else if (isJsonArray(get(input, "steps"))) {
     const role = asString(get(input, "role"));
     const defaultRole = role === "model" || role === "assistant" ? "model" : "user";

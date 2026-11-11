@@ -11,7 +11,7 @@
  */
 import type { HeaderInput } from "../../config/payload/index.ts";
 import type { Config } from "../../config/schema.ts";
-import { cloneJson } from "@commissary/json";
+import { cloneJson, type Json } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import type { RequestEnvelope, SummaryHooks, TranslatorRegistry } from "@commissary/translation";
 import type { ExecutorRequest } from "../types.ts";
@@ -39,6 +39,8 @@ export interface RequestRewriteContext {
   readonly topLevelSystemItems?: boolean;
   /** Native tool search for this attempt: only the Responses -> Claude transform reads it. */
   readonly nativeToolSearch?: boolean;
+  /** Responses -> Claude only: cached web search results by `server_tool_use` id, for replayed searches without any. */
+  readonly webSearchResults?: ReadonlyMap<string, Json> | undefined;
 }
 
 /**
@@ -81,5 +83,8 @@ export const translateRequestForExecutor = (
     ...(context.nativeToolSearch === undefined
       ? {}
       : { nativeToolSearch: context.nativeToolSearch }),
+    ...(context.webSearchResults === undefined
+      ? {}
+      : { webSearchResults: context.webSearchResults }),
   });
 };

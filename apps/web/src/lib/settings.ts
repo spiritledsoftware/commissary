@@ -159,6 +159,12 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
     "Codex account beta features",
   ),
   field("providers", "client.codex.enable-apply-patch", "bool", "Codex apply_patch"),
+  field(
+    "providers",
+    "client.codex.web-search-result-cache.enabled",
+    "bool",
+    "Web search result cache",
+  ),
   field("providers", "client.codex.optimize-multi-agent-v2", "bool", "Codex multi-agent v2"),
   field("providers", "upstream.xai.inject-x-search", "bool", "xAI search"),
   field("providers", "upstream.opencode.disable-cloaking", "bool", "OpenCode Zen cloaking"),

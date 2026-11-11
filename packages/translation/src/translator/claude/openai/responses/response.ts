@@ -268,9 +268,14 @@ const incompleteDetails = (stopReason: string): { details: Json } | undefined =>
 const isPauseTurn = (stopReason: string): boolean =>
   stopReason.trim().toLowerCase() === "pause_turn";
 
-/** A paused search that never received its result stays `in_progress`, so the next request can send it back. */
+/**
+ * A paused or tool_use-deferred search that never received its result stays `in_progress`, so the next request can
+ * send it back (upstream df860eb9).
+ */
 const webSearchStatus = (stopReason: string, status: string, hasResults: boolean): string =>
-  isPauseTurn(stopReason) && !hasResults ? "in_progress" : status;
+  !hasResults && (isPauseTurn(stopReason) || stopReason.trim().toLowerCase() === "tool_use")
+    ? "in_progress"
+    : status;
 
 const outputStatus = (stopReason: string): string =>
   incompleteDetails(stopReason) !== undefined ? "incomplete" : "completed";

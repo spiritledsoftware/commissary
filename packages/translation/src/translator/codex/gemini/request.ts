@@ -27,7 +27,7 @@ import {
   normalizeGeminiTurnRole,
 } from "../../common/gemini-parts.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
-import { buildShortNameMap, shortenNameIfNeeded } from "../claude/request.ts";
+import { buildShortNameMap, shortenNamePlain } from "../claude/request.ts";
 
 /** `translatorcommon.IsGeminiThoughtPart`. */
 export const isGeminiThoughtPart = (part: Json | undefined): boolean =>
@@ -177,7 +177,7 @@ const setToolChoiceFromToolConfig = (out: Json, config: Json | undefined): Json 
       if (isJsonArray(allowed) && allowed.length === 1) {
         return set(out, "tool_choice", {
           type: "function",
-          name: shortenNameIfNeeded(asString(allowed[0])),
+          name: shortenNamePlain(asString(allowed[0])),
         });
       }
 
@@ -232,7 +232,7 @@ const geminiFunctionNames = (tools: Json | undefined): string[] => {
 export const geminiShortNameMap = (root: Json | undefined): Map<string, string> => {
   const names = geminiFunctionNames(get(root, "tools"));
 
-  return names.length > 0 ? buildShortNameMap(names) : new Map();
+  return names.length > 0 ? buildShortNameMap(names, shortenNamePlain) : new Map();
 };
 
 /** `ConvertGeminiRequestToCodex`. */
@@ -373,7 +373,7 @@ export const convertGeminiRequestToCodex = (
 
           if (name !== undefined) {
             const n = asString(name);
-            fn["name"] = shortMap.get(n) ?? shortenNameIfNeeded(n);
+            fn["name"] = shortMap.get(n) ?? shortenNamePlain(n);
           }
 
           const args = get(fc, "args");
@@ -447,7 +447,7 @@ export const convertGeminiRequestToCodex = (
 
         if (name !== undefined) {
           const n = asString(name);
-          tool["name"] = shortMap.get(n) ?? shortenNameIfNeeded(n);
+          tool["name"] = shortMap.get(n) ?? shortenNamePlain(n);
         }
 
         const description = get(fn, "description");

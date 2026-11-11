@@ -8,8 +8,10 @@
 import {
   asInt,
   asString,
+  cloneJson,
   get,
   isJsonArray,
+  isJsonObject,
   type Json,
   type JsonObject,
   set,
@@ -25,7 +27,7 @@ import {
   qualifyResponsesNamespaceToolName,
 } from "../../common/responses-tools.ts";
 import type { ResponseContext } from "../../registry.ts";
-import { buildShortNameMap, collectRequestToolNames } from "./request.ts";
+import { buildShortNameMap, collectRequestToolNames, customToolDefinition } from "./request.ts";
 
 interface ToolCallStreamState {
   index: number;
@@ -268,6 +270,29 @@ const findToolCallState = (
   return p.currentToolCall;
 };
 
+/** `collectChatToolWinners`: normalizes nested Chat `custom` declarations before collecting the Responses winners. */
+const collectChatToolWinners = (
+  original: Json | undefined,
+): ReturnType<typeof collectResponsesToolWinners> => {
+  const tools = get(original, "tools");
+
+  if (
+    original === undefined ||
+    !isJsonArray(tools) ||
+    !tools.some((tool) => isJsonObject(get(tool, "custom")))
+  ) {
+    return collectResponsesToolWinners(original);
+  }
+
+  const flattened = tools.map((tool) =>
+    asString(get(tool, "type")) === "custom" && isJsonObject(get(tool, "custom"))
+      ? set(cloneJson(customToolDefinition(tool)), "type", "custom")
+      : tool,
+  );
+
+  return collectResponsesToolWinners(set(cloneJson(original), "tools", flattened));
+};
+
 /** `isOriginalCustomPatch`: never promotes an ordinary same-name function to custom. */
 const isOriginalCustomPatch = (original: Json | undefined, item: Json | undefined): boolean => {
   if (asString(get(item, "type")) !== "custom_tool_call") return false;
@@ -289,7 +314,7 @@ const isOriginalCustomPatch = (original: Json | undefined, item: Json | undefine
     }
   }
 
-  const winner = collectResponsesToolWinners(original).get(name);
+  const winner = collectChatToolWinners(original).get(name);
 
   return winner !== undefined && isApplyPatchCustomTool(winner.tool);
 };

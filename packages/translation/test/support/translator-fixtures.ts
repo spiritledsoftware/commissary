@@ -9,6 +9,8 @@ import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
 import {
   portedChunkEdit,
+  itemIdPrefixes,
+  portedItemIdPrefix,
   portedMaxTokens,
   portedParallelToolCalls,
   portedRequestEdit,
@@ -170,9 +172,22 @@ const checkTranslatorFixture = (
       ...(c.alt !== undefined ? { alt: c.alt } : {}),
     };
 
-    const outputs = c.responseLines.map((line) =>
-      builtinTranslators.translateStream(c.from, c.to, context, line).map(normalizeChunk),
+    // The generated item ids of the Interactions provider carry a per-response prefix (translator-ported-ahead.ts).
+    const stripPrefix = c.to === "interactions" ? portedItemIdPrefix : (chunk: string) => chunk;
+
+    const raw = c.responseLines.map((line) =>
+      builtinTranslators.translateStream(c.from, c.to, context, line),
     );
+
+    const outputs = raw.map((chunks) => chunks.map((chunk) => normalizeChunk(stripPrefix(chunk))));
+
+    // One stream, one prefix: every fallback id of a response shares it, and none is left without one.
+    if (c.to === "interactions") {
+      const prefixes = itemIdPrefixes(raw.flat());
+      const fallbackIds = JSON.stringify(c.streamOutputs ?? []).match(/item_\d+/g) ?? [];
+
+      expect(prefixes.size).toBe(fallbackIds.length > 0 ? 1 : 0);
+    }
 
     // A case whose golden predates the C3 response fixes expects the new events on the lines they moved to.
     const ahead = portedResponse(`${c.from}->${c.to} ${c.name}`)?.stream;

@@ -9,6 +9,7 @@ import { makeTranslationState, type SummaryHooks } from "../src/translator/regis
 import {
   portedChunkEdit,
   portedRequestEdit,
+  portedStreamOutputs,
   staleGoldenEditEntries,
 } from "./support/translator-ported-ahead.ts";
 import {
@@ -132,8 +133,9 @@ describe("translator golden fixtures with generated ids", () => {
 
             // A golden that predates the C6 response fixes expects the edited chunks (translator-ported-ahead.ts).
             expect(outputs).toEqual(
-              (c.streamOutputs ?? []).map((chunks, index) =>
-                chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index)).map(normalize),
+              portedStreamOutputs(`${c.from}->${c.to} ${c.name}`, c.streamOutputs ?? []).map(
+                (chunks, index) =>
+                  chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index)).map(normalize),
               ),
             );
           }
