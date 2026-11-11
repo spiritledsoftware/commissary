@@ -137,6 +137,8 @@ describe("the org setting for private credentials", () => {
       privateCredentials: true,
       privateToolkits: true,
       accessClients: true,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
 
     await restart(stub);
@@ -146,6 +148,8 @@ describe("the org setting for private credentials", () => {
       privateCredentials: true,
       privateToolkits: true,
       accessClients: true,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
   });
 
@@ -157,6 +161,8 @@ describe("the org setting for private credentials", () => {
       privateCredentials: false,
       privateToolkits: false,
       accessClients: false,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
 
     await restart(stub);
@@ -166,6 +172,8 @@ describe("the org setting for private credentials", () => {
       privateCredentials: false,
       privateToolkits: false,
       accessClients: false,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
   });
 });
