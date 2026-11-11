@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0048 (the Agents area is removed)
 ---
 
 # Commissary ships under the Functional Source License
@@ -22,3 +22,7 @@ We rejected four alternatives:
 - Commits published before the switch stay MIT for anyone who already has them.
 - Contributors sign a CLA that grants Spirit-Led Software LLC a licence that allows relicensing, without assigning copyright, so that the licence can still change.
 - A lawyer reviews the licence, the `NOTICE` and the CLA before Commissary Cloud launches.
+
+## Amendment: the Agents area is removed
+
+ADR 0048 removes the Agents area, so what the FSL protects on top of the Go server is now the Tools and Browser areas, with the Workers architecture, orgs, grants, spend limits and the panel named above. Nothing else here changes.

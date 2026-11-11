@@ -14,7 +14,7 @@
  */
 import type { Config } from "../config/schema.ts";
 import { sessionAffinityTtlMs } from "../config/accessors.ts";
-import { ALLOW_ALL, type Reach } from "../grants/reach.ts";
+import type { Reach } from "../grants/reach.ts";
 import type { JsonObject } from "@commissary/json";
 import { resetCooldownState } from "./cooldown-reset.ts";
 import { type StoredCredential, deriveFileCredential, sanitizeAliases } from "./derive.ts";
@@ -304,20 +304,9 @@ export class CredentialPool {
     );
   }
 
-  /**
-   * The reach of a request: a shared agent's run reaches every shared credential (its reach is its definition, which
-   * names its model: the client API refuses any other, ADR 0040); anyone else, what the grants give their member.
-   */
-  #callerReach(caller: {
-    readonly memberId?: string | undefined;
-    readonly agentId?: string | undefined;
-  }): Reach {
-    return caller.agentId === undefined ? this.#reach(caller.memberId) : ALLOW_ALL;
-  }
-
-  /** Who a request's Spend limits are charged to: a shared agent's run counts toward the agent's own (#228). */
+  /** Who a request's Spend limits are charged to. */
   #caller(request: PickRequest) {
-    return { memberId: request.memberId, apiKeyId: request.apiKeyId, agentId: request.agentId };
+    return { memberId: request.memberId, apiKeyId: request.apiKeyId };
   }
 
   /** The selection of `request` against `runtime` under the caller's Spend gate (`pick` and `hasAlternative` share it). */
@@ -339,7 +328,7 @@ export class CredentialPool {
       request,
       settings: view.settings,
       runtime,
-      reach: this.#callerReach(request),
+      reach: this.#reach(request.memberId),
       now,
       ...(gate === undefined ? {} : { spend: gate }),
     });
@@ -582,12 +571,12 @@ export class CredentialPool {
       credentials: entries,
       query,
       routing: { ...view.settings, knownPrefixes: knownPrefixes(entries) },
-      reach: this.#callerReach(query),
+      reach: this.#reach(query.memberId),
       coolingDisabled: (credential) => coolingDisabledFor(credential, view.cooldown),
       now,
-      // The shared scopes of the pick's spender (#228): the member's, or the shared agent's a run acts as. (A key
-      // limit refuses at the pick and keeps no credential away, so a retry needs none.)
-      spend: this.#spend?.gate({ memberId: query.memberId, agentId: query.agentId }, now),
+      // The shared scopes of the pick's spender: the member's. (A key limit refuses at the pick and keeps no credential
+      // away, so a retry needs none.)
+      spend: this.#spend?.gate({ memberId: query.memberId }, now),
     });
   }
 

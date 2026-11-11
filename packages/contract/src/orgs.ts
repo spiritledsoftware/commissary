@@ -25,8 +25,6 @@ export const OrgView = Schema.Struct({
   created_at: Schema.String,
   /** How many days the org's usage records are kept; `null`: forever (ADR 0027). */
   usage_retention_days: Schema.NullOr(Schema.Int),
-  /** How many days the org's agent runs are kept after their last activity (#228, ADR 0040); `null`: forever. */
-  run_retention_days: Schema.NullOr(Schema.Int),
   /** Commissary Cloud: a platform admin suspended it (refused everywhere, nothing deleted). Absent otherwise. */
   suspended: Schema.optionalKey(Schema.Boolean),
 });
@@ -40,15 +38,13 @@ export type OrgList = typeof OrgList.Type;
 /**
  * `POST /orgs`: 1-63 lowercase letters, digits and inner hyphens; a display name of up to 100 characters.
  * `private_credentials` chooses whether members may connect private credentials in the new org, `private_toolkits`
- * whether they may add private toolkits, `private_agents` whether they may create private agents (#226; default: no for
- * all three).
+ * whether they may add private toolkits (default: no for both).
  */
 export const CreateOrg = Schema.Struct({
   slug: Schema.String,
   name: Schema.String,
   private_credentials: Schema.optionalKey(Schema.Boolean),
   private_toolkits: Schema.optionalKey(Schema.Boolean),
-  private_agents: Schema.optionalKey(Schema.Boolean),
 });
 
 export type CreateOrg = typeof CreateOrg.Type;
@@ -67,12 +63,10 @@ export type UpdateOrg = typeof UpdateOrg.Type;
 
 /**
  * `PATCH /org`: the settings of the addressed org, at least one. `usage_retention_days`: whole days from 1 to 3650 that
- * usage records are kept, or `null` to keep them forever; `run_retention_days` (#228): the same for agent runs, counted
- * from their last activity (30 by default).
+ * usage records are kept, or `null` to keep them forever.
  */
 export const UpdateOrgSettings = Schema.Struct({
   usage_retention_days: Schema.optionalKey(Schema.NullOr(Schema.Int)),
-  run_retention_days: Schema.optionalKey(Schema.NullOr(Schema.Int)),
 });
 
 export type UpdateOrgSettings = typeof UpdateOrgSettings.Type;
@@ -129,14 +123,12 @@ export type MyOrg = typeof MyOrg.Type;
 /**
  * Which optional pieces a deployment has (ADR 0043), on every deployment. `hosted`: Commissary Cloud (ADR 0026).
  * `browser`: the deployment has a Browser Run binding (the browser toolkit exists). `computer`: it has the sandbox's
- * container binding (the sandbox's computer exists). `agents`: it has the Dynamic Workers binding (`LOADER`), so the
- * Agents area exists (#226); without it the Agents routes answer 404. The panel decides what to show from it.
+ * container binding (the sandbox's computer exists). The panel decides what to show from it.
  */
 export const Deployment = Schema.Struct({
   hosted: Schema.Boolean,
   browser: Schema.Boolean,
   computer: Schema.Boolean,
-  agents: Schema.Boolean,
 });
 
 export type Deployment = typeof Deployment.Type;
@@ -162,11 +154,6 @@ export const Me = Schema.Struct({
    * caller belongs to no org there.
    */
   private_toolkits: Schema.optionalKey(Schema.Boolean),
-  /**
-   * Whether the addressed org lets members create private agents (`private_agents` of `/membership`, #226, #233). Absent
-   * when the caller belongs to no org there.
-   */
-  private_agents: Schema.optionalKey(Schema.Boolean),
   /** Which optional pieces this deployment has, and whether it is Commissary Cloud. */
   deployment: Deployment,
   /**
@@ -213,7 +200,7 @@ export class OrgsGroup extends HttpApiGroup.make("orgs").add(
   /** The org the request addresses (`global` for the unscoped route), with its settings. Org admins. */
   HttpApiEndpoint.get("org", "/org", { success: OrgView, error: managementErrors }),
   /**
-   * Changes the settings of the addressed org: its retention periods, of usage records and of agent runs. Org admins.
+   * Changes the settings of the addressed org: its usage records' retention period. Org admins.
    * `422 invalid_retention`.
    */
   HttpApiEndpoint.patch("updateSettings", "/org", {

@@ -145,10 +145,10 @@ describe("a record", () => {
     ]);
   });
 
-  it("shows browser and computer time and the agent run a record comes from", () => {
+  it("shows browser and computer time", () => {
     const facts = Object.fromEntries(
       recordFacts(
-        record({ browser_ms: 3_600_000, computer_ms: 120_000, agent_id: "ag_1", run_id: "run_1" }),
+        record({ browser_ms: 3_600_000, computer_ms: 120_000 }),
         "browser",
         true,
         undefined,
@@ -158,8 +158,6 @@ describe("a record", () => {
     expect(facts).toMatchObject({
       "Browser time": "1 h",
       "Computer time": "2 min",
-      Agent: "ag_1",
-      "Agent run": "run_1",
     });
   });
 

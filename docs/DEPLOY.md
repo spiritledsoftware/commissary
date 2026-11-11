@@ -79,20 +79,16 @@ auth Worker, the app Worker.
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths
    `404` with the address of the client API, except, on a self-hosted stage, the MCP endpoint `/mcp` (and `/o/<slug>/mcp`), which
    it serves behind Access to MCP clients Access signs in (ADR 0045). It binds the state Worker's Durable Objects by script name, which is also
-   why Alchemy deploys it after the state Worker, the API Worker's `AgentRun` (the agent runs, #227) and
-   `AgentSchedule` (agents' schedule triggers, #231) by script name, which is why it deploys after the API Worker, and no secrets keys, which only the ControlPlane reads.
+   why Alchemy deploys it after the state Worker, and no secrets keys, which only the ControlPlane reads.
 3. **`Api`** (`apps/api`), the API Worker: the client API (`/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
    `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`, the MCP endpoint `/mcp`, toolkits' CIMD
-   document `/oauth/toolkits/client.json` and hosted agents' webhook triggers `/agent-webhooks`), `/healthz` and the cron trigger, under no Access
+   document `/oauth/toolkits/client.json`), `/healthz` and the cron trigger, under no Access
    application of its own: clients send API keys. It binds the Durable Objects by script name too, and the per-org rate limit
-   on Commissary Cloud. It defines two Durable Objects of its own: `AgentRun`, one per run of a hosted agent (#227, ADR
-   0030's amendment), and `AgentSchedule`, one per schedule trigger of a hosted agent, whose alarm starts its runs
-   (#231). A run reaches the client API and the MCP endpoint through this Worker's own loopback entrypoint
-   (`ctx.exports`), which no Worker of the deployment binds (the trust boundary is the Cloudflare account, as for the
-   Durable Objects). Where it answers:
+   on Commissary Cloud. It defines no working Durable Object of its own, only two retired classes it still exports,
+   `AgentRun` and `AgentSchedule` (below, "Retired hosted agents"). Where it answers:
    - on the API host when there is one ([API host](#api-host)), as its custom domain;
    - else on the app host, through **zone routes** `<app host>/v1*`, `/openai/v1*`, `/backend-api/codex*`,
-     `/chat/completions*`, `/completions*`, `/responses*`, `/agent-webhooks*` (hosted agents' webhook triggers, #231)
+     `/chat/completions*`, `/completions*`, `/responses*`
      and `/oauth/toolkits/client.json*`, and on Commissary Cloud
      `/mcp*` (a route runs in front of
      the app Worker's custom domain on the same hostname); the bypass application of the client API paths takes them
@@ -109,11 +105,35 @@ changes, so the Durable Objects restart only on a deploy that changes their code
 change. When they restart, the requests in flight fail with "Durable Object reset because its code was updated"; the
 app and the API Worker send each such call once more (`retryOnCodeUpdate`). Because a deploy can run the new state
 Worker with the old app and API Workers for a moment, state RPC changes are expand-then-contract
-(`docs/DEVELOPMENT.md`, "State RPC: expand, then contract"). The agent runs' objects are the API Worker's, so they
-restart on every deploy of it (every merge, in CI): a run that was working resumes on its own within a minute (its
-heartbeat alarm), without making a finished tool call again; a model call it was waiting on is made again. The
-schedule triggers' objects are the API Worker's too: a restart keeps their alarms, and a tick whose alarm fails is
-fired again without starting a second run.
+(`docs/DEVELOPMENT.md`, "State RPC: expand, then contract").
+
+**Retired hosted agents (ADR 0048).** Commissary no longer runs hosted agents, but some things of them stay for one
+release and a follow-up removes them:
+
+- **The tombstone classes.** The API Worker still exports the Durable Object classes `AgentRun` and `AgentSchedule`
+  (`apps/api/src/retired-objects.ts`) and keeps their bindings in `alchemy.run.ts`; the app Worker no longer binds them.
+  Cloudflare refuses to delete a class another Worker still binds (`tombstone_delete_blocked_by_external_bindings`), and
+  the API Worker deploys before the app Worker, which bound them until this release. A tombstone does nothing: if an alarm,
+  fetch or RPC wakes it, it deletes its alarm and all its storage. Only objects that wake empty themselves: a finished
+  run has no alarm and nothing wakes it, so its transcript stays in storage until the follow-up release removes the
+  classes and the bindings, when Alchemy emits `deleted_classes` and Cloudflare deletes the namespaces with their data.
+  That follow-up is what deletes the old runs' data (ADR 0027), so it must not be skipped.
+- **The usage columns.** The D1 usage table keeps its `agent_id`, `run_id` and `starter` columns and its
+  index `usage_records_org_run` (migrations 0011, 0013 and 0015). D1 migrations apply before the Workers deploy, so dropping them in
+  this release would break the previous API Worker's inserts while the deploy is half done. Nothing reads or writes them
+  any more, and a follow-up migration drops them. It must `DROP INDEX usage_records_org_run` before it drops
+  `run_id`, because SQLite refuses to drop an indexed column.
+- **State RPC shims.** The state Worker still answers `privateAgents: false` and an `OrgRecord` whose `runRetentionDays`
+  is `null` (and keeps `Platform.setRetention`), for an app Worker from before this release that meets the new state
+  Worker during the deploy. The follow-up removes them too. The other agent-only state RPC methods and outcomes are
+  removed now (ADR 0048): an older API or app Worker fails only on its agent paths during the deploy.
+
+The state Worker cleans up what it owns on each start, which is a no-op after the first: each ControlPlane drops the Agents tables (`agents`,
+`agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers`, `agent_schedule_objects`; the Tools part's toolkit
+store drops `sandbox_run_calls`) , deletes the Spend limits and counters of kind `agent` and drops the `private_agents` column of its membership table, and the Platform registry drops its
+`run_retention_days` column. A run's sandbox sessions, which were kept until the run's purge, are cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set. An API key's tool scope that names the
+`agents` toolkit shows it as a missing toolkit (`tool_scope_missing`), like any removed toolkit, and a stored
+`private_agents` setting is ignored.
 
 **Revocation and suspension** made on the app Worker reach the API Worker's isolates within the same windows as
 before (30 s for a verified API key, 30 s for a suspension's standing), since the API Worker is another isolate.
@@ -138,10 +158,10 @@ state Worker and the move happens on that deploy, with no setting or manual step
   seconds within the deploy: on one host, the new app Worker may refuse the client API paths before the zone routes
   exist.
 
-**A stage with an API host that skipped the split.** Since the agent runs (#227) the API Worker deploys before the app
+**A stage with an API host that skipped the split.** The API Worker deploys before the app
 Worker on every stage ([The Workers](#the-workers)). A stage still on a release before the split (#172) with an API host
 has that hostname on its app Worker (as an alias), so the API Worker, deployed first, cannot take it. Deploy an
-intermediate release first (one after the split and before the agent runs): its deploy moves the hostname to the API
+intermediate release first (one after the split and before #227, which put the API Worker ahead of the app Worker): its deploy moves the hostname to the API
 Worker. Then deploy the current release. A stage on one host, or one already past the split, deploys the current
 release directly.
 
@@ -598,7 +618,7 @@ the stack (`bunx alchemy destroy --config stacks/github.ts --stage ci --profile 
   deploy binds the right key. **Losing the key loses every stored secret**: do not destroy the stage's state or its
   `SecretsKey` resource while the stage is in use.
 - **Back up `SECRETS_KEY`.** Losing it loses every secret of every org on the stage (provider keys and logins,
-  config entries, private key groups, the SSO secret, toolkit sign-ins, browser profiles, webhook secrets; every sealed
+  config entries, private key groups, the SSO secret, toolkit sign-ins, browser profiles; every sealed
   secret in [THREAT-MODEL.md](THREAT-MODEL.md)): an org's data key opens only through it, and no one, Cloudflare
   and Commissary's maintainers included, can recover it. Alchemy keeps it in the stage's state store, as the
   `SecretsKey` resource (`SecretsKey2`, … after a rotation), in the Cloudflare account (`Cloudflare.state()`), or in
@@ -613,7 +633,7 @@ the stack (`bunx alchemy destroy --config stacks/github.ts --stage ci --profile 
 - **A self-hosted Commissary has no rate limits or caps.** Nothing bounds a member's usage except what you set: within
   their grants, a member can run up the Cloudflare bill of the account that runs Commissary (Workers, Durable Objects,
   Containers, Browser Run) and the provider bills behind the credentials. Set **spend limits** on members, keys and
-  shared agents, and grant only what each member needs ([THREAT-MODEL.md](THREAT-MODEL.md#running-up-costs-and-exhausting-resources);
+  shared credentials, and grant only what each member needs ([THREAT-MODEL.md](THREAT-MODEL.md#running-up-costs-and-exhausting-resources);
   ADR 0041). Commissary Cloud's plan limits, billing cap and request-rate ceiling do not exist on a
   self-hosted deployment.
 - **What the operator is trusted with.** Whoever runs a Commissary (you, on a self-hosted one) is fully trusted: they

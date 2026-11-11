@@ -2,17 +2,14 @@
  * The management API contract (`@commissary/contract`) shared by the Worker, its tests and the control panel
  * (`apps/web`): endpoint paths, query schemas, response and error bodies of the `/v9/management` routes the panel uses.
  * The handlers themselves stay plain router handlers (`apps/app/src/management/routes.ts`, Models' in
- * `packages/models/src/management/routes.ts`, Tools' in `packages/tools/src/management/routes.ts` and Agents' in
- * `packages/agents/src/management/routes.ts`);
+ * `packages/models/src/management/routes.ts`, and Tools' in
+ * `packages/tools/src/management/routes.ts`);
  * `apps/app/test/management-contract.test.ts` checks their real responses against these schemas through the generated
  * client.
  *
  * Browser-safe: its modules import `effect` and each other only.
  */
 import { HttpApi } from "effect/http-api";
-import { AgentRunsGroup } from "./agent-runs.ts";
-import { AgentTriggersGroup } from "./agent-triggers.ts";
-import { AgentGrantsGroup, AgentsGroup } from "./agents.ts";
 import { ApprovalsGroup } from "./approvals.ts";
 import { BillingGroup } from "./billing.ts";
 import { BrowserProfileGrantsGroup, BrowserProfilesGroup } from "./browser-profiles.ts";
@@ -63,10 +60,6 @@ export class ManagementApi extends HttpApi.make("management")
   .add(ToolGrantsGroup)
   .add(ApprovalsGroup)
   .add(McpSignInsGroup)
-  .add(AgentsGroup)
-  .add(AgentGrantsGroup)
-  .add(AgentRunsGroup)
-  .add(AgentTriggersGroup)
   .add(BrowserProfilesGroup)
   .add(BrowserProfileGrantsGroup)
   .add(BrowserSessionsGroup)

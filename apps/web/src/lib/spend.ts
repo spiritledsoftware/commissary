@@ -31,7 +31,6 @@ export const SUBJECT_KINDS: ReadonlyArray<{
   // An org toolkit's shared credential (#199, #209): its priced tool calls count toward it.
   { id: "toolkit_credential", label: "Toolkit credential" },
   { id: "key", label: "API key" },
-  { id: "agent", label: "Shared agent" },
 ];
 
 /** What a limit can name: its id, and what to call it. */
@@ -76,13 +75,12 @@ const KIND_RANK: Readonly<Record<SpendSubjectKind, number>> = {
   key: 3,
   credential: 4,
   toolkit_credential: 5,
-  agent: 6,
 };
 
 const PERIOD_RANK: Readonly<Record<SpendPeriod, number>> = { day: 0, week: 1, month: 2 };
 
 /**
- * The org's limits first, then teams, members, keys, shared credentials and agents; by name, then the shorter period
+ * The org's limits first, then teams, members, keys and shared credentials; by name, then the shorter period
  * first.
  */
 export const sortLimits = (limits: ReadonlyArray<SpendLimitView>): ReadonlyArray<SpendLimitView> =>

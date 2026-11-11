@@ -52,10 +52,10 @@ describe("the sandbox toolkit's open sessions list (#225)", () => {
       computer: "Not running",
     });
     expect(
-      sessionRow(session("c", { opened_by: "agent_run", member: null, own: false }), NOW),
+      sessionRow(session("c", { opened_by: "api_key", member: null, own: false }), NOW),
     ).toMatchObject({
-      owner: "A shared agent",
-      how: "By an agent run",
+      owner: "No member",
+      how: "With an API key",
     });
   });
 

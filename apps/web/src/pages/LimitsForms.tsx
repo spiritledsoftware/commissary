@@ -1,16 +1,14 @@
 // The Limits page's forms: the org's calendar (time zone and first day of the week, org admins) and a new Spend limit
 // (org admins on anything, a plain member on their own API keys).
 import { useAtomValue } from "@effect/atom-react";
-import { Atom, AsyncResult } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { type FormEvent, useId, useState } from "react";
 import type { SpendPeriod, SpendSettingsView, SpendSubjectKind } from "@commissary/contract/spend";
 import {
   createSpendLimitAtom,
   credentialsAtom,
   membersAtom,
-  agentsAtom,
   apiKeysAtom,
-  meAtom,
   SPEND,
   teamsAtom,
   toolkitsAtom,
@@ -154,9 +152,6 @@ interface Subject {
   readonly label: string;
 }
 
-/** Stands for the agents list where the deployment has no Agents area (its route answers 404). */
-const noAgentsAtom = Atom.make(AsyncResult.initial<never, never>());
-
 /** What each kind of limit can name, from the lists the panel already loads. */
 const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>>> => {
   const people = useAtomValue(membersAtom);
@@ -164,11 +159,6 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
   const files = useAtomValue(credentialsAtom);
   const keys = useAtomValue(apiKeysAtom);
   const toolkits = useAtomValue(toolkitsAtom);
-  const me = useAtomValue(meAtom);
-
-  const agents = useAtomValue(
-    AsyncResult.isSuccess(me) && me.value.deployment.agents ? agentsAtom : noAgentsAtom,
-  );
 
   return {
     org: [],
@@ -195,12 +185,6 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
     toolkit_credential: AsyncResult.isSuccess(toolkits)
       ? limitableToolkits(toolkits.value.toolkits)
       : [],
-    // A shared agent's limit (#233); a private agent's is not a limit anyone sets.
-    agent: AsyncResult.isSuccess(agents)
-      ? agents.value.agents
-          .filter((agent) => !agent.private)
-          .map((agent) => ({ id: agent.id, label: agent.name }))
-      : [],
   };
 };
 
@@ -209,9 +193,7 @@ export const NewLimit = ({ admin }: { readonly admin: boolean }) => {
   const create = useAction(createSpendLimitAtom);
   const subjects = useSubjects();
 
-  const kinds = admin
-    ? SUBJECT_KINDS.filter((each) => each.id !== "agent" || subjects.agent.length > 0)
-    : SUBJECT_KINDS.filter((each) => each.id === "key");
+  const kinds = admin ? SUBJECT_KINDS : SUBJECT_KINDS.filter((each) => each.id === "key");
 
   const [kind, setKind] = useState<SpendSubjectKind>(admin ? "org" : "key");
   const [subject, setSubject] = useState("");

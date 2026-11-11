@@ -13,7 +13,6 @@
     "typecheck": "tsrs"
   },
   "dependencies": {
-    "@commissary/agents": "workspace:*",
     "@commissary/auth": "workspace:*",
     "@commissary/billing": "workspace:*",
     "@commissary/core": "workspace:*",

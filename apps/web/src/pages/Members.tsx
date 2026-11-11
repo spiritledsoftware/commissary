@@ -8,9 +8,7 @@ import { AsyncResult } from "effect/reactivity";
 import type { ReactNode } from "react";
 import type { MembershipSettings } from "@commissary/contract/members";
 import {
-  AGENTS,
   MEMBERS,
-  meAtom,
   membershipAtom,
   ORGS,
   TOOLKITS,
@@ -22,7 +20,7 @@ import {
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import { failureMessage } from "../lib/failure.ts";
 import {
-  privateSwitchesFor,
+  PRIVATE_SWITCH_ORDER,
   PRIVATE_SWITCHES,
   type PrivateSetting,
   privateSettingPatch,
@@ -146,11 +144,10 @@ const MembershipToggle = ({
   );
 };
 
-/** What each switch changes beyond the members and the org: the toolkits and the agents a member may use follow it. */
+/** What each switch changes beyond the members and the org: the toolkits a member may use follow it. */
 const PRIVATE_SETTING_KEYS: Readonly<Record<PrivateSetting, ReadonlyArray<string>>> = {
   private_credentials: [],
   private_toolkits: TOOLKITS,
-  private_agents: AGENTS,
 };
 
 /**
@@ -183,7 +180,7 @@ const PrivateSwitchSetting = ({ setting }: { readonly setting: PrivateSetting })
                     await save.run({
                       payload: privateSettingPatch(setting, event.target.checked),
                       // The panel's pages for plain members follow the setting (`GET /me`).
-                      // The toolkits (`GET /toolkits`, `GET /tools`) and agents (`GET /agents`) a member may add follow it.
+                      // The toolkits (`GET /toolkits`, `GET /tools`) a member may add follow it.
                       reactivityKeys: [...MEMBERS, ...ORGS, ...PRIVATE_SETTING_KEYS[setting]],
                     }),
                     control.said(event.target.checked),
@@ -255,7 +252,6 @@ const Lists = ({ caller }: { readonly caller: Caller }) => {
   const members = useAtomValue(membersAtom);
   const teams = useAtomValue(teamsAtom);
   const tokens = useAtomValue(serviceTokensAtom);
-  const me = useAtomValue(meAtom);
   const retryMembers = useAtomRefresh(membersAtom);
   const retryTeams = useAtomRefresh(teamsAtom);
   const retryTokens = useAtomRefresh(serviceTokensAtom);
@@ -308,13 +304,11 @@ const Lists = ({ caller }: { readonly caller: Caller }) => {
       <Section title="Joining">
         <AutoJoin caller={caller} />
       </Section>
-      {privateSwitchesFor(AsyncResult.isSuccess(me) && me.value.deployment.agents).map(
-        (setting) => (
-          <Section key={setting} title={PRIVATE_SWITCHES[setting].title}>
-            <PrivateSwitchSetting setting={setting} />
-          </Section>
-        ),
-      )}
+      {PRIVATE_SWITCH_ORDER.map((setting) => (
+        <Section key={setting} title={PRIVATE_SWITCHES[setting].title}>
+          <PrivateSwitchSetting setting={setting} />
+        </Section>
+      ))}
       <ClientApiSignIn caller={caller} />
     </>
   );

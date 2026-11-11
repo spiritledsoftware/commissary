@@ -40,7 +40,7 @@ const optional = Schema.optionalKey;
  * 2.0, given by URL or uploaded, #203), a GraphQL endpoint (its schema introspected, or uploaded as SDL, #204), a
  * Google Discovery document (`discovery`, given by URL or uploaded, #205), or, for a toolkit Commissary provides itself
  * (`built_in`), the kind of service behind it: `browser`, the browser toolkit (ADR 0039), `sandbox`, the sandbox
- * toolkit (ADR 0041), or `agents`, the agents toolkit (ADR 0040, #229).
+ * toolkit (ADR 0041).
  */
 export const ToolkitKind = Schema.Literals([
   "mcp",
@@ -49,7 +49,6 @@ export const ToolkitKind = Schema.Literals([
   "discovery",
   "browser",
   "sandbox",
-  "agents",
 ]);
 
 export type ToolkitKind = typeof ToolkitKind.Type;
@@ -855,14 +854,12 @@ export type UsableGrant = typeof UsableGrant.Type;
  * private toolkit of theirs, or an org toolkit that accepts one while the org lets members connect them), which gives
  * every tool an admin has not hidden; `private_available`, the toolkit takes a private credential and the org allows it
  * but the caller has not connected one, so a call answers that it needs it; `grants`, the tool grants that name them
- * (their own, their teams' and everyone's), each with the tools it gives; `agents`, the agents toolkit, which takes no
- * grant: they may run an agent. A tool may be reached more than one way.
+ * (their own, their teams' and everyone's), each with the tools it gives. A tool may be reached more than one way.
  */
 export const UsableVia = Schema.Struct({
   private: optional(Schema.Literal(true)),
   private_available: optional(Schema.Literal(true)),
   grants: optional(Schema.Array(UsableGrant)),
-  agents: optional(Schema.Literal(true)),
 });
 
 export type UsableVia = typeof UsableVia.Type;

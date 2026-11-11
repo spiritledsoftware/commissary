@@ -163,9 +163,4 @@ export class BillingPart extends RpcTarget implements ControlPlanePart, PlanMete
   spendCredentials(): readonly [] {
     return [];
   }
-
-  /** Nor agents. */
-  spendAgents(): readonly [] {
-    return [];
-  }
 }

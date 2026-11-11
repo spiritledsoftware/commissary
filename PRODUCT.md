@@ -40,7 +40,7 @@ they go to check on it or change it.
 
 ## Product Purpose
 
-Commissary: one service through which an org reaches models, tools, a browser and hosted agents (ADR 0029). Its Models area, the part this panel mostly serves today, is a Cloudflare Workers fork of CLIProxyAPI that pools subscription accounts (Claude, Codex, xAI,
+Commissary: one service through which an org reaches models, tools and a browser (ADR 0029, ADR 0048). Its Models area, the part this panel mostly serves today, is a Cloudflare Workers fork of CLIProxyAPI that pools subscription accounts (Claude, Codex, xAI,
 Antigravity, Kimi, Meta, Devin, Vertex) and provider keys behind OpenAI-, Claude- and Gemini-compatible endpoints.
 The panel answers "is Commissary healthy, what is it costing my accounts, and what needs my attention", and lets an
 org admin connect or re-authorize accounts, manage provider keys, shape model routing and edit settings. Success: a weekly

@@ -48,7 +48,7 @@ describe("the Browser sessions list", () => {
       }),
       session("own-old"),
       session("own-waiting", { handoff: { until: "2026-10-11T10:50:00.000Z" } }),
-      session("agent", { own: false, watchable: false, member: null, opened_by: "agent_run" }),
+      session("no-member", { own: false, watchable: false, member: null }),
       session("own-new"),
     ];
 
@@ -57,7 +57,7 @@ describe("the Browser sessions list", () => {
       "own-old",
       "own-new",
       "other-old",
-      "agent",
+      "no-member",
     ]);
   });
 
@@ -89,21 +89,21 @@ describe("the Browser sessions list", () => {
       sessionRow(session("d", { handoff: { until: "2026-10-11T10:29:00.000Z" } }), NOW).handoff,
     ).toBe("Waits for you · Its time is up");
 
-    // An org admin's view of a shared agent's session, and of another member's private profile.
+    // An org admin's view of a session with no member, and of another member's private profile.
     expect(
       sessionRow(
         session("e", {
           own: false,
           watchable: false,
           member: null,
-          opened_by: "agent_run",
+          opened_by: "api_key",
           profile: { id: "p2", private: true },
         }),
         NOW,
       ),
     ).toMatchObject({
-      owner: "A shared agent",
-      about: "By an agent run · Profile: A member's private profile",
+      owner: "No member",
+      about: "With an API key · Profile: A member's private profile",
     });
   });
 
@@ -128,7 +128,7 @@ describe("a session's page", () => {
     ).toBe("Browser session of b@x.io");
     expect(openedHowText(session("a", { opened_by: "person" }), NOW)).toBe("12 min ago, signed in");
     expect(profileText(null)).toBe("None");
-    expect(aboutText(session("a", { opened_by: "agent_run" }))).toBe("By an agent run");
+    expect(aboutText(session("a", { opened_by: "person" }))).toBe("Signed in");
   });
 
   it("shows a Live View only for the caller's own session; an org admin is told they may only end another's", () => {
@@ -150,7 +150,7 @@ describe("a session's page", () => {
     const watched = session("d", { own: false, watchable: true, member: null });
 
     expect(notWatchableText(watched)).toBeUndefined();
-    expect(sessionTitle(watched)).toBe("Browser session of A shared agent");
+    expect(sessionTitle(watched)).toBe("Browser session of No member");
     expect(sortSessions([session("e", { own: false, watchable: false }), watched])[0]).toBe(
       watched,
     );

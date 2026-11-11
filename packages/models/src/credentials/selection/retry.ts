@@ -47,8 +47,6 @@ export const RetryQuery = Schema.Struct({
   pinnedAuthId: optional(Schema.String),
   /** The member the request is for: private credentials of others do not keep a retry alive. */
   memberId: optional(Schema.String),
-  /** A shared agent's run (#227): the agent it acts as, reaching every shared credential whatever the grants. */
-  agentId: optional(Schema.String),
   requireAuthKind: optional(AuthKind),
   disallowFreeCodex: optional(Schema.Boolean),
 });
@@ -249,7 +247,7 @@ export interface RetryPlanInput {
   /** `credential -> cooling disabled`. */
   readonly coolingDisabled: (credential: Credential) => boolean;
   readonly now: number;
-  /** The Spend limits of the request's member or shared agent (`@commissary/state/spend`): shared credentials may be out of reach until a period ends. */
+  /** The Spend limits of the request's member (`@commissary/state/spend`): shared credentials may be out of reach until a period ends. */
   readonly spend?: SpendGate | undefined;
 }
 

@@ -171,15 +171,13 @@ export const toolGrantProblem = (error: string | undefined, message: string): st
 /**
  * The toolkits whose shared credential a grant can name: the org's own (a private toolkit is its owner's alone), the
  * browser and sandbox toolkits among them, and neither one that takes a private credential only (nothing shared to
- * grant) nor the agents toolkit, whose tools no grant gates (a caller may run an agent).
+ * grant).
  */
 export const grantableToolkits = (
   toolkits: ReadonlyArray<ToolkitView>,
 ): ReadonlyArray<ToolkitView> =>
   toolkits
-    .filter(
-      (toolkit) => !toolkit.private && toolkit.accepts !== "private" && toolkit.kind !== "agents",
-    )
+    .filter((toolkit) => !toolkit.private && toolkit.accepts !== "private")
     .toSorted((a, b) => a.name.localeCompare(b.name));
 
 /** A toolkit's name, or its id once it is gone. */

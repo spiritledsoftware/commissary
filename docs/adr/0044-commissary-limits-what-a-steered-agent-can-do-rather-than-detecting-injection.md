@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by #201 for pending approvals' arguments, which are sealed, and by #232 for who may watch an agent run's browser session
+status: accepted, amended by #201 for pending approvals' arguments, which are sealed, by #232 for who may watch an agent run's browser session, and by ADR-0048 (no hosted agents, so neither #232 nor the shared-agent risk applies)
 ---
 
 # Commissary limits what a steered agent can do, rather than detecting injection
@@ -26,3 +26,7 @@ Commissary now holds an org's credentials for outside services, browser profiles
 
 - Accepted: the operator can unseal every org's secrets (one `SECRETS_KEY` per deployment, no customer-managed keys); data keys never rotate; a member granted a shared agent can act beyond their own reach through it (ADR 0040). Customer-managed keys and a browser domain allowlist are out of v1.
 - An existing provider `base_url` that is `http:` or an IP literal in a private range stops working when the guard lands.
+
+## Amendment: no hosted agents
+
+ADR 0048 removes hosted agents. The accepted risk that a member granted a shared agent can act beyond their own reach through it is gone, with #232's rule for who may watch an agent run's browser session: only the session's member does. The decisions here still bind the clients that steered content reaches: reach, approval rules, the outbound guard, org isolation and sealed secrets.

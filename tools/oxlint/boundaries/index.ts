@@ -1,7 +1,7 @@
 /**
- * The workspace's import boundaries, as Oxlint rules (`bun run lint`). `models-imports`, `billing-imports`,
- * `tools-imports` and `agents-imports` keep an area package (`@commissary/models`, `@commissary/billing`,
- * `@commissary/tools`, `@commissary/agents`: `packages/<area>/`) one the Workers reach through its entry points only
+ * The workspace's import boundaries, as Oxlint rules (`bun run lint`). `models-imports`, `billing-imports` and
+ * `tools-imports` keep an area package (`@commissary/models`, `@commissary/billing`, `@commissary/tools`:
+ * `packages/<area>/`) one the Workers reach through its entry points only
  * (#134 "The area package convention", #151):
  *
  * - its sources (`packages/<area>/src/`) import only their own files, the dependencies its manifest declares and the
@@ -9,8 +9,8 @@
  * - the apps (`apps/*`) import the area only as `@commissary/<area>/api`, `/management` and `/state` (and, in tests,
  *   `/testing`): not its other exports (Models' `/auth-index-key` and `/models-dev` are for the deploy and the catalog
  *   sync script) and never a file of the package by a relative path;
- * - another package's sources import it only through the entries `packageEntries` lists: none for Models, Tools and
- *   Agents, `/api` for Billing, which Models calls to count requests and Tools to count tool calls, browser and
+ * - another package's sources import it only through the entries `packageEntries` lists: none for Models and Tools,
+ *   `/api` for Billing, which Models calls to count requests and Tools to count tool calls, browser and
  *   computer time (#241).
  *
  * Every module specifier counts: imports and re-exports (types too), `import()` calls and `import("…")` types. An
@@ -77,19 +77,6 @@ const TOOLS: Area = {
   title: "Tools",
   dir: "tools",
   packageName: "@commissary/tools",
-  appEntries: ["api", "management", "state", "testing"],
-  packageEntries: [],
-};
-
-/**
- * The Agents area (`@commissary/agents`, #226): it reaches Models and Tools through the app Worker's adapter
- * (`AgentReferences`), never by import.
- */
-const AGENTS: Area = {
-  rule: "agents-imports",
-  title: "Agents",
-  dir: "agents",
-  packageName: "@commissary/agents",
   appEntries: ["api", "management", "state", "testing"],
   packageEntries: [],
 };
@@ -323,6 +310,5 @@ export default eslintCompatPlugin({
     "billing-imports": areaImportsRule(BILLING),
     "org-scoped-kv": orgScopedKvRule,
     "tools-imports": areaImportsRule(TOOLS),
-    "agents-imports": areaImportsRule(AGENTS),
   },
 });

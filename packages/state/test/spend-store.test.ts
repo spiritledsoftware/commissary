@@ -292,6 +292,24 @@ describe("SpendStore calendar change", () => {
 });
 
 describe("SpendStore upgrade", () => {
+  it("deletes the limits and counters of the retired agent subject on start, keeping the rest", async () => {
+    await withStore((store, sql) => {
+      value(store.create({ ...KEY, amountMicros: USD, source: "admin" }, "a"));
+
+      sql.exec(
+        `INSERT INTO spend_limits VALUES ('limit:agent', 'agent', 'agent-1', 'day', 1, 'admin', 1, 1, 1, 'a')`,
+      );
+      sql.exec(`INSERT INTO spend_counters VALUES ('agent', 'agent-1', 'day', 0, 5)`);
+
+      const restarted = new SpendStore(sql);
+
+      expect(restarted.limits().map((limit) => limit.kind)).toEqual(["key"]);
+      expect(
+        sql.exec(`SELECT COUNT(*) AS n FROM spend_counters WHERE subject_kind = 'agent'`).one().n,
+      ).toBe(0);
+    });
+  });
+
   it("is created for a Durable Object that predates Spend limits, and running the schema again keeps what it holds", async () => {
     await withStore((store, sql) => {
       value(store.create({ ...KEY, amountMicros: USD, source: "admin" }, "a"));

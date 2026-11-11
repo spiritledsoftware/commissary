@@ -1,12 +1,10 @@
 // A sandbox's network picker (ADR 0041): no network, a list of hosts with the package registries preset, or the
-// internet. The agent editor's sandbox asks for one within the sandbox toolkit's ceiling (a kind beyond it is not
-// offered), and the toolkit's own settings set that ceiling. The fields and what is wrong with them are
+// internet. The sandbox toolkit's settings use it to set the org's ceiling. The fields and what is wrong with them are
 // `lib/sandbox-network.ts`.
 import { Fragment, useId } from "react";
 import {
   NETWORK_KINDS,
   type NetworkFields,
-  type NetworkKind,
   PACKAGE_REGISTRIES_LABEL,
 } from "../lib/sandbox-network.ts";
 import { kit } from "./Kit.tsx";
@@ -15,17 +13,11 @@ import styles from "./NetworkPicker.module.css";
 export const NetworkPicker = ({
   fields,
   onChange,
-  allowed = () => true,
-  beyond = "",
   label = "Network",
   problem,
 }: {
   readonly fields: NetworkFields;
   readonly onChange: (fields: NetworkFields) => void;
-  /** Whether a kind of network may be picked (the others show `beyond`, and stay unless already picked). */
-  readonly allowed?: (kind: NetworkKind) => boolean;
-  /** What a kind that may not be picked says in place of its hint. */
-  readonly beyond?: string;
   readonly label?: string;
   /** What is wrong with the hosts, shown under them. */
   readonly problem?: string | undefined;
@@ -36,21 +28,18 @@ export const NetworkPicker = ({
     <fieldset className={styles["network"]}>
       <legend className={kit["fieldLabel"]}>{label}</legend>
       {NETWORK_KINDS.map((kind) => {
-        const may = allowed(kind.id);
-
         return (
           <Fragment key={kind.id}>
-            <label className={styles["choice"]} data-allowed={may}>
+            <label className={styles["choice"]}>
               <input
                 type="radio"
                 name={`${id}-network`}
                 checked={fields.network === kind.id}
-                disabled={!may && fields.network !== kind.id}
                 onChange={() => onChange({ ...fields, network: kind.id })}
               />
               <span className={styles["choiceText"]}>
                 {kind.label}
-                <span className={kit["muted"]}>{may ? kind.hint : beyond}</span>
+                <span className={kit["muted"]}>{kind.hint}</span>
               </span>
             </label>
             {kind.id === "hosts" && fields.network === "hosts" ? (

@@ -158,8 +158,6 @@ export const recordFacts = (
     ...(record.computer_ms === undefined
       ? []
       : [["Computer time", meteredDuration(record.computer_ms)] as const]),
-    ...(record.agent_id === undefined ? [] : [["Agent", record.agent_id] as const]),
-    ...(record.run_id === undefined ? [] : [["Agent run", record.run_id] as const]),
     ...(isCall(record) ? [["Latency", formatLatency(record.latency_ms)] as const] : []),
   ];
 };

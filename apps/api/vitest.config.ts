@@ -68,9 +68,8 @@ const worker = (bindings: Record<string, string>, hosted: boolean) =>
         PLATFORM: { className: "Platform", useSQLite: true },
         // The sandbox toolkit's sessions (#222), which the ControlPlane reaches as on every deployment.
         SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
-        // The agent runs (#227): the API Worker's own class, as deployed.
+        // The retired hosted agents' tombstone classes (src/retired-objects.ts): the API Worker's own, as deployed.
         AGENT_RUN: { className: "AgentRun", useSQLite: true },
-        // The schedule triggers (#231): the API Worker's own class, as deployed.
         AGENT_SCHEDULE: { className: "AgentSchedule", useSQLite: true },
       },
       kvNamespaces: hosted ? ["CACHE", "OAUTH_KV"] : ["CACHE"],

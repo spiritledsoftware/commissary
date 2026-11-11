@@ -75,14 +75,6 @@ describe("web panel", () => {
     "/o/default/tools/profiles",
     // The tools a member reaches and why (#209).
     "/o/default/my-tools",
-    // The Agents pages (#233): the list, a new agent and an agent's page.
-    "/o/default/agents",
-    "/o/default/agents/new",
-    "/o/default/agents/ag_0123456789abcdef",
-    // The chat and run pages (#234): a chat's start, the runs list and a run's page.
-    "/o/default/agents/ag_0123456789abcdef/chat",
-    "/o/default/agent-runs",
-    "/o/default/agent-runs/ar_0123456789abcdef0123456789abcdef",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {

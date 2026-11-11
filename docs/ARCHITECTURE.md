@@ -28,8 +28,7 @@ such as `src/...` and `test/...` in the rest of this document are relative to `a
 cited as `translation/...` (relative to `packages/translation/src/`), core's as `core/...` (relative to
 `packages/core/src/`), auth's as `auth/...` (relative to `packages/auth/src/`), state's as `state/...` (relative to
 `packages/state/src/`), Models' as `models/...` (relative to `packages/models/src/`), Billing's as `billing/...` (relative
-to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/src/`), Agents' as `agents/...` (relative
-to `packages/agents/src/`) and the JSON path engine as `packages/json`.
+to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/src/`) and the JSON path engine as `packages/json`.
 
 ```
 .                             workspace root and deploy root (Alchemy, no Wrangler config); turbo.json
@@ -76,7 +75,7 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
     src/index.ts              exports ControlPlane, SessionState, Platform and BrowserSession; answers every request 404
     src/dev.ts                its `alchemy dev` entry: index.ts plus the dev-only DevStateBridge entrypoint
     src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models,
-                              Billing, Tools and Agents parts
+                              Billing and Tools parts
     src/env.d.ts              what the classes read: the state Worker's bindings
   apps/web/                   @commissary/web: control panel served at / (React, Effect Atom, TanStack Router; built
                               into apps/web/dist, the Worker's assets), its tests in Node.js
@@ -170,18 +169,6 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
                               (test/worker.ts), fake MCP servers, a fake Browser Run binding, a fake browser
                               provider's sessions (test/support/fake-sessions.ts) and a fake second sandbox
                               provider; test/fixtures/ has the snapshot masking's golden fixtures; test/testing.ts is
-                              ./testing
-  packages/agents/            @commissary/agents: the Agents area (#226, ADR 0040): hosted agent definitions; like
-                              Tools, the Workers import it only through ./api, ./management and ./state (lint rule
-                              boundaries/agents-imports)
-    src/api.ts                for the API Worker: AgentsEnv and the area's presence (the agents toolkit comes later)
-    src/management.ts         for the app Worker: management routes (with AgentReferences, the seam to Models and
-                              Tools), role-table entries, org-deletion step, its section of the org export
-    src/state.ts              for the state Worker: AgentsPart, its part of the ControlPlane
-    src/control-plane-part.ts the ControlPlane's Agents part (agents, their watchers, agent grants)
-    src/agents/               storage and the checks of a definition's texts
-    src/management/           Agents' /v9/management routes (agents, agent grants), the reference check
-    test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is
                               ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
@@ -328,9 +315,8 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
   (`ScheduledTask` of `@commissary/core`; Models' from `models/api.ts`): the model catalog refresh (the one
   models.dev document: every provider's models, OpenCode's included), Antigravity version and model entitlements, xAI client version, usage retention, the Devin user status, a
   safety sweep that re-arms credential refresh alarms, and the quota check of connected accounts; then Tools' tool list
-  refresh (`tools/scheduled-tasks.ts`, org-scoped: see "Tools"); then Agents' agent run retention
-  (`agents/runs/retention.ts`, deployment-wide: see "Agent runs"). A job is
-  deployment-wide (catalog, client versions, usage retention, agent run retention: once per run) or org-scoped (entitlements, Devin status,
+  refresh (`tools/scheduled-tasks.ts`, org-scoped: see "Tools"). A job is
+  deployment-wide (catalog, client versions, usage retention: once per run) or org-scoped (entitlements, Devin status,
   refresh sweep, quota check: once per org the Platform registry lists, `global` first, with `CurrentOrg` set, a failure in one org not
   stopping the next). When the registry cannot be read the org jobs run for `global` alone, so a registry outage does not
   stop the deployment's own jobs.
@@ -2513,16 +2499,12 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   task). The deployment variable `USAGE_RETENTION_DAYS` (default 30) is gone: the period belongs to the org and an org admin
   sets it (`PATCH /org`). `usage-statistics-enabled` and `redis-usage-queue-retention-seconds` are not used:
   persistence is always on when the `USAGE` binding exists.
-- **Run costs** (#234; `runCosts`, `usage/d1.ts`; migration `0015_usage_run_index.sql`): the Agents area's run
-  routes sum a run's records' cost through `@commissary/models/management`'s `runCosts` (_Agents_, "What a run
-  costs"), over a partial index of the records that name a run (`org_id, run_id`, `run_id IS NOT NULL`).
-- **Agent runs** (#228, ADR 0040; columns of migration `0011_usage_agent_runs.sql`, "Agent runs"): `records`, `summary`
-  and `series` take `agent` (a hosted agent's id) and `run` (a run's id) filters, in whichever area the read covers, so
-  a run's model attempts, tool calls and browser time read together with `area=all`. `records` names each record's
-  `agent_id`, `run_id` and `starter` (`member:<id>`); the queue keeps Go's export shape and names none. A private
-  agent's run's records are written `private` (`UsageRun.private`), so they are its member's alone, as
-  private-credential traffic is; a shared agent's are the org's. Migration `0013_usage_private_agent_runs.sql` marks
-  the records #227 wrote before that (a run's record that names a member, which only a private agent's run does).
+- **Unused columns** (ADR 0048; `agent_id`, `run_id` and `starter` of migrations `0011_usage_agent_runs.sql` and
+  `0013_usage_private_agent_runs.sql`, and the partial index `usage_records_org_run` of `0015_usage_run_index.sql`): hosted
+  agents are gone, so no record writes the columns and no read filters or returns them. They stay in the table for one
+  release, because D1 migrations apply before the Workers deploy and dropping them then would break the previous API
+  Worker's inserts mid-deploy; a follow-up migration drops them and the index (`docs/DEPLOY.md`, "Retired hosted
+  agents"). Existing rows keep their values, which nothing reads.
 - **Failures without a body** (difference from Go): a failed attempt's usage record keeps the upstream status, error type
   and error code, and nothing of the response body (the `fail_body` column stays `NULL`; migration `0007` clears the
   bodies stored before it). Go's queue keeps the failure body for the management API.
@@ -2576,7 +2558,7 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
 - **Computer time** (#224, ADR 0041; `migrations/usage/0014_usage_computer_time.sql`): `computer_ms`, how long a
   sandbox session's computer ran, in milliseconds, on the one record the session writes when it closes (_Tools_,
   "Computer time"), shaped as a browser session's: `area = 'tools'`, the sandbox toolkit, no `tool_id` and no
-  `tool_outcome`, `auth_type` `shared`, the session's id as `request_id`, the member and the agent run (#228) that
+  `tool_outcome`, `auth_type` `shared`, the session's id as `request_id`, the member that
   opened it, and its computer time's cost at the price per computer hour as `cost_micros`. The calls in a session keep
   their own records, without computer time. The JSON of the record adds `computer_ms`; a summary and a series count it
   toward no request, failure or average latency (the same `area = 'tools' AND tool_id IS NULL`), while its cost counts
@@ -2937,13 +2919,11 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
 - **Claude web search results** (opt-in `client.codex.web-search-result-cache.enabled`, default off): while enabled, the
   `claude-web-search-results` `SessionState` store keeps a session's search results for 24 h (sliding on a hit), and the Durable
   Object registers with its org like every `SessionState` instance, so org deletion wipes it.
-- **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"), and
-  `run_retention_days` for agent runs (see "Agent runs"). **Usage failures** keep status, type and code, not the body
+- **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"). **Usage failures** keep status, type and code, not the body
   (same section).
 - **Member removal** deletes the member's private data in the ControlPlane (`#deleteMemberData`: their API keys in the
-  base, then the Models, Tools and Agents parts' `memberLeft`: Tools deletes their private toolkits and their private
-  credentials on org toolkits, Agents their private agents and the agent grants and watchers that named them, and every
-  run they started or their private agents ran, whose objects the route then deletes, "Agent runs"), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
+  base, then the Models and Tools parts' `memberLeft`: Tools deletes their private toolkits and their private
+  credentials on org toolkits), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
   deletes so the key's Spend limits and counters go with it.
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
@@ -3281,8 +3261,8 @@ Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /
 
 | Route         | Who                                 | Does                                                                                                                        |
 | ------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `GET /org`    | org admin                           | the org (`OrgView`: id, slug, name, `usage_retention_days`, `run_retention_days`)                                           |
-| `PATCH /org`  | org admin                           | `{usage_retention_days?, run_retention_days?: <1..3650> \| null}`, at least one; `422` for any other number                 |
+| `GET /org`    | org admin                           | the org (`OrgView`: id, slug, name, `usage_retention_days`)                                                                 |
+| `PATCH /org`  | org admin                           | `{usage_retention_days?: <1..3650> \| null}`; `422` for any other number                                                    |
 | `GET /export` | org admin                           | the org's settings, masked shared config, price overrides, credential summaries, grants, members, teams, tokens             |
 | `DELETE /org` | a person: org owner, platform admin | `{name}` retyped; deletes the org and everything it holds; `409 global_org`, `422 name_mismatch`, `503 deletion_incomplete` |
 | `DELETE /me`  | a person                            | `{email}` retyped; leaves every org, deletes the orgs the person is alone in; `409 sole_owner`, `422 email_mismatch`        |
@@ -3312,10 +3292,7 @@ error codes are in `docs/ACCESS.md` "Members, roles and teams".
   the one chosen); `GET`/`PATCH /membership`, `/me` and the panel read it; an org
   admin changes it, and a change makes the credential pool derive again) and the org setting `private_toolkits`
   (members may add private toolkits, #198: the same defaults and the same `POST /orgs` choice; an org from before it
-  takes its `private_credentials` value; the Tools part reads it on every use, _Tools_) and the org setting
-  `private_agents` (members may create private agents, #226: the same defaults and the same `POST /orgs` choice; an
-  org from before it takes its `private_toolkits` value, as ADR 0040 has private agents follow private toolkits, and
-  `global` has it on; _Agents_). Members are not config entries: a config import replaces every entry and must not remove people. Every write takes the actor's role and
+  takes its `private_credentials` value; the Tools part reads it on every use, _Tools_). Members are not config entries: a config import replaces every entry and must not remove people. Every write takes the actor's role and
   checks it against the target in the same Durable Object call (`auth/roles.ts`: `mayManageMember`, `mayChangeRoles`,
   `mayGrantTokenRole`, `holdsSensitivePowers`), so check and write cannot interleave with another request; refusals are
   data (`{ok: false, error, message}`) that `member-routes.ts` maps to statuses.
@@ -3443,7 +3420,7 @@ Workers addition replacing the Go server's client keys (`access.api-keys`, impor
   for the panel's editor and the consent page of an MCP client's sign-in (_Commissary Cloud_); each toolkit also says why
   the caller reaches it (`via`, #209: their private credential, `private` once connected and `private_available` while
   the toolkit takes one and the org allows it but they have none; the tool grants that name them with the tools each
-  gives; the agents toolkit), as members cannot read `GET /grants/tools`. The model routes ignore the scope.
+  gives), as members cannot read `GET /grants/tools`. The model routes ignore the scope.
 - **Principal** `{kind: "key", keyId, memberId, email}`: usage records and logs store `key:<key id>` and the member id; the
   caller scope of session state is the member's (`user:<email>`), so a member's keys and their Access-era sessions share
   state. A key is never a platform admin, and the management zone never reads keys.
@@ -3480,16 +3457,15 @@ time and computer time, counts and decides.
   (`stub.createSpendLimit(…)`), and their routes are the app Worker's (`src/management/spend-routes.ts`, their role
   entries in `management/policy.ts`), like the API keys'. Each part's contribution stays a hook: it names the
   credentials a limit may cover (`ControlPlanePart.spendCredentials`: Models' shared credentials by `auth_index`,
-  Tools' org toolkits with a shared credential) and the shared agents (`ControlPlanePart.spendAgents`, Agents' part,
-  #226), so the routes resolve and label a `credential`, `toolkit_credential` or `agent` subject without the base
-  knowing any area. The base forgets the limits of a member, team or
+  Tools' org toolkits with a shared credential), so the routes resolve and label a `credential` or
+  `toolkit_credential` subject without the base knowing any area. The base forgets the limits of a member, team or
   API key it removes; a part forgets those of the credentials it removes (`spend.forget`). The refusal's wording is
   one for both areas (`spendRefusalMessage`).
 
 - **Entries** (`spend/store.ts` `SpendStore`, in each org's ControlPlane, SQLite tables `spend_limits`, `spend_counters`
   and `spend_settings`, `CREATE IF NOT EXISTS`, so there is no D1 migration and a ControlPlane that predates the feature
   upgrades in place with no limits): a subject (`member`, `team`, `org`, `credential` (a shared one, named by its
-  `auth_index`), `key` (an API key id), `toolkit_credential` (an org toolkit's shared credential, named by the toolkit's id; #199) or `agent` (a shared hosted agent, by id; #226, its runs' usage counts toward it, #228)), a period and an amount in micro-USD, written by an org admin or, on their own
+  `auth_index`), `key` (an API key id), `toolkit_credential` (an org toolkit's shared credential, named by the toolkit's id; #199)), a period and an amount in micro-USD, written by an org admin or, on their own
   API key, by a member. Each limit has a revision and `updated_at/by`; an edit or delete names the revision in `If-Match`
   (`409 conflict` when stale). There is one limit per subject, period and writer, and the limits on one subject and period
   are enforced together, so the smaller amount binds. A member may not write a limit above an admin's on the same key and
@@ -3545,7 +3521,7 @@ time and computer time, counts and decides.
   0041): one mechanism with browser time (`HOUR_PRICES`, `tools/toolkits/price.ts`): with a price per computer hour on
   the sandbox toolkit, the time a sandbox session's computer runs (the fallback for what just-bash cannot run, #223)
   costs that price, prorated the same way, on top of any price per call, toward the same limits as the toolkit's priced
-  calls (the key's, member's, teams' and org's, or a shared agent's run's agent's and the org's, #228; the sandbox
+  calls (the key's, member's, teams' and org's; the sandbox
   toolkit's credential is its shared one). Its computer runs from the command that starts it until its container's
   idle minutes after its last command ended, or until the session stops it (`computer-time.ts`), so the idle minutes
   cost as the container's do; a command that could not start the computer (its container refused, or failing before
@@ -3573,10 +3549,7 @@ time and computer time, counts and decides.
   attempt's usage records first, prices them (`UsageSink.cost`, the same price table the D1 sink writes with, so the
   stored record and the counter agree), reports `costMicros` with `report`, and the ControlPlane adds it to every
   counter the attempt belongs to (`SpendLedger.scopes`): the key's, and, for traffic served by a **shared** credential,
-  the member's, the member's teams', the org's and the credential's. A shared hosted agent's run (#228,
-  `SpendCaller.agentId`) has no key and no member: it is checked (at the pick and when a retry round is planned)
-  and charged as the agent, so the agent's limits and the org's apply (a refused run's turn ends with the refusal, "Agent runs"), never its starter's; a private agent's
-  run is its member's traffic. Traffic served by a **private** credential is the
+  the member's, the member's teams', the org's and the credential's. Traffic served by a **private** credential is the
   member's own account with the provider, so only the key's counters see it. An org admin who reads a key limit's `spent_micros` therefore sees a total that includes
   that key's private-credential Cost, but only the total: which credential or model it went to stays with the owner. An unpriced attempt costs 0 and is never
   capped. The attempt in flight when a limit is reached finishes, so Spend can pass a limit by the Cost of the requests
@@ -3891,17 +3864,14 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
     approval rule that is pending, denied or asks the caller's form, or the plan is not counted, and an approved retry counts once
     (the approval's own call did not); failed calls and tool errors are counted (the work was attempted); a call whose
     sign-in could not be used and a command that would have run on a refused computer are taken back (`refund`). Every
-    toolkit counts, the browser and sandbox toolkits and the agents toolkit (`delegated`) included, and so do an agent
-    run's calls (they reach the same method; a run's gated sandbox call, #230, counts at its gate, once, and is taken
-    back if one of its commands is refused after all). **A call that ends a use is never refused by the plan**:
+    toolkit counts, the browser and sandbox toolkits included. **A call that ends a use is never refused by the plan**:
     `browser_close`, any tool whose browser time `ends`, and `sandbox_close`; if the count would refuse one it goes
     through uncounted, since a refusal would only keep the session, and its time, running. One that the plan refuses
     answers outcome `plan_limited` (only to a call that says it knows it, `planOutcomes`, as the approval outcomes are:
     an older API Worker gets `failed`): the endpoint's Worker words it as a tool error (`planRefusalText`: the limit, when
     free usage starts over, a link to the billing page), with the code `plan_limit_reached` in the text and in the
     result's `_meta` under `commissary.dev/plan_limit` (`{ error, limit, allowed, retry_after? }`, as the model routes'
-    body names them), so a client can tell it from a Spend limit's refusal; it records it as `refused`. An agent run sees
-    it as a tool error with the same `_meta` and the Spend refusal's `_meta` text too, by which the run ends its turn.
+    body names them), so a client can tell it from a Spend limit's refusal; it records it as `refused`.
   - **Browser hours** count the browser time the part is told of: each call's (a Quick Action's, a session's since its last
     call, `browserTime`), a close the part makes for a limit, and a session closed by its alarm (`browserSessionClosed`
     gets the stretch's milliseconds as a new optional argument, kept with the session's `owed`). A Free org's browser
@@ -3918,11 +3888,7 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
     refuse such a command and stop a running computer, when the plan keeps the computer from the call; both say so in the
     plan's words (not a Spend limit's), and a call the plan refuses outright stops a running computer too. Opening a
     session is not starting a computer (a `sandbox_open` with `computer: true` where the plan has no computer time says
-    so in its result). The org setting that turns the computer on (ADR 0041) still applies. **An agent run's gated
-    sandbox call** (#230) is metered the same way: the gate computes the plan's refusal as for any call and keeps it on the
-    run-call ticket (`planRefusal`, `limitReached`), each operation counts the computer time it answers and sets
-    `computer_until`, and an operation refused for the plan is kept on the ticket (`planRefused`), so settling the call
-    records it as refused and answers the plan's words, which end the run's turn.
+    so in its result). The org setting that turns the computer on (ADR 0041) still applies.
   - **Ceilings**: `browser_open` is refused when the org already has as many sessions open as its ceiling (1 on Free, 5 on
     Pay as you go, or what a platform admin raised, `ceilings()`), counted from the part's log of open browser sessions;
     a command that would start a computer is refused when the org already runs that many (0 and 3), counted from
@@ -3931,12 +3897,10 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
     time). A session whose computer runs is not another one, and only a session opened with the computer
     (`sandbox_sessions.computer`, from `sandbox_open`'s `computer`; a log from before has it unknown, which counts as
     asking) has one to count. Calls made at once do not pass a ceiling together: a `browser_open`, and every call
-    outside a run in a session with a computer, hold their place in the part's memory while they are served (`Held`),
+    in a session with a computer, hold their place in the part's memory while they are served (`Held`),
     even where the computer runs, since a command may outlast its idle minutes and keeps the slot until it ends; the
     checks count what is held (a session with a call held is one computer, whatever its calls), and the hold is
-    released when the call ends. **Agent
-    runs stay uncapped** (ADR 0042): a call with a run's reach is neither refused by a ceiling nor are the sessions
-    opened by `run:<id>` principals counted toward one; their time still counts toward hours and the billing cap. The refusal is
+    released when the call ends. The refusal is
     `plan_limit_reached` naming the ceiling (`limit` `browser_sessions` or `computers` on the wire, in the body of the `_meta` too), with no month to start over, since a ceiling
     does not start over.
   - **Deploys** (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract"): the new outcome, the optional arguments of
@@ -3950,9 +3914,7 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   seconds like `@commissary/auth`'s standing) picks one. The API Worker's
   client gate calls `limitClientRate` after authentication and the standing checks (it left `@commissary/auth`'s hosted
   gate, which no longer knows plans), so every client-facing surface behind that gate is covered, and the MCP endpoint
-  (#197) and webhook triggers (#231) join it by sitting behind the gate or calling the same function (a proven
-  delivery; every delivery is counted before its proof on a bucket of its own in the same bindings,
-  `limitWebhookAttempts`, key `webhook:<org>`, so unproven ones never use up the org's ceiling). The management API has
+  (#197) joins it by sitting behind the gate. The management API has
   none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
   request through (logged); an org whose plan cannot be read gets Free's ceiling. The ceilings are constants; only the
   namespaces are deployment settings (`ORG_RATE_LIMIT_NAMESPACE_ID`, `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, `docs/DEPLOY.md`).
@@ -4164,7 +4126,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   behind them, so an RPC would add a round trip and a dependency between the areas' parts for nothing. Sealing is the
   org-wide base's already (`core.secrets`). Tools imports nothing of Models (its manifest does not name it, so the lint
   rule refuses it).
-- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser`, `sandbox` and `agents` for the built-in toolkits, below), a source (the MCP server's URL), a name and which
+- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser` and `sandbox` for the built-in toolkits, below), a source (the MCP server's URL), a name and which
   credentials it accepts (`shared`, `private` or `both`; a private toolkit takes its owner's only). An org admin adds
   org toolkits; any member adds private toolkits (a plain member's toolkit is always private) while the org setting
   `membership.private_toolkits` allows them (#198, ADR 0038). The setting mirrors `private_credentials`: on for
@@ -4791,8 +4753,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     arguments; a repeat after a denial answers that it was denied (`denied`) and settles it. A repeat after the hour
     finds no approval (it expired, and is gone) and waits for a new one. A caller without a member (a service token)
     under a rule of the caller, without a form, is answered a tool error that no one can approve it (`not_approved`,
-    reason `no_approver`, recorded `denied`): no member could decide it in the panel. An agent run no one started is
-    the exception (#232): its agent's watchers are its caller, and its call waits for one of them.
+    reason `no_approver`, recorded `denied`): no member could decide it in the panel.
   - **The hash**: SHA-256 (hex) of the arguments in the JSON Canonicalization Scheme's form (RFC 8785) for what
     arguments hold: object keys sorted by UTF-16 code units at every depth, arrays in order, no whitespace, strings and
     numbers as `JSON.stringify` writes them; absent arguments are `{}` (`approvals/hash.ts`).
@@ -4826,12 +4787,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 - **Who a call is**: on the app host a call is the member's Access principal (`user:<email>`), as a panel request is,
   so what records calls (usage, logs) shows the member, not the MCP client; Access's tokens carry no client. A static API
   key on the API host is the key and its member.
-- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, #222, #229, ADR 0039, ADR 0041): toolkits Commissary
-  provides itself, the **browser toolkit**, the **sandbox toolkit** and the **agents toolkit**. The agents toolkit
-  (kind `agents`, source `commissary`) is the exception to most of what follows: the state Worker gives it with the
-  Agents part where the Agents area is (`LOADER`), it takes no grant (who may run which agent comes from the agents),
-  the MCP endpoint's Worker makes its calls, and the part shows it only to callers that ask for it (_The agents toolkit
-  and child runs_ under Agents). One exists exactly when the deployment has what it runs
+- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, #222, ADR 0039, ADR 0041): toolkits Commissary
+  provides itself, the **browser toolkit** and the **sandbox toolkit**. Each exists exactly when the deployment has what it runs
   on: the state Worker's composition hands the Tools part the providers its env's bindings give (`new ToolsPart(ctx,
   core, builtInProviders(env))`; a `browser` binding gives Browser Run, and the Worker Loader with the sessions'
   namespace, which every deployment has (ADR 0043), gives Cloudflare's sandbox). Without its binding
@@ -4957,7 +4914,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       another org reaches another, empty object. It keeps its owner (the org, the member and the call's principal:
       `key:<id>` for an API key, `user:<email>` for a person through Access, so another member, another API key of the
       same member or the same member through Access answers `Unknown browser session <id>`, exactly as an id never
-      opened; a hosted agent's run is a principal of its own, `run:<id>`), the provider it opened on (the toolkit's
+      opened), the provider it opened on (the toolkit's
       source, from which it finds the provider's browsers again: `sessionProviderOf`) and the provider's id of the
       browser, the id of the browser profile it opened from, whether its browser was reached again on a new connection,
       the current tab's index, the fields to mask and its times,
@@ -5126,10 +5083,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
         Live View are masked too, as they cannot be told apart from the person's. The scripts run in the page's own
         world, so a hostile page can defeat the marks: masking keeps typed values from the model, not from the page,
         which holds them already (an isolated world would not change that). Watching moves the session's idle timer.
-        Who may watch is one method of the Tools part (`#mayWatch`), which the page's `watchable` reflects, apart from
-        `own` (the caller is its member): the session's member; and for a session a shared agent's run opened, which
-        has no member (#232), the run's watchers, through the `RunWatchers` port (`tools/agents/run-watchers.ts`),
-        which the Agents part of the same ControlPlane answers at once, as the list asks it of every session.
+        Who may watch is one method of the Tools part (`#mayWatch`), which the page's `watchable` reflects: the session's member.
       - **The Browser sessions routes** (`/v9/management/browser-sessions`, `BrowserSessionsGroup`,
         `tools/management/browser-session-routes.ts`, every member): `GET` lists the caller's open sessions (with the
         handoff that waits for them) and, for an org admin, every other session of the org (its member, when it
@@ -5195,8 +5149,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves
     the same tools.
   - **The sandbox toolkit's tools** (`tools/sandbox/toolkit.ts`, #222, ADR 0041): a shell and a filesystem in a
-    session, shaped after pi's coding tools (bash, read, write, edit, ls) so a hosted agent's tools map onto them one
-    to one (#230). MCP calls are stateless, so `sandbox_open` (write) answers a session id (`sbx_` and 32 hex digits)
+    session, shaped after pi's coding tools (bash, read, write, edit, ls). MCP calls are stateless, so `sandbox_open` (write) answers a session id (`sbx_` and 32 hex digits)
     and the network it got, and the others take it: `sandbox_bash` (write; a command run with just-bash in
     `/workspace`, `timeout` in seconds, 120 by default and at most 600), `sandbox_read` (read; `offset` and `limit` in
     lines), `sandbox_write` (write; creates parent directories), `sandbox_edit` (write; exact replacements, each
@@ -5211,36 +5164,29 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     with code N`, with its output) and the provider's failures are results with `isError`; so is any call that names
     no principal (an endpoint from before calls carried one): a session must have an owner.
   - **Sessions**: a session is its principal's alone (`SandboxOwner`: the org and the call's principal, `user:<email>`
-    on the app host, `key:<id>` for an API key, `run:<id>` for an agent run, #230): a call with another principal's
+    on the app host, `key:<id>` for an API key): a call with another principal's
     id, in the same org or another, is answered as an unknown session. It ends on `sandbox_close` or after a day
     without a call, its files deleted at once (a command still running is killed and the Workspace closed first, so
     nothing writes its files back); for a week after, its owner's calls answer that it is closed, and after that week
     that it is unknown. Commissary sets no size limit of its own: the Durable Object's storage limit applies (a write
     past it answers that the storage is full and the file was not written). The ControlPlane keeps the org's open
-    sessions (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, the shared agent whose
-    run opened it (`agent`, #228, which the close's charge goes to), opened and last used): every call goes through the
+    sessions (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, opened and last used): every call goes through the
     Tools part, which adds a session when it opens, marks it on each use (a call the sandbox failed is one too: the
     session's object counted it), and drops it when the call closed it or the session's alarm reports its close (#224,
     below). A session a call found closed is kept, as its close's report is
     still to come. One whose close was never heard of is forgotten from the part's alarm `SESSION_IDLE_MS` +
     `CLOSE_REPORT_MS` (a day and a week) after its last use, so a session whose report keeps failing stays listed up to
-    eight days. A member who leaves takes their sessions at once (`memberLeft`: each used within the day is purged,
+    eight days. A session a hosted agent's run opened (ADR 0048) has no idle day in the sandbox, so it is the exception: the Tools part's alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set (`hasRunSessions`, `runSessionsDue`, `purgeFailed`). A member who leaves takes their sessions at once (`memberLeft`: each used within the day is purged,
     settled first as a close is, its last stretch of computer time charged and its usage record written (#224), then
     deleted with its files and no note; an older one is closed already, its files gone, and left to report its close),
     and the org's deletion purges every one (Tools' org-deletion step, `purgeSandboxSessions`, a page of 20 at a time
-    within the deletion's budget, before `wipeOrg` drops the table). An agent run's own session is the exception to
-    the day without a call: the one its harness opens (`sandbox_open` with `_meta["commissary/run-session"]`,
-    `RUN_SESSION_META`, honoured for a run's call only; another session a run opens ends after its idle day as a
-    member's) lasts until the run is deleted, which purges it, settled first as a member's leaving settles theirs
-    (`purgeRunSandboxSessions`, "Agent runs"), and the part's forgetting skips a run's sessions; the run's coding
-    tools reach its session through gated calls ("Agent runs", "Sandbox"), and only a session the part keeps as that
-    run's (`SandboxSessionStore.owns`). Calls are recorded and priced as any tool call.
+    within the deletion's budget, before `wipeOrg` drops the table). Calls are recorded and priced as any tool call.
   - **Computer time** (#224, `tools/sandbox/cloudflare/computer-time.ts`): a session's object meters its computer
     (`ComputerMetering`, kept with the session): the time from the command that starts it to the container's idle
     minutes after its last command, or to when the session stops it (closing, or a Spend limit with no room), a command
     still running keeping it running; a run whose command could not start the computer is dropped. Each call passes the
     price per computer hour and whether a limit has no room (`SessionMetering`, an optional last argument; opening, who
-    opens too: toolkit, member and agent run, `SessionOpener`) and answers the time since the call before and its cost
+    opens too: toolkit and member, `SessionOpener`) and answers the time since the call before and its cost
     (`SessionReply.computerTime`, which the provider hands on as `Metered.computerTime`, or a failure's
     `SandboxError.computerTime`), which the part charges. The object's alarm is set for the sooner of the session's
     idle day and the computer's end (`computerEndsAt`: its last use plus its idle minutes): at the computer's end it
@@ -5256,9 +5202,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     flight (`#reporting`), so the part still keeps the session the report names, and what that report could not report
     is in what the close charges. A record or report that fails is kept in the closed note and tried again from the
     alarm (`usage/session-close.ts`, shared with the browser sessions) until the note goes, `CLOSE_REPORT_MS` (a week)
-    after the close. An agent run's session (#230), which has no idle day and may outlive any, writes a record each
-    time its computer stops, of that stretch, and none when it closes ("Agent runs", "Sandbox"); its gated calls pass
-    the metering their gate set, as any call does.
+    after the close.
   - **Networks** (`tools/sandbox/network.ts`, ADR 0041, ADR 0044): `none` (the default), `hosts` (DNS names or `*.` and a
     name, plus the `package_registries` preset: npm, PyPI, GitHub and mise's download hosts), or `open`. The sandbox
     toolkit's `network` is the org's ceiling, set by org admins (`PATCH /toolkits/sandbox`, shown in its view and the
@@ -5268,7 +5212,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     `tools/management/sandbox-session-routes.ts`, every member): `GET` lists the caller's open sandbox sessions (opened
     with any of their API keys, or signed in) and, for an org admin, every other session of the org, oldest first (at
     most 200 of the caller's view, a member's own chosen in the query before the cap, with `truncated` true when more
-    are open): its member, when it opened, how (`api_key`, `person`, `agent_run`), the network it opened with and where
+    are open): its member, when it opened, how (`api_key` or `person`), the network it opened with and where
     its computer stands (`off`: it may not use one, `stopped`, `running`). The part keeps the rows
     (`SandboxSessionStore.mayBeOpen`) and asks the provider about each (`SandboxProvider.status`, over RPC
     `SandboxSession.status`, a read that is no use of the session): one it closed is left out (its row stays until its
@@ -5447,12 +5391,10 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   `lib/sandbox-sessions.ts` and `lib/sandbox-network.ts`): the toolkit's page (`/tools/sandbox`) gains, for its kind, the
   org's **Network** and **Computer** among its facts (members read them too: a deployment without the computer says
   "Not allowed" and nothing more), its **Prices** (the one price per computer hour, the same field and control as the
-  price per browser hour, #209), and, for org admins, **Sandbox settings**: the ceiling a session or a hosted agent's
-  sandbox picks within, a network picker (no network, only these hosts with the package registries preset, the
-  internet; the one `NetworkPicker` the agent editor's sandbox also uses, whose kinds beyond the ceiling are not
-  offered) and "May use the computer", under a note that network access and tool results carrying prompt injection are
-  together a way to leak data (ADR 0044). The form saves only what changed, with the toolkit's `If-Match` revision; the
-  ceiling's wording is the agent editor's `sandboxCeilingText`. Where the deployment has no computer
+  price per browser hour, #209), and, for org admins, **Sandbox settings**: the ceiling a session's
+  network picks within, a network picker (no network, only these hosts with the package registries preset, the
+  internet) and "May use the computer", under a note that network access and tool results carrying prompt injection are
+  together a way to leak data (ADR 0044). The form saves only what changed, with the toolkit's `If-Match` revision. Where the deployment has no computer
   (`me.deployment.computer` false, ADR 0043, `hasComputer`) admins see the checkbox turned off with a one-line reason and
   a link to `docs/DEPLOY.md`'s "Optional pieces", the form never names the computer, and members are told nothing.
   **Open sessions** (every member) is the `GET /sandbox-sessions` list, own first: who opened it, when, its network and
@@ -5464,7 +5406,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 - **Panel, grants, prices, approvals and usage** (#209; models in `apps/web/src/lib/tool-grants.ts`, `tool-id.ts`,
   `my-tools.ts`, `tool-prices.ts`, `approval-rules.ts`, `usage-tools.ts`). The **Grants** page (`/grants`) has a Models
   | Tools switch (`?area=tools`): the tool grants (`GrantsTools.tsx`) read by member, team or toolkit, a form for the
-  subject, an org toolkit (not a private one, nor one that takes private credentials only, nor the agents toolkit) and
+  subject, an org toolkit (not a private one, nor one that takes private credentials only) and
   all, read or named tools picked from the toolkit's tool list (named tools shown by their current names, a vanished one
   marked missing), and a note on the toolkits that hold a shared credential and no grant. **My tools** (`/my-tools`,
   every member) lists the tools the caller may use by toolkit with the reasons `GET /tools` gives. A toolkit's page adds
@@ -5481,620 +5423,27 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   "not completed" counts every outcome but `success`, as the server's `failed` does, and is not painted as failing.
   **Members** has a switch for private toolkits beside the private credentials one.
 
-## Agents (`agents/`, `agents/management/routes.ts`, `src/management/agent-routes.ts`, `apps/api/src/http/run-gateway.ts`)
+## Retired hosted agents (ADR 0048)
 
-The Agents area (ADR 0040) holds **hosted agents**: an agent's definition saved in Commissary (name, description,
-instructions, one model with an optional thinking level, a tool scope), its **runs** (GLOSSARY "Agent run", "Turn") on
-pi-durable, and its calls as tools of the agents toolkit (#229). It saves definitions, private and shared, the grants on
-shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227), starts runs from
-the schedules and webhooks configured on them (#231), and serves them to clients and runs through the agents toolkit,
-whose calls from a run start child runs (#229), and gives a run whose definition names a sandbox pi's coding tools on a
-sandbox session of its own (#230); the panel's Agents pages (#233) manage them; it lets watchers and org admins see
-runs, and a run's people answer the approvals and handoffs it waits on (#232); the panel's chat and run pages (#234)
-start, steer, watch and delete runs. The package (`@commissary/agents`) is shaped like Tools: entry points `./api`,
-`./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a ControlPlane part,
-`AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`: `agents`,
-`agent_grants`, `agent_runs` and `agent_triggers`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the
-ControlPlane namespace and the deployment's Dynamic Workers binding `LOADER`.
+Commissary used to have a third area, Agents: hosted agents that ran on Durable Objects, with their grants, watchers,
+triggers and an agents toolkit (ADR 0040). It was removed whole (ADR 0048): Commissary is a model and tool proxy. What
+the removal leaves behind is deliberate and temporary; each item has a follow-up release that removes it
+(`docs/DEPLOY.md`, "Retired hosted agents", has the deploy side):
 
-- **Presence** (ADR 0043): the area exists exactly when `LOADER` is bound (`agentsPresent`), on the app Worker, which
-  serves the area's routes, runs' included (the runs' objects themselves need no `LOADER`: a run's sandbox is the state
-  Worker's `SandboxSession` object, #230). Without it every Agents route answers `404 not_found` and `/me` says
-  `deployment.agents: false`; the definitions are kept. Every deployment binds it (`alchemy.run.ts`), and the app's tests
-  bind it too (`workerLoaders` in `vitest.config.ts`), but for one harness that passes `LOADER: undefined`.
-- **Definitions** (`CreateAgent`, `UpdateAgent` in `@commissary/contract/agents`; `agents/agents/definition.ts`): a
-  name of 1 to 64 of `[a-z0-9_]`, unique in the org across private and shared agents (it is the agents toolkit's
-  `agent` argument, so one name must mean one agent whoever calls; a deliberate choice: `409 name_taken` can reveal a
-  name used by an agent the caller cannot see), a description of at most 1,000 characters, instructions of at most 65,536, a model as clients name
-  it, a thinking level, and a tool scope as an API key's (`ToolScope`), whose agents toolkit entry may also name agents
-  by id (`agents`). There are no versions: an edit replaces what it names. Edits and removals name the agent's revision
-  in `If-Match` (`409 conflict`).
-- **Private and shared**: a private agent is one member's; a plain member's agents are always private, and an org admin
-  creates a private one by saying so. Private agents follow the org setting `membership.private_agents` as private
-  toolkits follow `private_toolkits` (`403 private_agents_unavailable` when off; turning it off keeps them but none is
-  usable). Only its member sees and edits it in full; an org admin sees that it exists (`others`, as for private
-  toolkits) and may disable or remove it. A shared agent is an org admin's to create and edit; it names who may use it
-  on creation (`subject`, written at once as its grant: there is no default grant), and further grants are
-  `/grants/agents`, one per subject and agent, for org admins only. `GET /agents/mine` lists what the caller may use:
-  their private agents (while the setting is on) and the enabled shared agents a grant gives them.
-- **Watchers** (GLOSSARY "Watcher"): a shared agent names members and teams who watch it (the creating admin by default);
-  once none is left (a member who leaves, a deleted team), its org admins watch it (`admins_watch`). They watch, steer
-  and cancel its runs that no one started, and answer their approvals and handoffs (#232, _Watchers, approvals and
-  handoffs in runs_ below); `agentWatchers` resolves them to members.
-- **What a definition names** (the seam): the model and the toolkits must exist where the agent runs: in the org (its
-  shared credentials, its toolkits) for a shared agent; for a private agent, the models its member may use and the
-  toolkits the member can see (the org's and their private ones), tools outside their grants being narrowed at run time
-  (#227) (`422 unknown_model`, `422 unknown_toolkit`, with `path`). Agents imports neither Models nor Tools: its
-  routes take an `AgentReferences` (`agents/management/references.ts`), which the app Worker fills
-  (`src/management/agent-routes.ts`) from Models' `servedModelCheck` (over the isolate's `ModelRegistry`, aliases and
-  prefixes applied, `RegistrySnapshot.shared()` or `visibleTo(member)`) and Tools' `toolkitIds` (over the Tools part's
-  toolkit list). The routes run the checks and hand what they found to the part as data (`ReferenceCheck`), so the part
-  decides the order of refusals (permission, setting, references, the rest) and Agents' own tests need no Models or
-  Tools. The agents a tool scope names are Agents' own: a private agent's must be usable by its member, a shared agent's
-  shared (`422 unknown_agent`). A model or toolkit removed later stays named, as in an API key's scope; a run's calls
-  then fail as for an unknown model or toolkit.
-- **Tool scope entry for agents**: an API key's tool scope (`ToolScopeEntry.agents`, on the entry of toolkit `agents`
-  only, `AGENTS_TOOLKIT`) may name agents by id, which the agents toolkit honours (#229, below); the base stores and
-  normalizes it like the rest of the scope.
-- **Spend limits**: a shared agent is a Spend subject (`agent`, `/spend/limits`), listed by the part's `spendAgents`
-  hook; removing the agent deletes its limits (`spend.forget`). Its runs' usage counts toward them (#228, "Agent
-  runs").
-- **Members and orgs**: a member who leaves takes their private agents, their runs and every run they started, and
-  leaves the grants and watcher lists that named them (`memberLeft`; the runs: "Agent runs"); a deleted team leaves the grants and watcher lists (`teamDeleted`); org deletion drops the tables
-  (`wipe()`), after Agents' org-deletion step deleted each run's object (below). The org export lists the
-  agents the caller manages, a shared agent with its watchers and grants (members by email, teams by name). The
-  cross-org suite checks that one org's agents are not listed in another (`controlplane: agents`).
-- **The sandbox** a definition may name (`sandbox`, `AgentSandbox`, #230, ADR 0041): the sandbox toolkit its runs work
-  in (`toolkit`, the built-in `sandbox`), and the network and computer their sessions ask for, as `sandbox_open` takes
-  them. It must be a sandbox toolkit the agent's owner can see, and within that toolkit's ceiling as it stands
-  (`422 invalid_sandbox`, `path: "sandbox"`; `AgentReferences.sandboxRefusal`, which the app Worker fills from Tools'
-  `sandboxRefusal`, `tools/sandbox/agent-sandbox.ts`); `sandbox: null` in an edit removes it. A ceiling lowered later
-  leaves it named: the run's `sandbox_open` is refused then, as a client's would be. A run's session opened before an
-  edit or a ceiling narrowed is left at its next turn ("Agent runs", "Sandbox"). The export lists it.
-
-### Agent runs (#227)
-
-- **The run's object** (`agents/runs/run-object.ts`, `AgentRunObject`): one Durable Object per run, named
-  `<org>:<run>` (`agentRunName`), holding the run's pi-durable harness on its own SQLite: its transcript and its turns.
-  It lives in the API Worker (class `AgentRun`, `apps/api/src/http/run-gateway.ts`, which wires Agents' class with its
-  loopback, below; ADR 0030's amendment), and the app Worker binds it as `AGENT_RUN` by the API Worker's script name,
-  which is why the API Worker deploys before the app Worker on every stage (`docs/DEPLOY.md`). Agents' tests wire the
-  class with a gateway that answers `404` (a status the model client does not retry). A start names the run (org and id), and the object takes it only when that
-  is its own name; under `alchemy dev` only, where the dev registry drops `ctx.id.name`, the dev entry lets it through.
-- **The org's index** (`agents/runs/store.ts`, table `agent_runs` of `AGENTS_TABLES`, dropped by `wipe()`): one row per
-  run with its agent, trigger kind (`chat`, `schedule`, `webhook`, or `mcp` for the agents toolkit's) and trigger
-  (`trigger_id`, none for `chat` and `mcp`), starter (a member, the run that started a child run, or none for a run no
-  one started, below; two columns), the API key a start through the agents toolkit came with (`api_key_id`, added in
-  place to an older table, as `trigger_id`), idempotency key, state as its object last reported it
-  (`runStateChanged`; an ended run stays ended) and the definition its latest turn read (`turn_definition`). It lists a
-  member's runs, finds the run an idempotency key already started and resolves a run's principal without reaching the
-  run. The cross-org suite checks it (`controlplane: agent runs`) and the runs' objects (`agent runs' objects`).
-- **Turns**: a message to an idle run starts a turn (`beginTurn`), which reads the agent's definition as it stands then
-  and keeps that reading as the turn's reach (no versions: an edit, a disable or a revoked grant applies from the next
-  turn). The next turn ends the run when the agent was disabled or removed, the private agent's member left, the org
-  stopped serving private agents, or the starter may no longer use the agent (their grant revoked). A message while a
-  turn runs joins it as steering (pi-durable's `turn.steering` submissions), and the turn takes it before its next model
-  call. Cancelling aborts the running turn; the run stays open for the next message (a harness that does not settle
-  within 10 s is closed, the turn recorded as cancelled). A start or message resubmitted with the same idempotency key
-  finds the turn it started instead of starting another. A start whose call of the object fails ends the run it created
-  (`abandonRun`), as the object may or may not have taken it. The object's calls that change the run run one at a time;
-  waiting for a turn and showing the run do not wait for them.
-- **Resume**: while a turn runs, the object's alarm wakes it every 60 s (`HEARTBEAT_MS`). After an eviction or a deploy
-  of the API Worker (every merge) the alarm reopens the harness and the turn goes on (`resume()`): a tool call that
-  finished is never made again, one cut off answers the model as interrupted, and a model call cut off is made again
-  (and billed again). A tool call parked on a person (#232) goes on waiting where it parked: the turn is still running,
-  so the heartbeat keeps waking the object, and the rerun of the call reads its memos (_Watchers, approvals and
-  handoffs in runs_ below). A storage failure closes the harness; the next event reopens it.
-- **The run's principal** (`@commissary/auth`'s `run` kind, `agents/runs/principal.ts`): the run, its agent, its
-  starter, whom it acts as (a private agent's member, or a shared agent itself, `isSharedAgentRun`) and its reach (the
-  model and tool scope its latest turn read). The gate resolves it on every request from the org's ControlPlane
-  (`runPrincipal` over the part's `turnContext`), never from the request: an unknown or ended run, one with no turn
-  yet, one acting as a private agent's member who left the org, and one whose starter left it are refused (`401`, like
-  a revoked key); an edit or a disable during a turn changes nothing until the next turn. On Commissary Cloud
-  `authenticateRun` checks on every request, as for a key (the same cached standing), that the org, the run's starter
-  and the member a private agent's run acts as are in good standing: a suspended starter's runs, shared agents'
-  included, are refused at once (`403 Suspended`). The plan's request-rate ceiling applies.
-- **The trust boundary** is the Cloudflare account, as for the Durable Objects. Every request of the harness (a model
-  call to `/v1/...`, a tool listing or call to `/mcp`) goes to the run gateway, `AgentRunGateway`, a named entrypoint
-  of the API Worker that the object calls over `ctx.exports`. The internet reaches only the default `fetch` handler,
-  and no Worker of the deployment binds the entrypoint, but any Worker deployed to the same account could. Within the
-  deployment, the object keeps the gateway in a private field (wired by its constructor), which no RPC method exposes:
-  the app Worker, which binds the object, reaches the run, never the gateway, and cannot make the object act as
-  another run (a start must name the object's own run). The gateway marks the request with the run (`PresentedRun`,
-  `apps/api/src/http/presented-run.ts`), which only it sets; the public `fetch` handler's context has none, so no
-  header, path or body makes a request a run's. From there the request is any client's: grants, reach, tool scope,
-  spend limits, prices, approval rules and usage records apply unchanged.
-- **Reach** (`models/registry/caller-view.ts`): models: only the definition's model (`runModelFilter`: the same base
-  name whatever the thinking suffix, which the run sends from the definition's thinking level; `auto` names none), for
-  routing and for the model lists (`/v1/models`, `/v1beta/models`) alike; a private agent's run uses the models its
-  member may use, a shared agent's the org's shared credentials whatever the grants (`callerView`:
-  `RegistrySnapshot.shared()`, and `ALLOW_ALL` as the pool's reach for a caller with an `agentId`). Tools
-  (`RunToolReach` in `tools/control-plane-part.ts`), listed and called alike: the definition's tool scope narrows them
-  as an API key's would; a private agent's run acts as its member, a shared agent's as the agent (`asAgent`: every org
-  toolkit with a shared credential, whatever the tool grants).
-- **Spend**: a spend limit's refusal ends the turn with the refusal as its answer, and the run stays open: a model
-  call's (`429 spend_limit_reached`, which the object turns into a `403` so the model client does not retry it) and a
-  tool call's (a tool error whose `_meta` carries the refusal, `SPEND_REFUSAL_META`, given to runs only; the object
-  then aborts the turn). The refusal is kept in the object's storage until the turn settles, so an eviction keeps it.
-  A shared agent's run counts toward the agent's own Spend limits and the org's (#228, `SpendCaller.agentId`; the
-  pool's caller, `RunToolReach.usage` for tool calls and the browser and sandbox session logs' `agent` column for
-  browser and computer time charged when an idle session closes), never its starter's; a private agent's run counts as
-  its member's traffic. A tool call from an API Worker that predates #228 sends no `usage`, so the agent's limits do not
-  see it.
-- **Approvals**: the run's starter is the caller of its tool calls' approvals (ADR 0040; `RunToolReach.starterMember`;
-  a child run's: the member who started the run at the head of its chain), for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
-  panel), and under a team's or members' rule they do not; the model gets the
-  approval's link text, and the run parks the call until it is decided and makes it again (#232). A run no one started
-  has its agent's watchers for its caller (_Watchers, approvals and handoffs in runs_ below).
-- **Sandbox** (#230, ADR 0041, `agents/runs/pi-sandbox.ts`): a turn whose definition names a sandbox gets pi-durable's
-  coding tools `bash`, `read`, `write` and `edit` (their names, parameters, argument repair and output, as models know
-  them) in place of the sandbox toolkit's own tools, which its model is not offered (opening and closing sessions
-  among them). pi's own tools run, with an `ExecutionEnv` of the run's over its sandbox session
-  (`agents/runs/sandbox-env.ts`, after cloudpid's `ComputerExecutionEnv`), each call gated first:
-  - **The gate**: the call is the sandbox tool of the same name (`sandbox_bash`, …) through the MCP endpoint, as the
-    run's principal, on the run's session, with `_meta["commissary/run-executes"]` (`@commissary/contract/sandbox-env`),
-    so the sandbox toolkit's grants, the tool scope (the turn's scope gains the sandbox toolkit, all its tools, when it
-    has no entry of it; one it has narrows them, a read-only one leaving `read` alone), approval rules, Spend limits and
-    price apply to it as to that tool. Once every gate passed, the Tools part charges the price, marks the session's row
-    used (its last use; the daily forgetting skips a run's rows, which go with the run) and, instead of making the call, keeps a **ticket** (`tools/sandbox/run-calls.ts`, the `sandbox_run_calls`
-    table) bound to the run's principal, the session and the tool, with the call's spender (`spenderOf`: its member,
-    API key, and the shared agent a shared agent's run charges as, #228) and its computer metering (below), answered as
-    `outcome: "gated"` and in the result's `_meta["commissary/run-ticket"]`; the endpoint writes no record for it. Only
-    a run's call is gated so (an API key's marker is ignored). A call that does not pass is answered as the sandbox
-    tool's, its text naming pi's tools (a call waiting for approval says to call `bash` again).
-  - **The operations**: pi's tool then runs, and each operation it makes on the environment (a command, what a path is,
-    a byte range of a file, a file's text, a file written) goes over the run gateway's RPC (`sandboxOperation`) to the
-    org's ControlPlane, whose Tools part runs it on the session through the sandbox provider (`runSandboxOperation`,
-    `sandbox/run-operations.ts`) only with the call's live ticket, for its run, and only the operations its tool makes
-    (`bash`: a command; `read`: what a path is and its bytes; `write`: a file written; `edit`: what a path is, its text,
-    the file written), so one call of pi's `edit` is one gate and one record however many operations it makes. A
-    command runs as `sandbox_bash`'s does (the fallback rule, the computer, ten minutes at most, its output cut to its
-    tail and saved whole in the session, which is the call's `spillPath`); the rest of the interface answers
-    `not_supported`. The run holds no binding or stub of the session: the `SANDBOX_SESSION` stub stays in the state
-    Worker, behind the ControlPlane, and no Dynamic Worker gets anything new (the session's just-bash is the same
-    Dynamic Worker with its files only, ADR 0044).
-  - **The record**: once pi's tool answered, the run settles the ticket (`settleToolCall`): the Tools part ends its
-    operations and answers its fields (`settleRunSandboxCall`), and the API Worker writes the call's one usage record
-    under the ticket's id (`request_id`; outcome `success` or `tool_error`, or `refused` for a command refused the
-    computer, below; latency from gate to the first settling, the answer's bytes, the cost the gate charged), naming
-    the sandbox tool, as the run's principal, before it answers: a record it could not write fails the settling. A
-    ticket's operations live five minutes past its last sign of life (its gate, and the start of each operation plus
-    the command's timeout, and its end), so a slow command never outlives it; an expired or settled one, or another
-    run's, runs nothing. Its settling is not bound by that: within a day of the gate (`SETTLE_GRACE_MS`) it answers the
-    same each time, so a retried settling writes the same record once; the part forgets tickets past that day at its
-    next gate. The run keeps each ticket in its storage (`sandbox-call:<ticket>`) from the gate until its settling went
-    through: a run stopped between gate and settling (evicted, its harness closed) settles it as `upstream_failure`
-    when its harness opens again, the call's charge staying; a settling that failed keeps its report (how the call
-    ended, `PendingSettle`) and is tried again from the object's alarm once due (`retryAt`), backing off as a child
-    run's delivery of its result does (#229, `deliveryBackoff`: 30 s, doubling, at most an hour), at most
-    `MAX_DELIVERY_ATTEMPTS` times, one try of a ticket at a time, so a call that succeeded is recorded as one. One
-    never settled within the day writes no record, the charge staying.
-  - **Computer time** (#224), as the sandbox toolkit's own calls have it: the gate sets the call's metering (the price
-    per computer hour, and whether a Spend limit its time counts toward has no room, checked as for `sandbox_bash`),
-    which the ticket keeps and every operation passes to the session (`ComputerMeter`). The session's computer time each
-    operation answers is charged at once to the call's spender's limits; the call's record holds its price only, as a
-    `sandbox_bash` call's does, and the computer's time is the session's records' (below). With no room, an operation
-    that meets the running computer stops it quietly and goes on, its answer carrying a note (`SandboxEnvReply.note`)
-    that the run adds to pi's tool's answer as a warning (`diagnostics`); only a command that needs the computer is
-    refused: the operation fails, the ticket keeps the limit's refusal, and settling it answers its words
-    (`RunToolSettled.refusal`, as `refusedText` words a refused `sandbox_bash`), which end the turn as any Spend
-    limit's refusal does.
-
-  The session is opened at the run's first such call (`sandbox_open` with exactly the definition's network and computer,
-  marked as the run's own, `RUN_SESSION_META`, a call and record of its own) and kept in the object's storage with its
-  toolkit and those settings, so every later turn works in the same files. A gate names the session in its arguments,
-  and the Tools part gates it only when the session is one it keeps as the run's (`SandboxSessionStore.owns`): another
-  run's or member's session, or one it forgot, is answered as an unknown session and charged nothing. **Narrowing**:
-  each turn hands the settings its session was opened with to `beginTurn`, which asks the Tools part whether they still
-  fit the definition's sandbox and the toolkit's ceiling now (`RunSandboxes.fits`, `agentSandboxFits`); a session that
-  no longer fits (a network or the computer narrowed, the sandbox removed or another toolkit named) is left
-  (`sandboxNarrowed`), and the next call opens a new one, telling the model why and that the files are not there (a
-  `sandbox_session` warning). It is not narrowed in place: its network is its Workspace's, set as it opens. The left
-  session goes with the run. A definition or ceiling widened since changes nothing: the session keeps what it has. A
-  session the sandbox lost (unknown or closed, an operation's `lost`, or the sandbox tool's `structuredContent.reason`)
-  is replaced once, and the model is told its files are gone. A run's session does not end after a day without use
-  (`OpenSandbox.untilPurged`, for the run's own session only): it lasts as long as the run, and goes when the run is
-  deleted (below), with its tickets. As it may outlive any day, it writes no usage record when it closes: it writes one
-  **each time its computer stops** (`SandboxSession.#recordStretch`), of that stretch's computer time and cost (a
-  session record, `tool_id` null, under `<session id>:<stretch start>`, naming the run, its agent and starter): its
-  object's alarm, which wakes when the computer's idle minutes are over as for any session, meters the run, reports what
-  no call charged (`sandboxComputerTime`) and records the stretch; a call records one that stopped for want of room, or
-  that ended before the call came (so a command that starts the computer again starts a stretch of its own); and the
-  run's deletion records the last, as its purge settles the session as a member's leaving does (charging and recording a
-  computer still running). A record that fails is kept with the session and tried again from its alarm a minute on
-  (`SETTLE_RETRY_MS`), and the purge keeps one still unwritten in the closed note, as a close does. A run's session's
-  object has no alarm while it has nothing to do.
-
-- **Usage records** (migration `usage/0011_usage_agent_runs.sql`): a model attempt or tool call of a run names the
-  agent (`agent_id`), the run (`run_id`) and its starter (`starter`: `member:<id>`, or `run:<id>` for a child run); its principal is `run:<run id>`, and
-  `member_id` is the member a private agent's run acts as. A browser session a run opens names the run too
-  (`StoredSession.run`), so its browser time's records do, and a sandbox session's computer time record (#224) too. The
-  usage reads filter by agent and run (#228, "Usage accounting"), and a private agent's run's records are its member's
-  alone.
-- **Org deletion** (`agents/org-deletion.ts`): the app Worker's step deletes each run's object (`purge`: its alarm and
-  all its storage), twenty at a time within the deletion's budget, and forgets them in the index (`runsPage`,
-  `forgetRuns`), before `wipeOrg` drops the index, the queue of deleted runs below included.
-- **Deletion** (#228, ADR 0027, `agents/runs/store.ts`, `agents/runs/retention.ts`): removing an agent deletes all its
-  runs, whoever started them; a member who leaves takes their private agents' runs and every run they started,
-  shared agents' included. Each goes with the child runs it started (`starter_kind` `run`) and theirs. A run leaves
-  the index at once (`RunStore.discard`, in the same transaction as the deletion): it then answers like an unknown run
-  and its principal is refused. Its object is the API Worker's, which the ControlPlane cannot reach, so its id waits in
-  `agent_run_purges` (`deletedRuns`) until a Worker deletes the object (`purge`) and forgets it (`forgetRuns`): the app
-  Worker's routes right after the deletion (`sweepDeletedRuns`: agent removal, member removal, account deletion; three
-  pages of twenty, best effort) and the cron task below for what they leave. Both, and the org's deletion, page with
-  one loop (`sweepObjects`, `agents/org-deletion.ts`): each object is deleted on its own (`Promise.allSettled`), those
-  deleted are forgotten, and one that fails stays queued and ends that sweep, so it never holds up the others. The
-  cross-org suite checks the queue (`controlplane: deleted agent runs`).
-- **Purge** (`AgentRunObject.purge`): the object closes its harness first, aborting a running turn, for at most 5 s,
-  then deletes its alarm and all its storage; a harness still closing then deletes the storage again once it closed
-  (`waitUntil`), and from the purge on the instance opens no harness and writes nothing (`#purged`), so nothing it had
-  running writes the run back. A later instance starts empty and answers like an unknown run. The run's sandbox
-  session (#230) is the Tools part's: forgetting the run (`forgetRuns`) has the Tools part of the same ControlPlane
-  purge it first (`RunSandboxes`, wired by the state Worker's composition, `purgeRunSandboxSessions`), and a run whose
-  session could not be purged stays queued for the next sweep. The purge settles the session first, so its last
-  stretch of computer time is charged and recorded (above).
-- **Retention** (#228): each org keeps its agent runs `run_retention_days` after their last activity (a column of the
-  Platform registry's `orgs` table, `PATCH /org` and the panel's Settings, Retention; `null` keeps them; every org
-  starts at 30, `global` and those from before included). The last activity is the index's `updated_at`: the run's start
-  and every state its object reports (a turn starting, settling or ending the run; a message to an idle run starts a
-  turn, and one to a running turn joins it, which stays running until it settles). The API Worker's deployment-wide
-  cron task `agent-run-retention` (`pruneExpiredRuns`) deletes, per org, the runs idle longer (`expireRuns`, as a
-  deletion above) but never one the index holds as running, and each on its own last activity: a child run is not
-  pruned with its parent, unlike a deletion. It then deletes the objects of the org's deleted runs, ten pages at most
-  per org, within 400 calls per run of the task across all orgs (`RETENTION_BUDGET`; an invocation's subrequests are
-  limited), starting at an org that moves on every hour, so the orgs a spent budget left out come first later. One
-  org's failure does not stop the next. A run whose object never reports the end of its turn (the report failed) stays
-  `running` in the index and is kept until it reports again.
-- **Export**: the org export's agents section carries each agent's runs' metadata (`Runs.exported`): who started each
-  (a member by email, a run by id), its trigger, state and times, never a transcript.
-- **Management routes** (`agents/management/run-routes.ts`, `AgentRunsGroup` in `@commissary/contract/agent-runs`):
-  `POST /agents/:id/runs` (start, as the asking member, trigger `chat`), `GET /agent-runs`, `GET /agent-runs/:run`,
-  `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s), `POST /agent-runs/:run/cancel` and
-  `DELETE /agent-runs/:run` (#234).
-  A run shows to its starter, to a shared agent's watchers when no one started it, and to an org admin as its metadata
-  (#232, `RunView.access`, _Watchers, approvals and handoffs in runs_ below); any other run answers like an unknown
-  one. The list and a run's page carry each run's cost so far (`cost_micros`, #234, below). `GET
-  /agent-runs/:run/retention` (#234, `RunRetention`) answers whoever sees the run the org's run retention period
-  (`retention_days`, `null` for none), which a member cannot read from `GET /org`: the run's page reads it once, apart
-  from its two-second reads of the run, which make no Platform call.
-- **Deleting a run** (#234; `DELETE /agent-runs/:run`, `AgentsPart.deleteRun`, `Runs.deleteBy`): its starter and its
-  watchers delete it, with the child runs it started and theirs (`RunStore.discard`, as for the deletions below), at
-  once and whatever its state (a running turn's object is deleted under it, as when its agent is removed); the route
-  then sweeps the deleted runs' objects, which hold the transcripts. An org admin who sees only its metadata gets `403
-  forbidden` (they cancel it instead); anyone else an unknown run (`404`). The answer (`DeletedRun`) counts the runs
-  that went.
-- **What a run costs** (#234; `AgentReferences.runCosts`, filled by the app Worker from
-  `@commissary/models/management`'s `runCosts`): the sum of its usage records' `cost_micros` (model attempts, tool
-  calls, browser and computer time), read for exactly the runs the route shows the caller, so the starter and the
-  watchers of a shared agent's run see its cost although their own usage reads leave its records out (they name no
-  member). A private record counts only for its member. A run with no priced record costs `0`; without the usage
-  store, or when the read fails (logged: `runCosts` answers `None`), no run has `cost_micros` and the panel says the
-  cost is not known. Migration `0015_usage_run_index.sql` adds the partial index the sum reads
-  (`usage_records (org_id, run_id) WHERE run_id IS NOT NULL`).
-- **pi packages**: `@earendil-works/*` 1.3.0, pinned exactly (their APIs are experimental), imported only by
-  `agents/runs/pi.ts` and the run's sandbox tools it installs (`agents/runs/pi-sandbox.ts`,
-  `agents/runs/sandbox-env.ts`), all imported statically: the object imports the adapter, as the adapter imports pi-ai's
-  OpenAI-compatible provider module (`@earendil-works/pi-ai/api/openai-completions`, not its lazy `import()` wrapper). A
-  lazy import would be shared by the run objects of one isolate: when several start at once, all but one await the
-  import another object began and resume in that object's I/O context, which workerd refuses ("Cannot perform I/O on
-  behalf of a different Durable Object"), failing the turn and leaving its harness open (its deletion then never
-  finished). `agents/test/run-isolate.test.ts` starts an isolate's first runs at once and fails with pi-ai's lazy
-  import. So both Workers that bundle the Agents area (the API Worker, which runs the objects, and the app Worker,
-  through `@commissary/agents/api`) load the pi packages at startup. The adapter gives pi-ai one OpenAI-compatible
-  provider (`commissary`) whose `fetch` is the run gateway, and installs the tools the MCP endpoint lists for the run
-  (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with `wrangler deploy --dry-run` and `wrangler
-  check startup` (median of nine) when the adapter was loaded lazily: the API Worker is 3,041 KiB gzipped with a 68.8 ms
-  startup, against 2,665 KiB and 64.4 ms with the pi packages stubbed out; loaded at startup, the startup time includes
-  them.
-
-### Triggers (#231)
-
-- **The model** (`agents/triggers/`, table `agent_triggers` of `AGENTS_TABLES`): a trigger is configured on one agent:
-  its kind (`schedule` or `webhook`), a name, whether it is enabled, an input (a schedule's first message, required; a
-  webhook's template, optional), the kind's own fields (a schedule's cron expression and time zone) and a revision.
-  Every kind ends in `Runs.startTriggered`, which records the run's kind and trigger, keys it by the delivery's
-  idempotency key and decides its starter; runs, the run's principal and usage records know nothing else of kinds.
-  Starting a run through a trigger needs nothing but the trigger: no member is present. The part's runs and triggers
-  read one clock (`useClock` puts a test's `TestClock` in its place).
-- **Starters**: a private agent's triggered run counts as started by its member (it acts as them, as their chat runs
-  do; refused while the org serves no private agents or the member left). A shared agent's triggered run has **no
-  starter** (ADR 0040: a run records its starter "if anyone did"): its agent's watchers see, steer and cancel it, and
-  answer its approvals and handoffs (#232). Its turns check no starter (its agent's state
-  alone decides), Commissary Cloud checks no starter's standing, and its usage records' `starter` is `NULL` (not a
-  member, so no filter by member or starter matches it). The panel's notice that an unattended agent acts with no one
-  present (ADR 0044) is the panel's (#233, _The panel_ below).
-- **Schedules** (`triggers/schedule.ts`, `triggers/schedule-object.ts`): a five-field cron expression (minute to day of
-  week, no seconds) in an IANA time zone, through Effect's `Cron`; one that matches no date is refused. Each schedule
-  has a Durable Object of its own, `AgentSchedule` (`<org>:<trigger>`, `agentScheduleName`), whose alarm is its next
-  tick. It lives in the API Worker beside the runs' objects, not in the state Worker, because a tick starts a run's
-  object, which the state Worker cannot bind (the API Worker binds the state Worker's objects: a binding back would be
-  a cycle no fresh stage could deploy); the app Worker binds it by the API Worker's script name, as `AGENT_RUN`. The
-  management routes arm it (`arm`: it asks the ControlPlane for the next tick and sets the alarm) when a schedule is
-  added, enabled or edited. At the alarm it first asks the Platform registry whether the org still exists (a deleted
-  org's object deletes itself without reaching the org's ControlPlane, which would be created again, empty), then
-  fires the tick (the part's `fireSchedule`), which starts the tick's run keyed by the tick, so a retried alarm finds
-  that run; it starts the run's object with the schedule's input (a run this attempt created whose object cannot be
-  reached is ended, and the schedule goes on), then sets the next tick. A ControlPlane that cannot be reached is asked
-  again a minute later for the same tick. A tick while the agent is disabled starts nothing and is not caught up; a
-  disabled schedule has no alarm until it is armed again.
-- **Gone schedules' objects** (`agent_schedule_objects`): the ControlPlane cannot reach the objects, so it
-  lists every schedule whose object may exist, from its creation until its object was deleted, apart from the
-  triggers' rows. A schedule removed (by its route), with its agent (the agent's route) or with its member (the app
-  Worker's member removal and account deletion) leaves its row there, and the route then sweeps the org's gone
-  schedules' objects (`sweepRetiredSchedules`, best effort, three pages of twenty); one the sweep missed deletes itself
-  at its next alarm, when it finds its schedule gone, and org deletion deletes every listed object.
-- **Webhooks** (`triggers/webhook.ts`, `triggers/webhook-route.ts`): `POST /agent-webhooks/<org>/<trigger>` on the
-  API Worker (not `/webhooks`, whose `/webhooks/polar` is the app Worker's), a client API path
-  (`AGENT_WEBHOOK_PREFIX` in `CLIENT_API_PREFIXES`, so the app host's zone routes and the Access bypass cover it) that
-  the gate lets through (`isPublic`): it proves itself with the trigger's secret, not a key. A secret is
-  `whsec_` and 32 random bytes, sealed in the ControlPlane (`agent_triggers/<id>`), shown once on creation and on
-  rotation (`POST .../secret`, the old one stops at once); the URL is always shown. The route, in this order: a
-  malformed address answers `401` before the body is read; the Platform registry must know the org (as for an API
-  key, so a made-up org id never instantiates a ControlPlane), else `401`; on Commissary Cloud every delivery to a
-  known org, proven or not, counts against the org's webhook bucket (`limitWebhookAttempts`: key `webhook:<org>` in
-  the plan's rate-limiting binding, as many a minute as the org's ceiling, Pay as you go's binding for a raised one)
-  before the org's ControlPlane is asked anything, so a flood of unproven deliveries is refused there (`429`) instead
-  of loading it, and never uses up the ceiling the org's API keys count against; the body is at most 1 MiB (`413
-  body_too_large`); then the ControlPlane checks the proof in constant time, so the secret never leaves it; a proven
-  delivery then counts against the org's request-rate ceiling (`limitClientRate`), as an API key's request does. A
-  delivery proves itself with `Authorization: Bearer <secret>`, or with a signature, Standard Webhooks' scheme under
-  Commissary's header names: `X-Commissary-Delivery: <id>`, `X-Commissary-Timestamp: <unix seconds>` and
-  `X-Commissary-Signature: sha256=<hex>`, an HMAC-SHA256 under the secret of `<id>.<timestamp>.<raw body>`, whose
-  timestamp must be within five minutes of the ControlPlane's clock (Standard Webhooks' tolerance, as Polar's
-  webhooks, `billing/polar.ts`). A captured signed delivery cannot be replayed later, and within the five minutes a
-  replay either names the signed id, which finds the run that id started, or proves nothing. An unknown trigger and a
-  wrong or stale proof answer the same `401`, after the same work. Its run is keyed by its delivery id
-  (`X-Commissary-Delivery`, which a signature signs, else Standard Webhooks' `Webhook-Id`), else, for a bearer
-  delivery without one, by the body's SHA-256 and the minute: senders should send `X-Commissary-Delivery`, since
-  without it identical bodies within a minute are one delivery (one run) and a retry that crosses a minute's boundary
-  starts a second run. The first turn is the template with each
-  `{{body}}` replaced by the body, or the body alone (`422` when that is empty). The route answers `202 {run}` once the
-  run's object took that turn, never waiting for the answer; a disabled trigger or agent answers `409`.
-- **What a new kind adds** (the extension point): its literal and fields in the contract (`ConfiguredTriggerKind`,
-  `CreateTrigger`, `TriggerView`), its stored config (`TriggerConfig`), its row in the kinds' table (`triggers/kinds.ts`,
-  `TRIGGER_KINDS`: whether its input is required, whether it has a secret or an object of its own, its config from a
-  creation or an edit, its fields in a view and in the export), and its own way in (an alarm, a route, a queue) that
-  ends in `Runs.startTriggered` with an idempotency key of its own.
-- **Members, agents and orgs**: removing an agent, or its member leaving, deletes its triggers (and sweeps their
-  schedules' objects, above). Org deletion's Agents step deletes every listed schedule's object first (its alarm
-  would start runs), then each run's, twenty at a time (`scheduleObjectsPage`, `forgetScheduleObjects`). The org
-  export lists each agent's triggers (kind, name, enabled, input or template, a schedule's cron expression and time
-  zone; never a secret, a webhook's id or its URL). The cross-org suite checks that one org's triggers are not listed in
-  another (`controlplane: agent triggers`) and that one org's schedules' objects answer nothing for another's
-  (`agent schedules' objects`); the API Worker's tests check that one org's webhook trigger or secret proves nothing
-  at another existing org's address.
-- **Management routes** (`agents/management/trigger-routes.ts`, `AgentTriggersGroup` in
-  `@commissary/contract/agent-triggers`): `GET` and `POST /agents/:id/triggers`, `PATCH` and `DELETE
-  /agents/:id/triggers/:trigger` (`If-Match` names the revision) and `POST /agents/:id/triggers/:trigger/secret`
-  (rotation), for the agent's manager only (a private agent's member, an org admin for a shared agent; an org admin
-  seeing a member's private agent gets `403`). The part takes each call as one request (`TriggersRequest`,
-  `TriggerRequest`: viewer, agent, the client API's origin, who asks, and a trigger and its revision). A schedule
-  whose object cannot be armed is not added (`502`); an edit whose arming fails is kept and answers `502
-  schedule_not_armed`, to be armed by the next edit. A webhook's URL is on the API host (`API_DOMAIN`), else on the
-  request's host (zone routes; under `alchemy dev` without an API host, the app's origin, which is fine for local
-  development: nothing outside reaches it there).
-
-### The panel (#233)
-
-- **Panel** (`apps/web/src/pages/Agents.tsx`, `AgentNew.tsx`, `Agent.tsx`; components `AgentEditor.tsx` with
-  `AgentFields.tsx`, `AgentScopeEditor.tsx`, `AgentSandboxEditor.tsx`, `AgentShared.tsx`, `AgentTriggers.tsx`,
-  `AgentTriggerForm.tsx`, `AgentGrants.tsx`, `AgentSpend.tsx` and `UnattendedNotice.tsx`; models in
-  `apps/web/src/lib/agents.ts`, `agent-form.ts`, `agent-triggers.ts` and `agent-notice.ts`): **Agents** (`/agents`,
-  every member's, in the sidebar's Providers group, only where `/me` says `deployment.agents`; `agents` is in
-  `PANEL_SECTIONS`) lists the agents the caller manages, with their model, tools and whether each is enabled, the
-  shared agents granted to the caller, and for an org admin the other members' private agents as existence only, to
-  disable or remove. **New agent** (`/agents/new`) is private for a member where the org allows private agents
-  (`Me.private_agents`, an org setting a switch on Members sets) and shared for an org admin, who names who may use
-  it (the grant is required, so the form blocks without one), its watchers and optionally a spend limit, created
-  after the agent through `/spend/limits` (a refusal there leaves the agent and says so). The model is a free-text
-  field with the caller's reachable models as suggestions; the server validates it. The tool scope has its own
-  pickers (toolkits the caller reaches, a toolkit's tools read lazily from `GET /toolkits/:id/tools`, and the agents
-  toolkit's usable agents); the sandbox part names a sandbox toolkit and settings within its ceiling (#230; a refusal is `422 invalid_sandbox`). An **agent's page**
-  (`/agents/$agentId`) edits the definition with its `If-Match` revision, enables or disables it, and carries its
-  triggers (schedule and webhook: a schedule's cron is previewed in words and as its next three runs in its time
-  zone, parsed with the same `Cron` the server uses; a webhook's secret is shown once, on creation or rotation, in a
-  notice that stays until dismissed), and for a shared agent its grants and spend limit; removal asks to confirm.
-  The **unattended notice** (ADR 0044) heads the page, over the saved agent, when an enabled schedule or webhook trigger
-  meets a write tool in its tool scope with no approval rule on it: nothing asks anyone before such a call, and no one
-  watches when the run starts, so a steered run could make it unchecked. The form counts the same tools beside each
-  toolkit as its tool scope is edited. Disabled triggers do not count; hidden, missing and clashing tools are left out;
-  a toolkit whose tool list cannot be read is said, as its write tools go unchecked.
-
-### Chat and run pages (#234)
-
-- **Pages** (`apps/web/src/pages/AgentChat.tsx`, `AgentRunsList.tsx`, `AgentRun.tsx`; component `RunComposer.tsx`;
-  model in `apps/web/src/lib/agent-runs.ts`; atoms in `api/client.ts`): a **chat** (`/agents/$agentId/chat`, linked
-  from each agent the caller may use on Agents and from an agent's page) is a run with the trigger kind `chat`, started
-  by the caller's first message (`POST /agents/:id/runs`), for the agents of `GET /agents/mine` only. **Agent runs**
-  (`/agent-runs`, every member's, in the sidebar's Providers group where `/me` says `deployment.agents`;
-  `agent-runs` is in `PANEL_SECTIONS`) lists the runs the caller sees, filtered by `access` (started, watching, the
-  org's), each with its agent, trigger, starter, state, last activity and cost. A **run's page**
-  (`/agent-runs/$runId`) shows its facts, what it waits on, answered in place (a pending approval with the approval
-  page's decision, #201; a browser handoff with its Live View, #216; their own pages linked), its transcript with the
-  child runs it started linked, and the composer: typing while a turn runs steers it, typing while the run is idle
-  starts a new turn, and Stop cancels the running turn. Delete asks to confirm. An org admin sees the metadata and
-  Stop only, and only an org admin's pages read the members (`components/MemberEmails.tsx`) to name a starter by
-  email. The page reads the run again every two seconds (`POLL_MS`) while a turn runs or something waits, and not
-  otherwise (`pollStep`): never while a read is in flight, on from the run last read after a failed read, and not at
-  all once the run answers `not_found` ("This run was deleted."). It shows the turn's transcript as the run's object
-  saved it, not a token stream.
-- **Refusals** (`billingLinkOf`, `runProblem`): a failed turn's error, or a tool's error result in the transcript,
-  that names `plan_limit_reached` (Commissary Cloud, #241) links an owner or org admin to Billing: the client API's
-  refusal reaches the run's model call, and pi's error detail keeps its body. A start or a message the routes refuse is
-  worded by `runProblem` and links nowhere. The run's page says when the run is pruned (its last activity plus
-  `retention_days`, read once).
-- **Links back to the run** (#234): an approval's view and a browser session's view name the run whose call it is or
-  that opened it (`ApprovalView.run`, `BrowserSessionView.run`, from the caller's or the session's `run:<id>`
-  principal, `runOfPrincipal`), so #232's links, which land on the approval's and the session's own pages, lead on
-  to the run's page ("From run …", `components/FromRun.tsx`). Only the run's people are told it: an approval's
-  caller (the run's people), not an approver beyond them, and a session's watchers, not an org admin's view of it. The
-  run's page applies its own rule: the link adds none.
-
-### The agents toolkit and child runs (#229)
-
-- **The toolkit** (`tools/agents/toolkit.ts`; the tools' names, classes and arguments in
-  `@commissary/contract/agents-toolkit`): a built-in toolkit (_Built-in toolkits_ under Tools) named `agents` (kind
-  `agents`, source `commissary`, credential kind `none`), whose tools have the shape of pi's subagent tools with the
-  agent as an argument: `agents_start` (write: `agent`, `input`; answers the run's id, its first turn's and its status
-  at once), `agents_message` (write: steers the running turn, or starts a turn on an idle run; answers the turn and
-  `disposition`, `steering` or `turn`), `agents_wait` (read: `run`, optional `turn` and `timeout` in seconds, 30 by
-  default and at most 300; below), `agents_status` (read: the caller's runs, or one run's state, turns and recent
-  activity) and `agents_cancel` (write: aborts the running turn; the run stays, and so do the child runs it started).
-  There is no delete tool. Starts and messages take an optional idempotency key (stored as `mcp:<api key>:<key>`, so
-  two keys never share one). Every answer is a tool result whose text is JSON; a refusal is a tool error, so a model can
-  correct itself.
-- **Where it exists**: where the Agents area is (`LOADER`, ADR 0043), as the rest of the area. The state Worker's
-  composition (`apps/state/src/control-plane.ts`) gives the Tools part the agents toolkit only with `LOADER` bound, and
-  then a reader of the Agents part of the same object (`AgentDirectory`, over the part's `runnableAgents`; Tools
-  imports nothing of Agents, and a part missing from the composition fails the call rather than hiding the toolkit).
-  Without it the toolkit is in no list, export or grant check, and its name is not reserved (a stored toolkit named
-  `agents` keeps its name). The MCP endpoint serves it only where its Worker provides `AgentsToolkitPort`: the API
-  Worker and the app Worker each do where `LOADER` is bound (the API Worker binds it for this alone), filling it from
-  Agents' `agentsToolkitCalls` (`agents/toolkit/calls.ts`). Where the ControlPlane has it, a stored toolkit named `agents` from
-  before is renamed once, as for the other built-in toolkits.
-- **Who reaches it** comes from the agents, never from tool grants (a grant naming the toolkit is refused): a caller
-  reaches its tools as soon as they may run an agent, and the toolkit is listed only then. A member may run their
-  private agents (while the org serves them) and the enabled shared agents a grant gives them (#226); a private agent's
-  run, any agent its member may use; a shared agent's run, the org's enabled shared agents; never a run's own agent,
-  which `agents_start`'s list leaves out (it would be a cycle, below). A tool scope's entry for the toolkit narrows that
-  to the agents it names (`ToolScopeEntry.agents`, read by `agentsInScope`; the entry alone: every agent within reach),
-  and its tool classes apply as to any toolkit's, so a read-only scope may watch runs (`agents_status`, `agents_wait`)
-  but not start or steer them. `agents_start`'s description lists the agents the caller may run, by name and
-  description, and is rebuilt on every list. Usage, Spend limits, tool overrides' prices and approval rules apply to its
-  calls as to any built-in toolkit's.
-- **Who makes its calls**: a run lives in the API Worker's `AgentRun` objects, which the state Worker cannot bind, so
-  the part only decides that the caller reaches the tool, charges it, and answers `delegated` (with the agents the
-  caller's scope names) to an endpoint that says it makes the calls (`ToolCall.agentsToolkit`; a `DelegatedBuiltIn`,
-  beside the browser and sandbox toolkits' `CalledBuiltIn`); the endpoint hands the call to its Worker's port.
-- **Deploys** (DEVELOPMENT.md, "State RPC: expand, then contract"): the part lists, calls and exports the toolkit, whose
-  kind an older Worker cannot decode, only to a caller that asks for it (`agentsToolkit` on `clientTools`, `callTool`,
-  `listToolkits`, `listTools` and `exportToolkits`, which the management routes and the endpoint pass); the panel's
-  scope editor and keys' tool counts, which show no kind, count it. The run's principal names its head member
-  (`starterMember`), which a ControlPlane from before child runs leaves out (the starter, a member, then stands in).
-- **Which runs a caller sees** (`ToolkitCaller`, `agents/runs/runs.ts`): an API key, the runs it started (the index
-  keeps the key, `api_key_id`; a second key of the same member gets an unknown run); a member signed in (a request
-  through Access, without a key), every run they started, through a key or not; a run, the
-  child runs it started. Any other run answers like an unknown one. In the panel (`/agent-runs`) a child run shows to
-  its people, the head of its chain's (`Runs.watchersOf`), as a watcher (#234), and to org admins as its metadata.
-- **Child runs**: a run's `agents_start` starts a child run of the agent it names, acting as that agent (a private
-  agent's member, or the shared agent itself), started by the calling run (starter kind `run`) and trigger `mcp`. A run
-  may run only enabled agents: a disabled one answers like an unknown one, so nothing tells a run of an agent it may not
-  run. The chain of runs is at most three deep (`MAX_CHAIN`: a run, its child, its grandchild), an agent already in the
-  chain is refused (`a → b → a` as `a → a`), and a run has at most eight child runs running at once
-  (`MAX_ACTIVE_CHILDREN`: a child counts as running from its start until it reports a turn done); each is a tool error.
-  A child run's turns check, besides #227's checks, that the run that started it is still there and may still run its
-  agent; its tool calls' approvals are the member's at the head of its chain (for a chain no one started, from a shared
-  agent's trigger, the head agent's watchers', #232). A child run of a run that ended is refused at its next request.
-- **Ending**: a run that ends (its object reports `ended`: its agent disabled or removed, its member or its starter gone)
-  ends its child runs and theirs in the index at once (`Runs.stateChanged`, so their next request through the
-  gateway is refused), and its object stops their objects (`AgentRunObject.stop`: the running turn aborted and recorded
-  as cancelled, the run ended), so whoever stops the head of a chain stops the tree. Cancelling a turn ends nothing.
-- **Claims and deliveries** (`agents/runs/run-object.ts`): `agents_wait` claims a turn's result for its caller (a
-  `Claimant`: `run:<id>`, `key:<id>` or `member:<id>`): the named turn's, or the oldest finished turn that caller has
-  not claimed yet, or else the running turn's once it finishes. On timeout it answers the running turn with its latest
-  activity and what the run and its child runs wait on (`waiting`, #232), and cancels nothing; with nothing left it says
-  whether the results were claimed or delivered, and what its child runs still wait on. For a member's client that asks
-  people to open pages, a claim returns as soon as the run parks on something they answer (#232, below). A child run
-  hands each finished turn its parent did not claim to the parent: it delivers it as a message (`[agents] Run … (agent
-  …), which you started, finished its turn …` with the answer), which steers the parent's running turn or starts a turn
-  on an idle parent. The parent takes it only from its own child runs (the index says so) and each child turn once (its
-  idempotency key, `child:<run>:<turn>`); one it refuses for good (it ended) is dropped. A delivery that cannot reach
-  the parent is kept and tried again from the child's alarm, after 30 s and then twice as long each time (at most an
-  hour), ten tries in all (`MAX_DELIVERY_ATTEMPTS`, about three hours), after which it is dropped and logged; a parent
-  claiming a result still to be delivered takes it from the deliveries. The panel's wait (`POST /agent-runs/:run/wait`)
-  claims nothing: it is a person's look at the run, not a client's claim.
-- **Deletion** (#228, "Agent runs"): a run deleted with its agent or its member takes its child runs and theirs
-  (`RunStore.discard` follows `starter_kind` `run` down the tree), whatever agent they run, and the sweeps delete their
-  objects like any run's; a run pruned past the org's retention period goes alone, each child on its own last
-  activity. Org deletion deletes every run's object, child runs included (they are rows of the index like any run).
-
-### Watchers, approvals and handoffs in runs (#232)
-
-A run's people (ADR 0040 "Who watches and steers") see it, steer it, and answer what it waits on: a pending approval
-of one of its tool calls (#201) or a handoff its `browser_ask_human` started in a browser session (#216). The model is
-not told a link to pass on: the run **parks** the call (GLOSSARY "Parked call") until its person answers.
-
-- **Who sees a run** (`RunAccess` in `@commissary/contract/agent-runs`; `Runs.accessOf`, `agents/runs/runs.ts`;
-  `AgentsPart.viewRun`, `viewRuns`): its starter (`access: "starter"`); for a shared agent's run that no one started (a
-  trigger's), the agent's watchers as they are now (`"watcher"`); a child run, the people of its chain's head
-  (`Runs.watchersOf`: its head's starter, or that agent's watchers), also as `"watcher"` (#234: before it, a child run
-  showed to org admins only, so a chat's starter could not open the child runs their run started); and an org admin, any
-  shared agent's run, child runs included (`"admin"`), as its metadata only: `RunDetail` without `turns`, `activity` and
-  `transcript` (optional fields since #232), and the run's object is not asked. A private agent's run is its member's
-  alone. A starter and a watcher watch, steer, wait on and cancel the run; an org admin gets `403 forbidden` on messages
-  and waits. Anyone else gets an unknown run (`404`). A run's cost is in its view since #234 (`cost_micros`, _Management
-  routes_ above). An org admin's view of a child run that a private agent's run started names its starter's kind only
-  (`RunStarterView.id` left out): that run is its member's alone.
-- **Who cancels a run** (`Runs.cancellableBy`, `AgentsPart.cancellableRun`): its starter and its watchers, and an org
-  admin any run of the org (ADR 0040), a private agent's too; for a run they do not see, the answer is only whether a
-  turn was cancelled (`CancelledRun` without `run`).
-- **Who answers a run** (`Runs.watchersOf`, `AgentsPart.runWatchers`): the member at the head of its chain, or, when no
-  one started that run, the head agent's watchers; none for a chain whose head is gone. Tools names them through its
-  `RunWatchers` port (`tools/agents/run-watchers.ts`, `BuiltInProviders.runWatchers`; Tools imports nothing of Agents),
-  which the state Worker fills where the Agents area is present (`apps/state/src/control-plane.ts`: the Agents part of
-  the same ControlPlane, read in place and at once, as the Tools part asks it for every session of a list). For a run
-  no one started, they are its caller under an approval rule of the caller: its call waits for one of them
-  (`ToolsPart.#approvalOf`; `no_approver` without the port or when none is left), who sees and decides it
-  (`#callersOf`, `#mayDecide`, `#approvalView`; an org admin who is not one of them decides nothing). They watch the
-  browser sessions such a run opened (`#mayWatch`), which have no member: the session's page shows them its handoff
-  and they mint its Live View, while an org admin lists the session but sees no handoff (`handoff: null`) and watches
-  none.
-- **What a call waits on** (`@commissary/contract/run-waits`): for a run's call only, the MCP endpoint adds to the
-  tool result any client gets (the approval's or the session's link in words) what the call waits on, in `_meta`
-  under `RUN_WAITS_META` (`commissary/run-waits`): a `RunWaiting` with its `kind` (`approval` or `handoff`), `id` (the
-  approval's, or the browser session's), `until` (the approval's hour, the handoff's thirty minutes), the panel's
-  `link` when the deployment knows the panel's host (`APP_DOMAIN`), and `by_caller` (the run's people answer it: an
-  approval under a rule of the caller, or a handoff; `false` for an approval another approver decides). Only the
-  endpoint sets it: it strips every `_meta` key of Commissary's own (`commissary/…`, `commissary.dev/…`:
-  `RUN_WAITS_META`, `RUN_TICKET_META`, `SPEND_REFUSAL_META`, `PLAN_LIMIT_META`) from a tool's own result before it
-  adds its own (`withoutOwnMeta`, `tools/mcp/protocol.ts`), so an upstream server can neither park a run on a wait of
-  its making (and have its member asked to open its link) nor end a turn as a spend or plan limit would.
-- **How it stands** (`RunWaitState`): the run asks `RunGateway.waitState`, which the API Worker's gateway answers from
-  the Tools part's `runWaitState` (`tools/mcp/run-calls.ts`). For an approval it reads the row while it is kept
-  (`ApprovalStore.held`, expired or not): none, or one another caller's, is `gone`; then, by the part's clock, one past
-  its hour is `expired` (checked before its status: an approved call goes through only within the hour anyway); then an
-  undecided one is `waiting` and a decided one `ready`. For a handoff: a session the run did not open, or none kept, is
-  `gone`; one whose handoff still waits (the session's object says) is `waiting`; one whose handoff ended, or that
-  closed, is `ready`. `gone` means nothing of it is kept (the part's alarm deleted an expired approval): the run
-  decides by its own clock, making the call again before `until` (its rule may be gone) and refusing it after.
-- **Parking** (`agents/runs/pi.ts`): the run shows what the call waits on and asks after 2, 4 and 8 seconds and then
-  every 15 seconds (`WAIT_POLL_MS`): no decision reaches the run, which keeps the Tools part free of runs' objects. On
-  `ready` it makes the same call again, which takes the outcome (an approved call goes through once; a denied one
-  answers so; a handoff's end is answered, one that timed out at the browser provider as an error). On `expired`, or
-  once the run's clock is a minute past `until` while the gateway still says it waits (`EXPIRY_GRACE_MS`), the model
-  is told the call is refused, and the turn goes on. A call parks at most eight times in a row (`MAX_PARKS`: an
-  approval, then a handoff the approved call started, and a few more); once more, it is refused rather than answered
-  with the words to call again. A cancelled turn aborts the wait.
-- **Durable parking**: MCP tools are replay-safe for pi-durable (`replay: "safe"`, before #232 `unsafe`) behind memos:
-  `call:<n>` before the call's `n`th request to the endpoint and `parked:<n>` with what that request parked on. A
-  rerun after a restart reads them: the last call parked, so it goes on waiting where it did (the parks counted so far
-  included); the last call has no `parked` memo, so it was cut off mid-request and answers as interrupted, never made
-  twice, as pi-durable answers a call that is not replay-safe. The sandbox's coding tools (#230) park in memory only:
-  they are not replay-safe, so a restart answers a parked one as interrupted, and its approval stays for the next call.
-  So the harness, as it reopens, forgets what the last process's calls waited on (`WAITING`): a call that still waits
-  parks again as it reruns.
-- **The run's object** keeps what its own parked calls wait on (`WAITING`, `waiting` in its storage; cleared when the
-  turn ends) and what its child runs told it theirs wait on (`CHILD_WAITING`, by child run): a child run tells the run
-  that started it what it and the runs below it wait on each time that changes (`AgentRunObject.childWaiting`, from
-  its own run only, as the index says), so the head of a chain, at most three deep, shows its whole chain's waits to
-  the person who answers them all, each marked with the run whose call waits (`RunWaiting.run`). It shows them in the
-  panel (`RunDetail.waiting`, the panel's wait) and in the agents toolkit's wait. A telling that failed is kept to do
-  (`waits-untold`) and done again from the alarm (in 30 s) and at the turn's end; a child run deleted (`purge`) tells
-  its parent once that it waits on nothing; and a wait past its `until` and the grace is no longer shown, so a child
-  that could not tell leaves no wait on its parent for good.
-- **The agents toolkit's wait** (`agents/toolkit/calls.ts`): `agents_wait` answers what the run waits on (`waiting`,
-  with the link and who answers it). For a member's client that declares URL elicitation, a claim returns as soon as
-  the run (or a run below it) parks on something they answer, with a link, that their client has not asked them
-  (`claim`'s `ParkedReturn`; a claim already waiting is told as the run parks, `#onParked`), with an `input_required`
-  URL elicitation of the panel's page keyed `waiting_<kind>_<id>`; the retry with the answer waits on, and is not asked
-  about it again. Only a link that is the panel's page of that very wait is asked (`panelLinkOf`,
-  `agents/runs/wait-links.ts`: the origin of the panel's host, `AgentsBindings.APP_DOMAIN`, which the API Worker binds;
-  the path `/o/<org>/approvals/<id>` or `/o/<org>/tools/sessions/<id>`; an id of its form, `ap_` and 24 hex digits or
-  `bs_` and 32): defence in depth behind the endpoint's stripping. Without the panel's host (a preview, the app Worker)
-  the client is never asked, and the claim waits as before.
-- **Deploys** (DEVELOPMENT.md, "State RPC: expand, then contract"): the Agents part's `viewRun`, `viewRuns`,
-  `cancellableRun` and `runWatchers` and the Tools part's `runWaitState` are new methods, which exist when the API and
-  app Workers call them, as the state Worker deploys first. `getRun` and `listRuns` (a starter's only) stay beside
-  `viewRun` and `viewRuns` for an app Worker from before #232, until a release later. A run on an endpoint from before
-  #232 gets no `_meta` and answers the model the link's words, as before; a parent object from before #232 does not
-  take its child runs' waits (the child logs it). Nothing is migrated: no table or column is added.
+- **Two tombstone Durable Object classes** in the API Worker, `AgentRun` and `AgentSchedule`
+  (`apps/api/src/retired-objects.ts`), with their bindings in `alchemy.run.ts`. Cloudflare refuses to delete a class that
+  another Worker still binds, and the API Worker deploys before the app Worker, which bound them until this release.
+  A tombstone does nothing: if an alarm, fetch or RPC wakes it, it deletes its alarm and all its storage. A finished
+  run has no alarm and nothing wakes it, so its storage stays until the follow-up removes the classes and bindings and
+  Alchemy emits `deleted_classes`, which deletes the namespaces with their data. The follow-up is what deletes the old
+  runs' data (ADR 0027) and must not be skipped.
+- **Three usage columns** in D1, `agent_id`, `run_id` and `starter`, and the index `usage_records_org_run`, which nothing
+  reads or writes (_Usage accounting and observability_, "Unused columns"). D1 migrations apply before the Workers deploy,
+  so dropping them in the same release would break the previous API Worker's inserts. A follow-up migration drops them;
+  it must `DROP INDEX usage_records_org_run` first, as SQLite refuses to drop an indexed column.
+- **A one-time cleanup in the state Worker.** A ControlPlane drops the Agents tables on each start, a no-op after the first (`agents`,
+  `agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers` and `agent_schedule_objects`; Tools' toolkit store
+  drops `sandbox_run_calls`) and deletes the Spend limits and counters of kind `agent`; the Platform registry drops its
+  `run_retention_days` column. An API key's tool scope naming the `agents` toolkit shows it as a missing toolkit
+  (`tool_scope_missing`), like any removed toolkit, and a stored `private_agents` setting is ignored. A sandbox session
+  a run held is cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set.

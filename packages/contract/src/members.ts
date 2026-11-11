@@ -107,19 +107,16 @@ export type UpdateServiceToken = typeof UpdateServiceToken.Type;
  * (ADR 0023): on for `global`, chosen when an org is created; turning it off disables the private credentials without
  * deleting them. `private_toolkits` lets members add private toolkits, and keeps the ones they added served (ADR 0038),
  * with the same defaults as `private_credentials`; turning it off keeps the private toolkits but serves none of them
- * until it is on again. `private_agents` lets members create private agents, and keeps the ones they created usable
- * (#226, ADR 0040), with the same defaults and the same off behaviour as `private_toolkits` (an org from before it
- * takes its `private_toolkits` value, `global` on). `access_clients` lets the client API accept an Access sign-in
+ * until it is on again. `access_clients` lets the client API accept an Access sign-in
  * (`Cf-Access-Jwt-Assertion` or `cf-access-token`) instead of an API key, for clients set up before API keys
  * (`docs/MIGRATION.md`). An Access sign-in names no org, so it only ever reaches `global`: the setting exists there
  * only (on by default), and other orgs take API keys alone. Changing `auto_join` and `access_clients` is for org
- * owners, `private_credentials`, `private_toolkits` and `private_agents` for org admins.
+ * owners, `private_credentials` and `private_toolkits` for org admins.
  */
 export const MembershipSettings = Schema.Struct({
   auto_join: Schema.Boolean,
   private_credentials: Schema.Boolean,
   private_toolkits: Schema.Boolean,
-  private_agents: Schema.Boolean,
   /** `global` only. */
   access_clients: Schema.optionalKey(Schema.Boolean),
 });
@@ -134,7 +131,6 @@ export const UpdateMembershipSettings = Schema.Struct({
   auto_join: Schema.optionalKey(Schema.Boolean),
   private_credentials: Schema.optionalKey(Schema.Boolean),
   private_toolkits: Schema.optionalKey(Schema.Boolean),
-  private_agents: Schema.optionalKey(Schema.Boolean),
   access_clients: Schema.optionalKey(Schema.Boolean),
 });
 

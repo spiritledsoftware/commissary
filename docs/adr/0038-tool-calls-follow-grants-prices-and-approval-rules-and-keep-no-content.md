@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0048 (no hosted agents)
 ---
 
 # Tool calls follow grants, prices and approval rules, and keep no content
@@ -60,3 +60,7 @@ A pending approval holds the call's arguments so the approver can see them. It i
 
 - An approval that is not the caller's own takes at least two calls, and the client or its agent has to make the call again after approval.
 - Approvals for hosted agents, which have no human at the client, are decided with their runtime.
+
+## Amendment: no hosted agents
+
+ADR 0048 removes hosted agents. The consequence that their approvals are "decided with their runtime" no longer arises: a call with no member behind it (a service token) under a rule of the caller is answered that no one can approve it, as before, and no run's watchers are an exception to it. Approvals are decided by members only.

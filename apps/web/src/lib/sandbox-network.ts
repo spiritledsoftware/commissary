@@ -1,7 +1,6 @@
-// A sandbox's network as a form edits it (ADR 0041, #233, #225): none, a list of hosts (with the package registries
-// preset), or the internet. Shared by the agent editor's sandbox, which asks for a network within the sandbox
-// toolkit's ceiling, and the sandbox toolkit's settings, which set that ceiling. Pure: no DOM, tested through
-// test/agent-form.test.ts and test/sandbox-settings.test.ts.
+// A sandbox's network as a form edits it (ADR 0041, #225): none, a list of hosts (with the package registries
+// preset), or the internet. Used by the sandbox toolkit's settings, which set the org's ceiling. Pure: no DOM, tested
+// through test/sandbox-settings.test.ts.
 import type { SandboxNetwork } from "@commissary/contract/tools";
 
 /** What the network picker offers: none, a list of hosts (with the package registries preset), or the internet. */

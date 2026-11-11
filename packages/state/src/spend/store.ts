@@ -83,6 +83,8 @@ const SCHEMA = [
   )`,
 ];
 
+const RETIRED_AGENT_SPEND = ["spend_limits", "spend_counters"] as const;
+
 interface LimitRow {
   readonly [column: string]: SqlStorageValue;
   readonly id: string;
@@ -150,6 +152,11 @@ export class SpendStore implements SpendBook {
     this.#now = now;
 
     for (const statement of SCHEMA) sql.exec(statement);
+
+    // Limits and counters of the retired `agent` subject (hosted agents are gone): nothing counts toward or reads them.
+    // Safe to repeat, and to drop in a later release once every org's ControlPlane has started once.
+    for (const table of RETIRED_AGENT_SPEND)
+      sql.exec(`DELETE FROM ${table} WHERE subject_kind = 'agent'`);
 
     sql.exec(
       `INSERT OR IGNORE INTO spend_settings (id, time_zone, week_start) VALUES (1, ?, ?)`,

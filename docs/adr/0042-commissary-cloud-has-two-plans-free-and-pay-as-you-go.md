@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0048 (no hosted agents)
 ---
 
 # Commissary Cloud has two plans: Free and Pay as you go
@@ -67,3 +67,7 @@ The owned-org limit stays as it is and bounds how much free usage one person can
 - ADR 0039, 0040 and 0041 dropped every default cap and left fairness to Commissary Cloud's plans; the ceilings above are those plans' answer, and none applies to a self-hosted Commissary.
 - Whether Polar accepts a $0 fixed price beside metered prices is unconfirmed; a product with only metered prices is the fallback. Polar files meter events into the period it receives them, so a late batch lands in the next invoice.
 - Commissary sending its own email (billing notices among others) joins the launch work.
+
+## Amendment: no hosted agents
+
+ADR 0048 removes hosted agents. A request or tool call is made by a client, and the plan ceilings on concurrent browser sessions and computers apply to every session; there is no uncapped agent run, no shared agent in the list of features and no run as a unit.

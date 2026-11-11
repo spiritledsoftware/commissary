@@ -65,10 +65,11 @@ export interface MembershipSettingsWire {
    */
   readonly privateToolkits: boolean;
   /**
-   * Members may create private agents, and the private agents they created are served (#226, ADR 0040), with the same
-   * defaults and the same off behaviour as {@link privateToolkits}.
+   * Always `false`: the setting for private agents is gone with hosted agents. Kept one release so an app Worker from
+   * before ADR 0048, which still maps it into `/membership`'s required `private_agents`, keeps answering; removed with
+   * the tombstone classes in the follow-up.
    */
-  readonly privateAgents: boolean;
+  readonly privateAgents: false;
   /**
    * The client API routes still accept an Access sign-in instead of an API key, for the clients of the time before API
    * keys (`api-keys/store.ts`). Only `global` uses it: an Access sign-in names no org.
@@ -160,7 +161,6 @@ interface StateRow {
   auto_join: number;
   private_credentials: number;
   private_toolkits: number;
-  private_agents: number;
   admins_migrated: number;
   counter: number;
   index_synced: number;
@@ -293,28 +293,21 @@ export class MemberStore {
       sql.exec("UPDATE membership SET private_toolkits = private_credentials");
     }
 
-    // An org from before the private agents setting takes its private toolkits setting (ADR 0040: private agents
-    // follow private toolkits), `global` on.
+    // The setting for private agents is gone with hosted agents: drop its column where an org still has it.
     if (
-      !sql
+      sql
         .exec<{ name: string }>("PRAGMA table_info(membership)")
         .toArray()
         .some((column) => column.name === "private_agents")
-    ) {
-      sql.exec("ALTER TABLE membership ADD COLUMN private_agents INTEGER NOT NULL DEFAULT 0");
-      sql.exec("UPDATE membership SET private_agents = private_toolkits");
+    )
+      sql.exec("ALTER TABLE membership DROP COLUMN private_agents");
 
-      if (org === GLOBAL_ORG) sql.exec("UPDATE membership SET private_agents = 1");
-    }
-
-    // Private credentials, toolkits and agents start on for `global` and off for every other org.
+    // Private credentials and toolkits start on for `global` and off for every other org.
     sql.exec(
       `INSERT OR IGNORE INTO membership
-         (id, auto_join, private_credentials, private_toolkits, private_agents, admins_migrated, counter,
-          index_synced)
-       VALUES (1, ?, ?, ?, ?, 0, 0, 0)`,
+         (id, auto_join, private_credentials, private_toolkits, admins_migrated, counter, index_synced)
+       VALUES (1, ?, ?, ?, 0, 0, 0)`,
       org === GLOBAL_ORG && globalAutoJoin ? 1 : 0,
-      org === GLOBAL_ORG ? 1 : 0,
       org === GLOBAL_ORG ? 1 : 0,
       org === GLOBAL_ORG ? 1 : 0,
     );
@@ -458,14 +451,6 @@ export class MemberStore {
 
   setPrivateToolkits(on: boolean): void {
     this.#sql.exec(`UPDATE membership SET private_toolkits = ? WHERE id = 1`, on ? 1 : 0);
-  }
-
-  privateAgents(): boolean {
-    return this.#state().private_agents === 1;
-  }
-
-  setPrivateAgents(on: boolean): void {
-    this.#sql.exec(`UPDATE membership SET private_agents = ? WHERE id = 1`, on ? 1 : 0);
   }
 
   // --- members ------------------------------------------------------------------------------------------------
@@ -837,8 +822,7 @@ export class MemberStore {
   #state(): StateRow {
     const row = this.#sql
       .exec<StateRow>(
-        `SELECT auto_join, private_credentials, private_toolkits, private_agents, admins_migrated, counter,
-           index_synced
+        `SELECT auto_join, private_credentials, private_toolkits, admins_migrated, counter, index_synced
          FROM membership WHERE id = 1`,
       )
       .toArray()[0];

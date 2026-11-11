@@ -4,20 +4,16 @@
  * on Commissary Cloud an API key, under the request-rate ceiling of the org's plan, `@commissary/billing`), after the
  * cross-site checks (`crossSiteRejection`). On success the principal is available to handlers as `AccessPrincipal`, and
  * `CurrentOrg` is the org the API key names. Any new client-facing surface (the MCP endpoint, #197) must sit behind
- * this gate or call `limitClientRate` itself: the plan's ceiling is applied here and in hosted agents' webhook route
- * (#231, `@commissary/agents`' `webhookRoutes`, handed `limitClientRate` for proven deliveries and
- * `limitWebhookAttempts` for every delivery before its proof), nowhere else. `/healthz`, the MCP endpoint's
- * OAuth metadata and the webhook route (and nothing else, `http/hosts.ts` refuses every other path first) pass through. Registered after CORS (`cors.ts`), so preflights are answered before authentication and refusals
- * still carry CORS headers. A request of a hosted agent's run comes only from the run gateway (`run-gateway.ts`), which
- * presents the run (`PresentedRun`) rather than a credential: the gate resolves its principal from the org's
- * ControlPlane (`runPrincipal`) and its standing on Commissary Cloud (`authenticateRun`), then counts it against the
- * org's ceiling. Refusals on the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's
+ * this gate or call `limitClientRate` itself: the plan's ceiling is applied here, nowhere else. `/healthz` and the MCP
+ * endpoint's OAuth metadata (and nothing else, `http/hosts.ts` refuses every other path first) pass through.
+ * Registered after CORS (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS
+ * headers. Refusals on the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's
  * SDKs read them. A `401` on the MCP endpoint carries `WWW-Authenticate: Bearer` (the MCP authorization spec;
  * `resource_metadata` is Commissary Cloud's OAuth server's, #200), so an MCP client asks for a key rather than
  * retrying; there an MCP client may send an access token of that server instead of an API key, which the gate swaps
  * for the key it stands for (`withMcpAccessToken`), and a `503` answers when that server's store cannot be read.
  */
-import { Effect, Layer, Option, Result } from "effect";
+import { Effect, Layer, Result } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   accessErrorResponse,
@@ -29,16 +25,13 @@ import {
   crossSiteRejection,
   reauthorizeClient,
   PUBLIC_ROUTE_IDENTITY,
-  authenticateRun,
   refusalResponse,
   RequestReauthorizer,
 } from "@commissary/auth";
-import { runPrincipal } from "@commissary/agents/api";
 import { limitClientRate } from "@commissary/billing/api";
 import { mcpChallenge, withMcpAccessToken } from "@commissary/tools/api";
 import {
   CurrentOrg,
-  isAgentWebhookPath,
   isClientApiPath,
   isMcpPath,
   isSystemOnePath,
@@ -46,20 +39,16 @@ import {
   TOOLKIT_OAUTH_CLIENT_PATH,
 } from "@commissary/core";
 import { CorsLayer } from "./cors.ts";
-import { PresentedRun } from "./presented-run.ts";
 
 /**
  * Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not),
- * Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which an authorization server fetches without a key,
- * and hosted agents' webhook triggers (#231), whose route checks the trigger's secret and the org's ceiling itself.
+ * and Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which an authorization server fetches without a
+ * key.
  */
 const isPublic = (requestUrl: string): boolean => {
   const path = normalizedPath(requestUrl);
 
-  return (
-    path !== undefined &&
-    (!isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH || isAgentWebhookPath(path))
-  );
+  return path !== undefined && (!isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH);
 };
 
 /** Global middleware: authenticates every client API request (see the module comment). */
@@ -71,31 +60,6 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
     return (app) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const presented = yield* Effect.serviceOption(PresentedRun);
-
-        // A hosted agent's run, presented by the run gateway alone (`run-gateway.ts`, never by a request): its
-        // principal comes from the org's ControlPlane, and it carries no credential to check.
-        if (Option.isSome(presented)) {
-          const { org, run } = presented.value;
-
-          const authenticated = yield* Effect.result(
-            runPrincipal(org, run).pipe(
-              Effect.flatMap((principal) => authenticateRun(principal, org)),
-              Effect.tap(() => limitClientRate(org)),
-            ),
-          );
-
-          if (Result.isFailure(authenticated))
-            return yield* accessErrorResponse(
-              authenticated.failure,
-              isSystemOnePath(request.originalUrl) ? "systemone" : "flat",
-            );
-
-          return yield* app.pipe(
-            Effect.provideService(AccessPrincipal, authenticated.success),
-            Effect.provideService(CurrentOrg, org),
-          );
-        }
 
         if (isPublic(request.originalUrl))
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);

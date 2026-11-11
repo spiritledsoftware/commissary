@@ -17,13 +17,13 @@ import {
 import { issuableRoles, issuerText } from "../src/lib/management-keys.ts";
 import { callerOf } from "../src/lib/role.ts";
 
-const SELF_HOSTED = { hosted: false, browser: false, computer: false, agents: false };
+const SELF_HOSTED = { hosted: false, browser: false, computer: false };
 
-const HOSTED = { hosted: true, browser: false, computer: false, agents: false };
+const HOSTED = { hosted: true, browser: false, computer: false };
 
 describe("the computer (ADR 0043)", () => {
   it("is available only where the deployment has one: the sandbox toolkit is there either way", () => {
-    const deployment = { hosted: false, browser: false, agents: false };
+    const deployment = { hosted: false, browser: false };
 
     expect(hasComputer({ deployment: { ...deployment, computer: true } })).toBe(true);
     expect(hasComputer({ deployment: { ...deployment, computer: false } })).toBe(false);
@@ -32,7 +32,7 @@ describe("the computer (ADR 0043)", () => {
 
 describe("the browser (ADR 0043)", () => {
   it("is on the panel only where the deployment has the browser toolkit", () => {
-    const deployment = { hosted: false, computer: false, agents: false };
+    const deployment = { hosted: false, computer: false };
 
     expect(hasBrowser({ deployment: { ...deployment, browser: true } })).toBe(true);
     expect(hasBrowser({ deployment: { ...deployment, browser: false } })).toBe(false);

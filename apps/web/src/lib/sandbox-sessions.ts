@@ -42,7 +42,7 @@ export const sessionComputerText = (computer: SandboxSessionComputer | undefined
 export interface SandboxSessionRow {
   readonly session: SandboxSessionView;
   readonly owner: string;
-  /** How it was opened: "Signed in", "With an API key", "By an agent run". */
+  /** How it was opened: "Signed in", "With an API key". */
   readonly how: string;
   /** When it opened: "12 min ago". */
   readonly opened: string;
@@ -84,7 +84,7 @@ export const TRUNCATED_TEXT = `Showing the oldest ${SANDBOX_SESSIONS_LISTED} ses
 /** The section's sentence when nothing is open. */
 export const emptySessionsText = (admin: boolean): string =>
   admin
-    ? "No sandbox session is open in the org. A client opens one with sandbox_open, and a hosted agent's run with a sandbox opens its own; one closes with sandbox_close, or after a day without a call."
+    ? "No sandbox session is open in the org. A client opens one with sandbox_open; it closes with sandbox_close, or after a day without a call."
     : "You have no open sandbox session. A client opens one with sandbox_open; it closes with sandbox_close, or after a day without a call.";
 
 /** The confirmation before ending a session: whose it is, and what follows. */

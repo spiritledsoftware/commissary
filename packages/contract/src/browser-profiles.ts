@@ -170,8 +170,7 @@ export class BrowserProfilesGroup extends HttpApiGroup.make("browserProfiles").a
 
 /**
  * Profile grants (`/v9/management/grants/profiles`, ADR 0039): which shared browser profiles a member, a team or everyone
- * may use, beside the model grants (`/grants`), the tool grants (`/grants/tools`) and the agent grants
- * (`/grants/agents`). Org admins only; there is no default grant. Using a profile also takes the browser toolkit's
+ * may use, beside the model grants (`/grants`) and the tool grants (`/grants/tools`). Org admins only; there is no default grant. Using a profile also takes the browser toolkit's
  * session tools, which tool grants give.
  */
 export class BrowserProfileGrantsGroup extends HttpApiGroup.make("browserProfileGrants").add(

@@ -30,7 +30,7 @@ export type SandboxSessionComputer = typeof SandboxSessionComputer.Type;
 export const SandboxSessionView = Schema.Struct({
   id: Schema.String,
   opened_at: Schema.String,
-  /** Its member; `null` for a shared agent's run, which opened it as the agent. */
+  /** Its member; `null` when it has none. */
   member: Schema.NullOr(BrowserSessionMember),
   opened_by: BrowserSessionOpener,
   /** The caller's own session: they are its member. */

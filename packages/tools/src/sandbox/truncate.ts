@@ -1,6 +1,5 @@
 /**
- * How the sandbox tools cut their output (#222): as pi's coding tools do, so a hosted agent's bash and file tools read
- * the same (#230). Two limits, whichever is hit first: 2000 lines or 50 KB. A file read keeps its start, whole lines
+ * How the sandbox tools cut their output (#222): as pi's coding tools do. Two limits, whichever is hit first: 2000 lines or 50 KB. A file read keeps its start, whole lines
  * only; a command's output keeps its end, where errors and results are. The cut is always stated.
  *
  * Copies pi's `truncateHead` and `truncateTail` (badlogic/pi-mono, `packages/coding-agent/src/core/tools/truncate.ts`).

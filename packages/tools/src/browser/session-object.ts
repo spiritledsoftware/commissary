@@ -5,7 +5,7 @@
  * `browser_open` answers the session's id and the other tools take it.
  *
  * **Ownership.** A session belongs to the org, member and principal that opened it ({@link SessionCaller}: an API key's
- * principal is the key, an Access user's the person, a hosted agent's run the run; its record names the run, #228). The
+ * principal is the key, an Access user's the person). The
  * object is named by its org and id, so another org's call with the same id reaches another, empty object, and it
  * keeps its owner: a call of anyone else answers "unknown session", exactly as an id that was never opened.
  *
@@ -46,7 +46,6 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { Clock, Duration, Effect, Option, Schema } from "effect";
-import type { UsageRun } from "@commissary/auth";
 import type { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import type { ToolsControlPlane } from "../env.ts";
@@ -120,21 +119,12 @@ export interface SessionCaller {
 /**
  * What a Tools part from #214 on passes with each call (absent: a part from before, whose calls meter nothing): the
  * toolkit's price per browser hour from the call on (a close costs its last stretch at the price in force before it),
- * and, opening, the toolkit the session opens from and the agent run opening it (#228), which its record names.
+ * and, opening, the toolkit the session opens from, which its record names.
  */
 export interface SessionMetering {
   readonly hourPriceMicros: number;
   readonly toolkitId?: string | undefined;
-  readonly run?: UsageRun | undefined;
 }
-
-/** An agent run as a session keeps it for its usage record (#228, `UsageRun`). */
-const StoredRun = Schema.Struct({
-  agentId: Schema.String,
-  runId: Schema.String,
-  starter: Schema.optionalKey(Schema.String),
-  private: Schema.optionalKey(Schema.Boolean),
-});
 
 /**
  * A metered call's answer: its tool result, with the session's browser time since the call before and its cost, when
@@ -252,8 +242,6 @@ const StoredSession = Schema.Struct({
   // Browser time (#214); a session opened before kept none: the browser toolkit's, metered from its opening, free so far.
   /** The toolkit it was opened from. */
   toolkit: Schema.optionalKey(Schema.String),
-  /** The agent run that opened it (#228), which its record names; absent: none (or opened before #228). */
-  run: Schema.optionalKey(StoredRun),
   /** Up to when its browser time was answered or charged. */
   meteredAt: Schema.optionalKey(Schema.Number),
   /** What its browser time cost up to `meteredAt`, in micro-USD. */
@@ -637,7 +625,6 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
           browserMs: Math.max(0, closed.at - session.openedAt),
           costMicros: session.costMicros ?? 0,
           profileId: session.profile,
-          run: session.run,
         }),
       // Its org's Tools part charges the cost and forgets the session.
       report: (owed) =>
@@ -728,7 +715,6 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       closed: null,
       id,
       ...(metering?.toolkitId === undefined ? {} : { toolkit: metering.toolkitId }),
-      ...(metering?.run === undefined ? {} : { run: metering.run }),
       meteredAt: asked,
       costMicros: 0,
       hourPriceMicros: metering?.hourPriceMicros ?? 0,
@@ -1179,9 +1165,8 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   /**
    * A Live View link of the session's current tab (#216, ADR 0044), which starts a connection only within
    * {@link LIVE_VIEW_EXPIRES_MS}: a bearer link, minted for the panel of whom the Tools part lets watch (the session's
-   * member, or the watchers of the agent run that opened it, #232) and never stored or logged. The watcher may type in
-   * it as in a handoff, so what they type is marked from now on (`watched`), and the session's next call masks the
-   * fields they filled before it acts. Watching is a use of the session: its idle minutes start again.
+   * member) and never stored or logged. The watcher may type in it as in a handoff, so what they type is marked from
+   * now on (`watched`), and the session's next call masks the fields they filled before it acts. Watching is a use of the session: its idle minutes start again.
    */
   liveView(org: string): Promise<LiveViewAnswer> {
     return this.#serial(async (): Promise<LiveViewAnswer> => {

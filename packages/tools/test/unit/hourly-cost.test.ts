@@ -43,7 +43,7 @@ describe("a price per hour", () => {
       browser: "browser_hour_price_micros",
       sandbox: "computer_hour_price_micros",
     });
-    expect(["browser", "sandbox", "mcp", "agents"].filter(isHourPriced)).toEqual([
+    expect(["browser", "sandbox", "mcp", "openapi"].filter(isHourPriced)).toEqual([
       "browser",
       "sandbox",
     ]);

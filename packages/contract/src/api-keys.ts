@@ -12,23 +12,14 @@ import { managementErrors } from "./errors.ts";
 import { ToolSelection } from "./grants.ts";
 
 /**
- * The agents toolkit's id (ADR 0040, #229): the built-in toolkit through which clients and runs use hosted agents. A
- * tool scope's entry for it may name agents ({@link ToolScopeEntry}).
- */
-export const AGENTS_TOOLKIT = "agents";
-
-/**
- * One toolkit of a tool scope (#200, ADR 0036, GLOSSARY "Tool scope"): an API key's or a hosted agent's (#226). It
+ * One toolkit of a tool scope (#200, ADR 0036, GLOSSARY "Tool scope"): an API key's. It
  * names the toolkit (an org toolkit or a private one of the key's member, by id) and which of its tools: all of them,
  * its read tools (by tool class), or named tools by stable id (`<toolkit id>:<upstream name>`, each of this toolkit),
- * as a tool grant selects them. The entry of the agents toolkit ({@link AGENTS_TOOLKIT}) may also name `agents`, by id
- * (#226, ADR 0040). The scope then lets its holder run only those agents. Without `agents` it allows every agent within
- * reach. No other entry names agents.
+ * as a tool grant selects them.
  */
 export const ToolScopeEntry = Schema.Struct({
   toolkit: Schema.String,
   tools: ToolSelection,
-  agents: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export type ToolScopeEntry = typeof ToolScopeEntry.Type;
@@ -41,13 +32,6 @@ export type ToolScopeEntry = typeof ToolScopeEntry.Type;
 export const ToolScope = Schema.Array(ToolScopeEntry);
 
 export type ToolScope = typeof ToolScope.Type;
-
-/**
- * The agents `scope` lets its holder run (#226, #229): the ids its entry for the agents toolkit names, or `undefined`
- * when it names none (no scope, or an entry without `agents`): every agent within reach.
- */
-export const agentsInScope = (scope: ToolScope | undefined): ReadonlyArray<string> | undefined =>
-  scope?.find((entry) => entry.toolkit === AGENTS_TOOLKIT)?.agents;
 
 /** A key as lists show it: never the key itself. Times are ISO. */
 export const ApiKeyView = Schema.Struct({

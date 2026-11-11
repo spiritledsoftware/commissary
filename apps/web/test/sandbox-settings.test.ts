@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { ToolkitView } from "@commissary/contract/tools";
-import { sandboxCeilingText } from "../src/lib/agent-form.ts";
 import {
   computerFact,
   draftOfToolkit,
@@ -8,6 +7,7 @@ import {
   networkFact,
   NO_COMPUTER_REASON,
   OPTIONAL_PIECES_URL,
+  sandboxCeilingText,
   settingsBody,
   settingsChanged,
   settingsProblem,
@@ -146,7 +146,7 @@ describe("the sandbox toolkit's settings form (#225)", () => {
     });
   });
 
-  it("states the ceiling in words, as the agent editor does", () => {
+  it("states the ceiling in words", () => {
     expect(sandboxCeilingText({ network: { kind: "open" }, computer: true })).toBe(
       "the internet and the computer",
     );

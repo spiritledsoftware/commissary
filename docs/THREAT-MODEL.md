@@ -8,27 +8,27 @@ This is a living document: a change to what Commissary holds, who it trusts or w
 
 From most to least sensitive:
 
-1. **What grants access to outside services**: provider keys and logins, toolkit sign-ins (OAuth tokens, API keys, every credential type of ADR 0036), browser profiles with live logins (ADR 0039), the SSO identity provider's secret, webhook trigger secrets.
+1. **What grants access to outside services**: provider keys and logins, toolkit sign-ins (OAuth tokens, API keys, every credential type of ADR 0036), browser profiles with live logins (ADR 0039), the SSO identity provider's secret.
 2. **The keys to Commissary itself**: API keys, management keys, Access service tokens, Commissary Cloud's sign-in sessions, `SECRETS_KEY` and `AUTH_INDEX_KEY`.
-3. **An org's content**: agent transcripts and sandbox files (kept 30 days by default, ADR 0040), pending approvals' arguments (at most an hour, ADR 0038), what a browser session shows.
+3. **An org's content**: sandbox files, pending approvals' arguments (at most an hour, ADR 0038), what a browser session shows.
 4. **An org's records and configuration**: usage records (no prompts, arguments or results, ADR 0027 and ADR 0038), grants, spend limits, members and teams.
 
 ## Who is trusted
 
-| Level                       | Who                                                                                                                                                                                                    | What follows                                                                                                                         |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Fully trusted               | Cloudflare; the operator (Spirit-Led Software on Commissary Cloud, whoever runs a self-hosted Commissary), its secrets and its platform admins                                                         | Not defended against. The operator can unseal every org's secrets (see "Accepted risks").                                            |
-| Trusted within their org    | Org owners and admins                                                                                                                                                                                  | Not defended against inside their org: they already see and change its credentials, grants and rules.                                |
-| Trusted as far as grants go | Members, and the clients and hosted agents acting for them                                                                                                                                             | Assumed to try to reach beyond their grants, tool scopes and spend limits. Every gate holds against them.                            |
-| Untrusted                   | Other orgs; anyone without a key; every piece of content (tool results, web pages, MCP servers' tool descriptions, files in a sandbox, model output, webhook bodies); third-party MCP servers and APIs | Other orgs and strangers get nothing. Content is data that may carry instructions. Third parties are trusted with what is sent them. |
+| Level                       | Who                                                                                                                                                                                    | What follows                                                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Fully trusted               | Cloudflare; the operator (Spirit-Led Software on Commissary Cloud, whoever runs a self-hosted Commissary), its secrets and its platform admins                                         | Not defended against. The operator can unseal every org's secrets (see "Accepted risks").                                            |
+| Trusted within their org    | Org owners and admins                                                                                                                                                                  | Not defended against inside their org: they already see and change its credentials, grants and rules.                                |
+| Trusted as far as grants go | Members, and the clients acting for them                                                                                                                                               | Assumed to try to reach beyond their grants, tool scopes and spend limits. Every gate holds against them.                            |
+| Untrusted                   | Other orgs; anyone without a key; every piece of content (tool results, web pages, MCP servers' tool descriptions, files in a sandbox, model output); third-party MCP servers and APIs | Other orgs and strangers get nothing. Content is data that may carry instructions. Third parties are trusted with what is sent them. |
 
 ## Threats and mitigations
 
 ### A leak of sealed secrets or the key that seals them
 
-- What grants access is **sealed** (AES-256-GCM, `enc:v1:`, bound to its table and row): credentials, toolkit sign-ins, browser profiles, private key groups, config entries, the SSO secret, webhook trigger secrets. A sealed value copied to another row or org does not open.
+- What grants access is **sealed** (AES-256-GCM, `enc:v1:`, bound to its table and row): credentials, toolkit sign-ins, browser profiles, private key groups, config entries, the SSO secret. A sealed value copied to another row or org does not open.
 - Each org has its own data key, stored only wrapped by a key derived from the deployment's `SECRETS_KEY`, which only the state Worker holds. `SECRETS_KEY` rotates by re-wrapping (`docs/DEPLOY.md`).
-- Content (transcripts, sandbox files) is **not** sealed: only the Worker holding the key ever reads it, and Cloudflare encrypts storage at rest, so sealing it would add nothing against a reader who has the Worker (ADR 0044). Pending approvals' arguments are the exception: they are sealed with the org's data key for their row, as #201 decided (ADR 0044 amended, `tools/approvals/store.ts`), and deleted with the decision or with the approval an hour after the call.
+- Content (sandbox files) is **not** sealed: only the Worker holding the key ever reads it, and Cloudflare encrypts storage at rest, so sealing it would add nothing against a reader who has the Worker (ADR 0044). Pending approvals' arguments are the exception: they are sealed with the org's data key for their row, as #201 decided (ADR 0044 amended, `tools/approvals/store.ts`), and deleted with the decision or with the approval an hour after the call.
 - API keys and management keys are stored as unsalted SHA-256 hashes, compared in constant time; they are random secrets, so a salt adds nothing.
 - Secrets never reach the browser (ADR 0013), the logs (`redactHeaders`, `packages/core/src/logging.ts`), a sandbox (ADR 0041) or the model (handoff, ADR 0039).
 
@@ -36,7 +36,7 @@ From most to least sensitive:
 
 - Each org's state lives in its own ControlPlane Durable Object, the only writer of it (ADR 0021). A key names its org, and the Platform registry confirms the org before a Durable Object is addressed.
 - Shared stores are partitioned: D1 rows by `org_id`, KV by an org-scoped name (`OrgKv`), Worker caches by org and name (`OrgCache`), SessionState by org and caller. KV and cache access goes through an org-scoped helper, so an unscoped KV name is a type or lint error (`boundaries/org-scoped-kv`), and a cross-org test suite covers every store. The `global` org's unprefixed KV names are the one documented exception.
-- In Tools and Agents nothing crosses an org or an owner: a sandbox session, its files and its computer belong to one member and key or one agent run; a browser session belongs to one member and key or one run, and another owner's id answers as unknown; a browser profile opens only in its own org, a private one only for its member.
+- In Tools nothing crosses an org or an owner: a sandbox session, its files and its computer belong to one member and key; a browser session belongs to one member and key, and another owner's id answers as unknown; a browser profile opens only in its own org, a private one only for its member.
 - Containers run in their own microVM; Dynamic Workers and Browser Run sessions are isolated by Cloudflare. Commissary relies on those boundaries and adds the ownership checks above.
 
 ### Prompt injection
@@ -51,7 +51,7 @@ Commissary assumes any content an agent or client reads can steer it, and does n
 
 ### Exfiltration
 
-- **Through a chain of tools.** An agent or client that can read private data, reads untrusted content, and can call a tool that reaches outside can be made to leak the data. v1 does not track taint or force approvals: the combination is the admin's choice. The panel warns about a hosted agent with a webhook or schedule trigger (no person watching when it starts) that can call write tools without an approval rule.
+- **Through a chain of tools.** An agent or client that can read private data, reads untrusted content, and can call a tool that reaches outside can be made to leak the data. v1 does not track taint or force approvals: the combination is the admin's choice.
 - **Through the sandbox.** Both backends' traffic goes through one filtering Worker entrypoint: the Dynamic Worker's `globalOutbound` and the computer's outbound handler, with `enableInternet` always set explicitly. It applies the sandbox's network setting (none, an allowlist of hosts, or the open internet) and the outbound guard. The Dynamic Worker gets no bindings beyond its files.
 - **Through the browser.** The browser toolkit reaches the open web: a navigation can carry data in its URL. Accepted for v1, as with chains of tools.
 
@@ -65,12 +65,6 @@ Every URL an org or member supplies passes one **outbound guard** (ADR 0044): to
 - follows redirects itself and checks each hop.
 
 Every Worker sets the `global_fetch_strictly_public` compatibility flag, so a fetch to a hostname in Commissary's own zone goes through the internet, not straight to its origin. The guard does not resolve names: it relies on Cloudflare's network not routing to private addresses, which a test of a deployed Worker confirms.
-
-### Agents acting with more than their starter's reach
-
-- A private hosted agent acts as its member; a shared one acts as itself, with exactly the reach its definition names and a spend limit of its own (ADR 0040). A member granted a shared agent can make it act beyond their own reach: the admin's deliberate choice. Each run records who started it.
-- Child runs are at most three deep, and a call to an agent already in the chain is refused.
-- Webhook triggers need their secret (a bearer or an HMAC-SHA256 signature) on an unguessable URL.
 
 ### Clients signing in to the MCP endpoint
 
@@ -90,13 +84,12 @@ This masking keeps what a person types away from the model. It does not protect 
 ### Running up costs and exhausting resources
 
 - Cloudflare absorbs volumetric attacks.
-- Spend limits bound members, keys and shared agents. On Commissary Cloud, plan limits, the billing cap and a per-org request-rate ceiling bound orgs; the ceiling covers the client API, the MCP endpoint and webhook triggers. The management API has no ceiling: it serves people and management keys.
-- A hosted agent's webhook trigger (#231) is a public URL that starts runs. A delivery proves it holds the trigger's secret (sealed, checked in the org's ControlPlane): as a bearer, or as an HMAC-SHA256 signature of its delivery id, timestamp and body (Standard Webhooks' scheme), refused more than 5 minutes from that timestamp, so a captured signed delivery cannot be replayed later, and within the 5 minutes a replay finds the run its signed id started or proves nothing. A malformed address or an org that does not exist is refused before the body is read or a ControlPlane is reached; on Commissary Cloud every delivery to an existing org counts against a webhook bucket of the org's (the size of its ceiling) before the proof is checked, so a flood of unproven deliveries cannot load the org's ControlPlane, nor use up the ceiling its API keys count against; proven deliveries count against that ceiling.
+- Spend limits bound members, teams, shared credentials and keys. On Commissary Cloud, plan limits, the billing cap and a per-org request-rate ceiling bound orgs; the ceiling covers the client API, and the MCP endpoint. The management API has no ceiling: it serves people and management keys.
 - A self-hosted Commissary has no default caps (ADR 0041): a member can run up the operator's Cloudflare bill within their grants.
 
 ### Supply chain
 
-- `@earendil-works/pi-durable` (experimental) and `@cloudflare/computer` (preview) are pinned behind adapters (ADR 0040, ADR 0041). Dependabot watches dependencies.
+- `@cloudflare/computer` (preview) is pinned behind an adapter (ADR 0041). Dependabot watches dependencies.
 - MCP servers' tool descriptions and the toolkit catalog are untrusted content. The catalog, and a live lookup of a domain it lacks, only say where a source is: nothing acts until someone adds a toolkit from it (an org admin an org toolkit, a member a private one), and its source passes the outbound guard when it is saved, as a typed URL does. A bad entry reaches only those who add it, with the credential they connect.
 
 ## Commissary Cloud only
@@ -115,7 +108,6 @@ This masking keeps what a person types away from the model. It does not protect 
 - Data keys never rotate; only `SECRETS_KEY` does, by re-wrapping. Losing `SECRETS_KEY` loses every secret, so self-hosters back it up (`docs/DEPLOY.md`).
 - A revoked key works for up to 30 seconds (ADR 0022).
 - Prompt injection can steer an agent or a client within its reach; exfiltration through a chain of tools or a browser navigation is the admin's choice to allow.
-- A member granted a shared agent can act beyond their own reach through it.
 - A self-hosted Commissary has no rate limits or caps.
 - On Commissary Cloud the request-rate ceiling fails open, and Turnstile alone guards sign-up.
 - On a self-hosted Commissary, an MCP client signed in through Access has its member's whole reach, narrowed only by `?toolkits=`, and is cut off by revoking the person's Access session (ADR 0045).

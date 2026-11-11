@@ -1,5 +1,5 @@
 // My tools (src/lib/my-tools.ts, #209, ADR 0038): the tools a member reaches, by toolkit, and why: their private
-// credential, which grants give them, and the agents toolkit.
+// credential, which grants give them.
 import { describe, expect, it } from "vitest";
 import type { UsableToolkit, UsableVia } from "@commissary/contract/tools";
 import {
@@ -53,10 +53,7 @@ describe("why a toolkit reaches a member", () => {
     expect(reasonsOf({ private: true }).map((reason) => reason.kind)).toEqual(["private"]);
   });
 
-  it("names the agents toolkit's own reason, and says nothing of an answer that has none", () => {
-    expect(reasonsOf({ agents: true }).map((reason) => reason.label)).toEqual([
-      "The agents you may run",
-    ]);
+  it("says nothing of an answer that has no reasons", () => {
     expect(reasonsOf(undefined)).toEqual([]);
     expect(reasonsOf({})).toEqual([]);
   });

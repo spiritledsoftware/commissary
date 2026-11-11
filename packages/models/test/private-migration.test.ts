@@ -115,14 +115,13 @@ describe("OAuth logins stored before ownership", () => {
 
 describe("the org setting for private credentials", () => {
   const before = async (org: OrgId) => {
-    // The membership row as it was before the setting: no column (nor the later private toolkits and agents ones).
+    // The membership row as it was before the setting: no column (nor the later private toolkits one).
     const stub = controlPlane(org);
 
     await runInDurableObject(stub, async (instance, state) => {
       await instance.started;
       state.storage.sql.exec("ALTER TABLE membership DROP COLUMN private_credentials");
       state.storage.sql.exec("ALTER TABLE membership DROP COLUMN private_toolkits");
-      state.storage.sql.exec("ALTER TABLE membership DROP COLUMN private_agents");
     });
 
     await restart(stub);
@@ -137,8 +136,9 @@ describe("the org setting for private credentials", () => {
       autoJoin: true,
       privateCredentials: true,
       privateToolkits: true,
-      privateAgents: true,
       accessClients: true,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
 
     await restart(stub);
@@ -147,8 +147,9 @@ describe("the org setting for private credentials", () => {
       autoJoin: true,
       privateCredentials: true,
       privateToolkits: true,
-      privateAgents: true,
       accessClients: true,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
   });
 
@@ -159,8 +160,9 @@ describe("the org setting for private credentials", () => {
       autoJoin: false,
       privateCredentials: false,
       privateToolkits: false,
-      privateAgents: false,
       accessClients: false,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
 
     await restart(stub);
@@ -169,8 +171,9 @@ describe("the org setting for private credentials", () => {
       autoJoin: false,
       privateCredentials: false,
       privateToolkits: false,
-      privateAgents: false,
       accessClients: false,
+      // The retired setting, still answered for an app Worker from before ADR 0048 (#449).
+      privateAgents: false,
     });
   });
 });

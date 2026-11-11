@@ -1,8 +1,7 @@
 /**
  * The sandbox toolkit's tools (ADR 0041, #222), as Commissary lists and calls them whatever sandbox provider is behind
- * the toolkit (`provider.ts`). Their shape follows pi's coding tools (bash, read, write, edit, ls), so a hosted agent's
- * tools map onto them one to one (#230): `sandbox_open` answers a session id, which the others take, since MCP calls
- * are stateless; `sandbox_close` ends it. Reading and listing read; the rest write (ADR 0038). Output is cut as pi cuts
+ * the toolkit (`provider.ts`). Their shape follows pi's coding tools (bash, read, write, edit, ls):
+ * `sandbox_open` answers a session id, which the others take, since MCP calls are stateless; `sandbox_close` ends it. Reading and listing read; the rest write (ADR 0038). Output is cut as pi cuts
  * it (`truncate.ts`), and the cut is stated.
  *
  * A call decodes the client's arguments and asks the provider as the caller's principal in the org ({@link
@@ -11,9 +10,7 @@
  * whoever's it is.
  */
 import { Effect, Result, Schema } from "effect";
-import { isRunPrincipalId } from "@commissary/auth";
 import type { OutboundPolicy } from "@commissary/core";
-import { SANDBOX_MAX_TIMEOUT_MS } from "@commissary/contract/sandbox-env";
 import { SandboxNetwork } from "@commissary/contract/tools";
 import {
   describeNetwork,
@@ -58,11 +55,6 @@ export interface SandboxSessionLog {
 export interface SandboxCall {
   readonly owner: SandboxOwner;
   readonly sessions: SandboxSessionLog;
-  /**
-   * The call opens an agent run's own session (#230, `RUN_SESSION_META`, a run principal's only): it lasts as long as
-   * the run, which purges it when it is deleted. Any other session ends after a day without a call.
-   */
-  readonly runSession?: boolean | undefined;
   /** The org's ceiling, the sandbox toolkit's: the widest network a session may ask for, and whether the computer. */
   readonly ceiling: SandboxAllowance;
   readonly policy: OutboundPolicy;
@@ -99,7 +91,7 @@ export const COMPUTER_STOPPED_BY_PLAN_NOTE =
   "The sandbox session's computer was stopped: the org's plan allows no more computer time (see the billing page in the panel). Commands just-bash can run still run; one that needs the computer is refused.";
 
 /** The note a call that stopped the computer carries, in the words of the limit that stopped it. */
-export const computerStoppedNote = (meter: ComputerMeter | undefined): string =>
+const computerStoppedNote = (meter: ComputerMeter | undefined): string =>
   meter?.limitReason === "plan" ? COMPUTER_STOPPED_BY_PLAN_NOTE : COMPUTER_STOPPED_NOTE;
 
 /** What `sandbox_open` adds when it opens a computer where the org's plan allows no computer time (#241). */
@@ -132,8 +124,8 @@ const answered = <A>(
     : { result, computerTime: metered.computerTime };
 };
 
-/** A command's longest run: ten minutes (`SANDBOX_MAX_TIMEOUT_MS`). Without a timeout it may run two. */
-export const MAX_TIMEOUT_SECONDS = SANDBOX_MAX_TIMEOUT_MS / 1000;
+/** A command's longest run: ten minutes. Without a timeout it may run two. */
+export const MAX_TIMEOUT_SECONDS = 600;
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
@@ -341,8 +333,8 @@ export const resolvePath = (input: string): string => {
 export const NO_COMPUTER =
   'This deployment has no computer, so a sandbox runs every command with just-bash. Its operator can add one (docs/DEPLOY.md, "Optional pieces").';
 
-/** What a call naming no session of the caller's answers (#230: a run's gated call of another's session too). */
-export const unknownSessionResult = (sessionId: string): Schema.JsonObject =>
+/** What a call naming no session of the caller's answers. */
+const unknownSessionResult = (sessionId: string): Schema.JsonObject =>
   text(`Unknown sandbox session ${sessionId}. Open one with sandbox_open.`, {
     isError: true,
     structuredContent: { reason: "unknown_session" },
@@ -350,7 +342,7 @@ export const unknownSessionResult = (sessionId: string): Schema.JsonObject =>
 
 /**
  * A provider failure as the model reads it. A session that is gone also says so in its structured content (`reason`),
- * so an agent run, which opens its session itself (#230), opens another.
+ * so a client that opens its session itself opens another.
  */
 const failure = (error: SandboxError, sessionId: string | undefined): Schema.JsonObject => {
   switch (error.reason) {
@@ -568,9 +560,6 @@ const run = (
           ),
         });
 
-      // An agent run's own session lasts as long as the run (#230), which purges it when it is deleted.
-      const untilPurged = call.runSession === true && isRunPrincipalId(owner.principal);
-
       return provider
         .open(owner, {
           network,
@@ -579,7 +568,6 @@ const run = (
           now,
           meter,
           opener: call.opener,
-          untilPurged,
         })
         .pipe(
           Effect.tap((id) => Effect.sync(() => call.sessions.opened(id))),

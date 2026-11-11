@@ -14,7 +14,7 @@ Audience and job: the single operator (PRODUCT.md). Weekly: which account is clo
 what failed, what the last day cost. Occasionally: connect or re-authorize an account. Rarely: keys, model rules,
 settings.
 
-Scene: a desktop monitor in an ordinary lit room during the working day, between agent runs; a glance, not a session.
+Scene: a desktop monitor in an ordinary lit room during the working day, between other work; a glance, not a session.
 Light ground follows from it.
 
 Constraints: show only what applies on Workers; no secrets in the browser; version-checked writes; desktop first,

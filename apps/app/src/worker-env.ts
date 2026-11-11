@@ -1,11 +1,9 @@
 /**
  * The Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
- * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}, {@link ToolsEnv},
- * {@link AgentsEnv}; `core` reads none), and the
- * code that stays in the Worker reads {@link AppEnv}. The request context provides each of them from the invocation's
- * `env`, which satisfies every view (`WorkerBindings`), and the ports `@commissary/auth` reaches state and Better
- * Auth's sessions through (`AuthDirectory`, `SignInSessions`), with, where the Agents area is, the one through which
- * Tools' MCP endpoint makes the agents toolkit's calls (`AgentsToolkitPort`, #229).
+ * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}, {@link ToolsEnv};
+ * `core` reads none), and the code that stays in the Worker reads {@link AppEnv}. The request context provides each
+ * of them from the invocation's `env`, which satisfies every view (`WorkerBindings`), and the ports
+ * `@commissary/auth` reaches state and Better Auth's sessions through (`AuthDirectory`, `SignInSessions`).
  */
 import { Context } from "effect";
 import {
@@ -18,13 +16,7 @@ import {
 import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { signInSessions } from "./hosted/sign-in.ts";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
-import { AgentsToolkitPort, type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
-import {
-  type AgentsBindings,
-  AgentsEnv,
-  agentsPresent,
-  agentsToolkitCalls,
-} from "@commissary/agents/api";
+import { type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
 import {
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -85,7 +77,6 @@ export type WorkerBindings = AuthBindings &
   ModelsBindings &
   BillingBindings &
   ToolsBindings &
-  AgentsBindings &
   AppBindings;
 
 /** The services {@link envContext} provides. */
@@ -95,7 +86,6 @@ export type EnvServices =
   | ModelsEnv
   | BillingEnv
   | ToolsEnv
-  | AgentsEnv
   | AppEnv
   | AuthDirectory
   | SignInSessions;
@@ -103,26 +93,20 @@ export type EnvServices =
 /**
  * Each view of `env`, as its service, and auth's ports over it: the directory over the Durable Object stubs
  * (`@commissary/state`'s `stateAuthDirectory`) and Better Auth's sessions over the auth Worker's RPC
- * (`hosted/sign-in.ts`); and, where the Agents area is (`LOADER`), the agents toolkit's calls for the MCP endpoint a
- * self-hosted Commissary mounts here (#229).
+ * (`hosted/sign-in.ts`).
  */
 export const envContext = (env: WorkerBindings): Context.Context<EnvServices> => {
   const directory = stateAuthDirectory(env);
 
-  const services = Context.make(AuthConfig, env).pipe(
+  return Context.make(AuthConfig, env).pipe(
     Context.add(StateEnv, env),
     Context.add(ModelsEnv, env),
     Context.add(BillingEnv, env),
     Context.add(ToolsEnv, env),
-    Context.add(AgentsEnv, env),
     Context.add(AppEnv, env),
     Context.add(AuthDirectory, directory),
     Context.add(SignInSessions, signInSessions(env)),
   );
-
-  return agentsPresent(env)
-    ? services.pipe(Context.add(AgentsToolkitPort, agentsToolkitCalls(env)))
-    : services;
 };
 
 /**

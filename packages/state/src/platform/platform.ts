@@ -13,9 +13,9 @@ import type { IndexRepair, OrgIndex, SsoDomainRecord, Standing } from "@commissa
 import type { StateObjectEnv } from "../env.ts";
 import { type LeaseSource, LeaseStore, type TakeLease } from "../lease.ts";
 import {
+  type LegacyRetentionPeriods,
   type OrgInput,
   type OrgPatch,
-  type RetentionPeriods,
   type OrgRecord,
   type OrgRemoval,
   type OrgWriteResult,
@@ -65,10 +65,10 @@ export class Platform extends DurableObject<StateObjectEnv> {
   }
 
   /**
-   * Sets (or, with `null`, clears) the org's retention periods that `periods` names: its usage records' and its agent
-   * runs' (#228, ADR 0040), both or neither.
+   * Deprecated alias of `setUsageRetention`, kept one release for an app Worker from before ADR 0048 (it also sends
+   * `runDays`, which is ignored); removed with the tombstone classes in the follow-up.
    */
-  setRetention(id: string, periods: RetentionPeriods): OrgWriteResult {
+  setRetention(id: string, periods: LegacyRetentionPeriods): OrgWriteResult {
     return this.#store.setRetention(id, periods);
   }
 

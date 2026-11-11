@@ -1,5 +1,5 @@
 // The sandbox toolkit's settings on its page (#225, ADR 0041, ADR 0043, ADR 0044): the org's ceiling on what a sandbox
-// session, and a hosted agent's sandbox, may have: whether it may use the computer, and the widest network (none,
+// session may have: whether it may use the computer, and the widest network (none,
 // allowed hosts with the "package registries" preset, or the internet). Org admins set it; a session keeps what it
 // opened with. The price per computer hour is on the same page, in the prices (`tool-prices.ts`). The server checks
 // every rule again; this keeps the panel from offering what would be refused. Pure: no DOM, tested in
@@ -99,6 +99,18 @@ export const settingsBody = (
 
   return body;
 };
+
+const networkText = (network: NonNullable<ToolkitView["network"]>): string => {
+  if (network.kind === "none") return "no network";
+
+  if (network.kind === "open") return "the internet";
+
+  return network.hosts.length === 0 ? "only the package registries" : "only the hosts it lists";
+};
+
+/** What the toolkit allows, to follow "The org's ceiling: its sandboxes may have": "no network and no computer". */
+export const sandboxCeilingText = (toolkit: Pick<ToolkitView, "network" | "computer">): string =>
+  `${networkText(toolkit.network ?? { kind: "none" })} and ${toolkit.computer === true ? "the computer" : "no computer"}`;
 
 /** The network ceiling in a fact of the toolkit's page: "None", "The internet", "Only example.com and the package registries". */
 export const networkFact = (network: SandboxNetwork | undefined): string => {

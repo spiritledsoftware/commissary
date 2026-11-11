@@ -62,7 +62,6 @@ export const TOOLS_TABLES = [
   "toolkit_schemas",
   ...OAUTH_TABLES,
   "sandbox_sessions",
-  "sandbox_run_calls",
   "browser_crawls",
   "browser_sessions",
 ] as const;
@@ -448,6 +447,9 @@ export class ToolkitStore {
 
     if (sessionColumns.length > 0 && !sessionColumns.includes("member"))
       sql.exec("DROP TABLE toolkit_sessions");
+
+    // The tickets of hosted agents' gated sandbox calls, which Commissary no longer has (ADR 0048): dropped once.
+    sql.exec("DROP TABLE IF EXISTS sandbox_run_calls");
 
     for (const statement of SCHEMA) sql.exec(statement);
 

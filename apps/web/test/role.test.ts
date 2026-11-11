@@ -33,39 +33,6 @@ describe("the caller's role", () => {
   });
 });
 
-describe("the Agents section (#233)", () => {
-  it("is in the nav of every role only where the deployment has the Agents area", () => {
-    for (const role of ["member", "admin", "owner"] as const) {
-      expect(pagesFor(role).map((page) => page.to)).not.toContain("/agents");
-      expect(
-        pagesFor(role, { privateCredentials: false, hosted: false, agents: true }).map(
-          (page) => page.to,
-        ),
-      ).toContain("/agents");
-    }
-
-    const groups = pageGroupsFor("member", {
-      privateCredentials: false,
-      hosted: false,
-      agents: true,
-    });
-
-    // The agent runs (#234) beside the agents.
-    expect(groups.find((group) => group.id === "providers")?.pages.map((page) => page.to)).toEqual([
-      "/tools",
-      "/agents",
-      "/agent-runs",
-    ]);
-  });
-
-  it("opens the agent pages to a plain member, whose private agents they are", () => {
-    expect(pageAllowed("member", "/agents")).toBe(true);
-    expect(pageAllowed("member", "/agents/new")).toBe(true);
-    expect(pageAllowed("member", "/agents/ag_123")).toBe(true);
-    expect(pageAllowed("member", "/agentsmith")).toBe(false);
-  });
-});
-
 describe("pages", () => {
   it("opens only Usage, Tools, My models, My tools, API keys, Limits and Approvals to a plain member and everything to an admin", () => {
     expect(pagesFor("member").map((page) => page.to)).toEqual([
