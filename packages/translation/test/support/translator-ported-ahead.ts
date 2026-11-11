@@ -22,6 +22,8 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
  *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
+ * - `portedRequestEdit` (ticket C8, Go `45501610`): the Gemini requests of the cases that mix built-in tools with function
+ *   declarations (OpenAI Chat `google_search`; Responses `web_search`) carry `toolConfig.includeServerSideToolInvocations`.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -359,7 +361,23 @@ const inlinedLocRef: GoldenEdit = setPath(
   { type: "object", properties: { lat: { type: "number" } } },
 );
 
+/** Mixed built-in and function tools now declare `toolConfig.includeServerSideToolInvocations` (C8, `45501610`). */
+const serverSideToolInvocations: GoldenEdit = (golden) => {
+  const toolConfig = golden["toolConfig"];
+
+  if (isJsonObject(toolConfig)) toolConfig["includeServerSideToolInvocations"] = true;
+  else golden["toolConfig"] = { includeServerSideToolInvocations: true };
+};
+
 const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
+  ...[
+    "openai->gemini request: multimodal user turn, tool round trip, reasoning, structured output, modalities, builtin tools",
+    "openai->gemini stream: reasoning, text, tool calls, image output and final usage",
+    "openai->gemini non-stream: reasoning, text, tool call, image and a second candidate",
+    "openai-response->gemini request: tools and tool_choice absent",
+    'openai-response->gemini request: tools and tool_choice "auto"',
+    'openai-response->gemini request: tools and tool_choice "required"',
+  ].map((key): readonly [string, GoldenEdit] => [key, serverSideToolInvocations]),
   ...[
     "request: system, multimodal user turn, tool round trip, schema cleaning, strict tool choice, thinking budget",
     "stream: thinking with signature, text, two tool calls, usage and finish",

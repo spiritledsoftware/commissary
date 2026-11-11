@@ -826,6 +826,7 @@ export const convertOpenAIResponsesRequestToGemini = (
 
   const { declarations, forwardMap } = buildGeminiFunctionDeclarations(root);
   const toolBlocks: Json[] = [];
+  let hasGoogleSearch = false;
 
   if (
     hasResponsesWebSearchTool(root) &&
@@ -837,6 +838,7 @@ export const convertOpenAIResponsesRequestToGemini = (
 
     if (allowedDomains.length > 0) googleSearch["includedDomains"] = allowedDomains;
     toolBlocks.push({ googleSearch });
+    hasGoogleSearch = true;
   }
 
   if (declarations.length > 0) toolBlocks.push({ functionDeclarations: declarations });
@@ -853,6 +855,11 @@ export const convertOpenAIResponsesRequestToGemini = (
       if (toolConfig !== undefined) set(out, "toolConfig.functionCallingConfig", toolConfig);
     }
   }
+
+  // Gemini rejects built-in googleSearch combined with functionDeclarations unless server-side tool invocations are
+  // declared (CLIProxyAPI 45501610).
+  if (hasGoogleSearch && declarations.length > 0)
+    set(out, "toolConfig.includeServerSideToolInvocations", true);
 
   const systemParts: Json[] = [];
   const instructions = get(root, "instructions");
