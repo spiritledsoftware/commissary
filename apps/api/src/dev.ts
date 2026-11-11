@@ -9,9 +9,6 @@
 import { type DevBridgedEnv, devBridgedEnv } from "@commissary/state/dev-state-bridge";
 import { api } from "./index.ts";
 
-// The retired tombstone classes, which the Worker still defines (src/retired-objects.ts).
-export { AgentRun, AgentSchedule } from "./retired-objects.ts";
-
 export default {
   fetch: (request, env, ctx) => api.fetch(request, devBridgedEnv(env), ctx),
   scheduled: (controller, env, ctx) => api.scheduled(controller, devBridgedEnv(env), ctx),

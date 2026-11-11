@@ -22,7 +22,6 @@ describe("seed", () => {
         name: "Default",
         createdAt: expect.any(Number),
         usageRetentionDays: null,
-        runRetentionDays: null,
       },
     ]);
     expect((await platform.getOrgBySlug("default"))?.id).toBe(GLOBAL_ORG);
@@ -287,34 +286,6 @@ describe("usage retention", () => {
         .map((column) => column.name);
 
       expect(columns).not.toContain("run_retention_days");
-    });
-  });
-});
-
-describe("setRetention (kept for an app Worker from before ADR 0048)", () => {
-  it("applies the usage period, ignores the agent runs' one, and refuses what setUsageRetention refuses", async () => {
-    const platform = fresh();
-    const created = await platform.createOrg({ slug: "old-app", name: "Old app" }, NOW);
-
-    if (!created.ok) throw new Error(created.message);
-
-    expect(await platform.setRetention(created.org.id, { usageDays: 7, runDays: 3 })).toMatchObject(
-      {
-        ok: true,
-        org: { usageRetentionDays: 7, runRetentionDays: null },
-      },
-    );
-    expect(await platform.setRetention(created.org.id, { runDays: 3 })).toMatchObject({
-      ok: true,
-      org: { usageRetentionDays: 7 },
-    });
-    expect(await platform.setRetention(created.org.id, { usageDays: 0 })).toMatchObject({
-      ok: false,
-      error: "invalid_retention",
-    });
-    expect(await platform.setRetention("org-ghost", { usageDays: 7 })).toMatchObject({
-      ok: false,
-      error: "not_found",
     });
   });
 });

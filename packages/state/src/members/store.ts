@@ -65,12 +65,6 @@ export interface MembershipSettingsWire {
    */
   readonly privateToolkits: boolean;
   /**
-   * Always `false`: the setting for private agents is gone with hosted agents. Kept one release so an app Worker from
-   * before ADR 0048, which still maps it into `/membership`'s required `private_agents`, keeps answering; removed with
-   * the tombstone classes in the follow-up.
-   */
-  readonly privateAgents: false;
-  /**
    * The client API routes still accept an Access sign-in instead of an API key, for the clients of the time before API
    * keys (`api-keys/store.ts`). Only `global` uses it: an Access sign-in names no org.
    */

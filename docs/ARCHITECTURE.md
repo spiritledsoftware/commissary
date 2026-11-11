@@ -2499,12 +2499,10 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   task). The deployment variable `USAGE_RETENTION_DAYS` (default 30) is gone: the period belongs to the org and an org admin
   sets it (`PATCH /org`). `usage-statistics-enabled` and `redis-usage-queue-retention-seconds` are not used:
   persistence is always on when the `USAGE` binding exists.
-- **Unused columns** (ADR 0048; `agent_id`, `run_id` and `starter` of migrations `0011_usage_agent_runs.sql` and
-  `0013_usage_private_agent_runs.sql`, and the partial index `usage_records_org_run` of `0015_usage_run_index.sql`): hosted
-  agents are gone, so no record writes the columns and no read filters or returns them. They stay in the table for one
-  release, because D1 migrations apply before the Workers deploy and dropping them then would break the previous API
-  Worker's inserts mid-deploy; a follow-up migration drops them and the index (`docs/DEPLOY.md`, "Retired hosted
-  agents"). Existing rows keep their values, which nothing reads.
+- **Dropped columns** (ADR 0048, #449; migration `0016_usage_drop_agent_runs.sql`): the hosted agents' `agent_id`,
+  `run_id` and `starter` (migrations `0011` and `0013`) and the partial index `usage_records_org_run` (`0015`) are gone.
+  The release that removed hosted agents stopped writing and reading them, and the next one dropped them, because D1
+  migrations apply before the Workers deploy and an API Worker from before the removal still wrote them.
 - **Failures without a body** (difference from Go): a failed attempt's usage record keeps the upstream status, error type
   and error code, and nothing of the response body (the `fail_body` column stays `NULL`; migration `0007` clears the
   bodies stored before it). Go's queue keeps the failure body for the management API.
@@ -5426,24 +5424,16 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 ## Retired hosted agents (ADR 0048)
 
 Commissary used to have a third area, Agents: hosted agents that ran on Durable Objects, with their grants, watchers,
-triggers and an agents toolkit (ADR 0040). It was removed whole (ADR 0048): Commissary is a model and tool proxy. What
-the removal leaves behind is deliberate and temporary; each item has a follow-up release that removes it
-(`docs/DEPLOY.md`, "Retired hosted agents", has the deploy side):
+triggers and an agents toolkit (ADR 0040). It was removed whole (ADR 0048): Commissary is a model and tool proxy, in
+two releases (`docs/DEPLOY.md`, "Retired hosted agents", has the deploy side). The first removed the area and kept two
+tombstone Durable Object classes (`AgentRun`, `AgentSchedule`), three unused usage columns and a few state RPC shims for
+an older app Worker; the second (#449) removed them: the API Worker no longer defines the classes, so Alchemy deleted
+their namespaces with the old runs' data (`deleted_classes`), and migration `0016_usage_drop_agent_runs.sql` dropped the
+columns (_Usage accounting and observability_, "Dropped columns"). What stays:
 
-- **Two tombstone Durable Object classes** in the API Worker, `AgentRun` and `AgentSchedule`
-  (`apps/api/src/retired-objects.ts`), with their bindings in `alchemy.run.ts`. Cloudflare refuses to delete a class that
-  another Worker still binds, and the API Worker deploys before the app Worker, which bound them until this release.
-  A tombstone does nothing: if an alarm, fetch or RPC wakes it, it deletes its alarm and all its storage. A finished
-  run has no alarm and nothing wakes it, so its storage stays until the follow-up removes the classes and bindings and
-  Alchemy emits `deleted_classes`, which deletes the namespaces with their data. The follow-up is what deletes the old
-  runs' data (ADR 0027) and must not be skipped.
-- **Three usage columns** in D1, `agent_id`, `run_id` and `starter`, and the index `usage_records_org_run`, which nothing
-  reads or writes (_Usage accounting and observability_, "Unused columns"). D1 migrations apply before the Workers deploy,
-  so dropping them in the same release would break the previous API Worker's inserts. A follow-up migration drops them;
-  it must `DROP INDEX usage_records_org_run` first, as SQLite refuses to drop an indexed column.
-- **A one-time cleanup in the state Worker.** A ControlPlane drops the Agents tables on each start, a no-op after the first (`agents`,
+- **The state Worker's cleanup.** A ControlPlane drops the Agents tables on each start, a no-op after the first (`agents`,
   `agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers` and `agent_schedule_objects`; Tools' toolkit store
   drops `sandbox_run_calls`) and deletes the Spend limits and counters of kind `agent`; the Platform registry drops its
   `run_retention_days` column. An API key's tool scope naming the `agents` toolkit shows it as a missing toolkit
   (`tool_scope_missing`), like any removed toolkit, and a stored `private_agents` setting is ignored. A sandbox session
-  a run held is cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set.
+  a run held is cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set. Once none is left, #451 removes this purge.

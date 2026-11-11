@@ -1,5 +1,5 @@
 ---
-status: accepted, supersedes ADR-0040
+status: accepted, supersedes ADR-0040, amended below (the follow-up release, #449)
 ---
 
 # Commissary is a model and tool proxy
@@ -40,5 +40,9 @@ The removal ships in one release. Some of what it touches cannot be removed in t
 - Commissary has two areas, not three. ADR 0029's and ADR 0039's counts change (their amendments), and the glossary loses the Agents terms.
 - A member's client that called the agents toolkit, or a webhook that started a run, gets an unknown tool or a `404`. There is no migration for them.
 - Org deletion and member removal have no Agents step; a member's leaving still deletes their keys, private credentials and private toolkits.
-- The API Worker carries two empty classes, and the usage table three unused columns, until the follow-ups remove them (`docs/DEPLOY.md`, "Retired hosted agents").
+- The API Worker carried two empty classes, and the usage table three unused columns, for one release, until the follow-up removed them (below).
 - The decisions ADR 0038, ADR 0039, ADR 0041, ADR 0042, ADR 0043 and ADR 0044 left to hosted agents (who decides their approvals, who watches their browser sessions, their uncapped use, their reach) no longer arise.
+
+## Amendment: the follow-up release (#449)
+
+The release after the removal deletes what it kept: the API Worker no longer defines `AgentRun` and `AgentSchedule`, so the deploy deletes their namespaces and the old runs' data; migration `0016_usage_drop_agent_runs.sql` drops the index `usage_records_org_run` and the columns `agent_id`, `run_id` and `starter`; and the state RPC no longer answers `privateAgents`, `OrgRecord.runRetentionDays` or `Platform.setRetention`. A stage must deploy the removal before this release. The purge of the sandbox sessions retired runs left stays until none is left (#451); the cleanup on each start stays, as it costs nothing once done.

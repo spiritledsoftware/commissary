@@ -67,10 +67,8 @@ describe("the retired private agents setting", () => {
 
     await evictDurableObject(stub);
 
-    expect(await stub.membershipSettings()).toMatchObject({
-      privateToolkits: true,
-      privateAgents: false,
-    });
+    expect(await stub.membershipSettings()).toMatchObject({ privateToolkits: true });
+    expect(await stub.membershipSettings()).not.toHaveProperty("privateAgents");
 
     await runInDurableObject(stub, (_instance, state) => {
       const columns = state.storage.sql

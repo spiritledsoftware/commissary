@@ -36,11 +36,6 @@ export interface OrgRecord {
   readonly createdAt: number;
   /** How many days the org's usage records are kept; `null`: forever (ADR 0027). */
   readonly usageRetentionDays: number | null;
-  /**
-   * Always `null`: agent runs' retention is gone with hosted agents. Kept one release so an app Worker from before
-   * ADR 0048, whose org view still reads it, keeps encoding; removed with the tombstone classes in the follow-up.
-   */
-  readonly runRetentionDays: null;
   /** The (lowercased) email of the person who created it on Commissary Cloud; absent otherwise. */
   readonly createdBy?: string;
   /** Epoch milliseconds a platform admin suspended it; absent while it is not suspended. */
@@ -66,15 +61,6 @@ export type OrgInput = {
 };
 
 export type OrgPatch = { readonly slug?: string; readonly name?: string };
-
-/**
- * The periods an app Worker from before ADR 0048 sends to PlatformStore.setRetention; runDays is ignored. Removed with
- * the tombstone classes in the follow-up release.
- */
-export interface LegacyRetentionPeriods {
-  readonly usageDays?: number | null;
-  readonly runDays?: number | null;
-}
 
 /** Why an org write was refused; `message` is fixed text, safe to show. */
 export type OrgWriteResult =
@@ -300,7 +286,6 @@ export class PlatformStore {
       name: row.name,
       createdAt: row.created_at,
       usageRetentionDays: row.usage_retention_days,
-      runRetentionDays: null,
       ...(row.created_by === null ? {} : { createdBy: row.created_by }),
       ...(row.suspended_at === null ? {} : { suspendedAt: row.suspended_at }),
     };
@@ -422,17 +407,6 @@ export class PlatformStore {
     this.#sql.exec(`UPDATE orgs SET usage_retention_days = ? WHERE id = ?`, days, id);
 
     return { ok: true, org: { ...current, usageRetentionDays: days } };
-  }
-
-  /**
-   * Deprecated alias of {@link setUsageRetention} for an app Worker from before ADR 0048, which sends both periods:
-   * applies `usageDays` and ignores `runDays` (agent runs are gone). Removed with the tombstone classes in the
-   * follow-up release.
-   */
-  setRetention(id: string, periods: LegacyRetentionPeriods): OrgWriteResult {
-    return periods.usageDays === undefined
-      ? this.setUsageRetention(id, this.orgById(id)?.usageRetentionDays ?? null)
-      : this.setUsageRetention(id, periods.usageDays);
   }
 
   /**
