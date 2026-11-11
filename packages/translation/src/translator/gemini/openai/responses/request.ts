@@ -620,20 +620,47 @@ const buildFunctionResponseParts = (
 
 type CollectFunctionCallOutputsResult = {
   readonly ordered: Json[];
-  readonly consumedCount: number;
+  /** Indexes into `items` of the outputs taken, ascending; not contiguous when notices sit between them. */
+  readonly consumedIndexes: number[];
 };
 
-/** `collectOpenAIResponsesFunctionCallOutputs` + `orderOpenAIResponsesFunctionCallOutputs`. */
-const collectFunctionCallOutputs = (
+/** A developer or system message: a notice (Codex also sends them without a `type`). */
+const isNoticeItem = (item: Json): boolean => {
+  const type = asString(get(item, "type"));
+  const role = asString(get(item, "role")).toLowerCase();
+
+  return (type === "message" || type === "") && (role === "developer" || role === "system");
+};
+
+/**
+ * `collectOpenAIResponsesFunctionCallOutputs` + `orderOpenAIResponsesFunctionCallOutputs`. One parallel result turn
+ * continues across developer and system notices while calls remain pending (CLIProxyAPI 3ac38498); the caller keeps the
+ * notices. Any other item ends the batch.
+ */
+export const collectFunctionCallOutputs = (
   items: readonly Json[],
   start: number,
   pendingCallIds: readonly string[],
 ): CollectFunctionCallOutputsResult => {
-  let end = start + 1;
+  const outputs: Json[] = [];
+  const consumedIndexes: number[] = [];
+  const pending = new Set(pendingCallIds);
 
-  // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-  while (end < items.length && isToolOutput(items[end] as Json)) end++;
-  const outputs = items.slice(start, end);
+  for (let index = start; index < items.length; index++) {
+    // SAFETY: `index` is below `items.length`; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
+    const item = items[index] as Json;
+
+    if (isToolOutput(item)) {
+      outputs.push(item);
+      consumedIndexes.push(index);
+      pending.delete(extractResponsesCallID(item));
+      continue;
+    }
+
+    if (pending.size > 0 && isNoticeItem(item)) continue;
+    break;
+  }
+
   const used = outputs.map(() => false);
   const ordered: Json[] = [];
 
@@ -652,7 +679,7 @@ const collectFunctionCallOutputs = (
     if (!used[index]) ordered.push(output);
   });
 
-  return { ordered, consumedCount: end - start };
+  return { ordered, consumedIndexes };
 };
 
 const modelContentOf = (parts: Json[]): JsonObject => ({ role: "model", parts });
@@ -1110,15 +1137,20 @@ export const convertOpenAIResponsesRequestToGemini = (
         case "custom_tool_call_output": {
           hasEncounteredConversation = true;
 
-          const { ordered, consumedCount } = collectFunctionCallOutputs(
+          const { ordered, consumedIndexes } = collectFunctionCallOutputs(
             normalized,
             i,
             pendingFunctionCallIds,
           );
 
-          for (let consumed = i; consumed < i + consumedCount; consumed++)
+          let end = i + 1;
+
+          for (const consumed of consumedIndexes) {
             consumedOutputIndexes.add(consumed);
-          const end = i + consumedCount;
+
+            if (consumed >= end) end = consumed + 1;
+          }
+
           const subsequent = hasSubsequentTurn(normalized.slice(end));
 
           const outputByCallId = new Map<string, Json>();
