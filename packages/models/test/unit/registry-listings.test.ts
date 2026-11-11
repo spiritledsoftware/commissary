@@ -120,6 +120,25 @@ describe("Codex client catalog (client_version) parity with Go", () => {
     "availability_nux",
   ];
 
+  /**
+   * Entries where Commissary deliberately differs from Go, by slug: the field Commissary sets and the value Go has. Go
+   * leaves `grok-imagine-video-1.5-lite` out of `isCodexClientImageOrVideoModel`, so the Codex client lists a video-only
+   * model as a chat model; Commissary hides it like its siblings (docs/ARCHITECTURE.md, "Codex client catalog").
+   */
+  const KEPT_DIFFERENCES = new Map([
+    ["grok-imagine-video-1.5-lite", { key: "visibility", commissary: "hide", go: "list" }],
+  ]);
+
+  /** The entry as Go would have it, after checking Commissary's own value of a kept difference. */
+  const asGo = (entry: JsonObject): JsonObject => {
+    const kept = KEPT_DIFFERENCES.get(entry.slug as string);
+
+    if (kept === undefined) return entry;
+    expect(entry[kept.key], `${kept.key} of ${JSON.stringify(entry.slug)}`).toBe(kept.commissary);
+
+    return { ...entry, [kept.key]: kept.go };
+  };
+
   for (const scenario of fixture.scenarios) {
     describe(scenario.name, () => {
       const index = scenarioIndex(scenario);
@@ -145,14 +164,15 @@ describe("Codex client catalog (client_version) parity with Go", () => {
         expect(result.status).toBe(200);
         const payload = build(result.variant, result.version);
         const entries = (payload.models ?? []) as JsonObject[];
+        const goEntries = entries.map(asGo);
         const actualHashes: Record<string, string> = {};
 
-        for (const entry of entries)
+        for (const entry of goEntries)
           actualHashes[entry.slug as string] = await sha256Hex(goCompactBytes(entry));
 
         // Readable first: per-model summaries where the fixture keeps them.
         if ((result.models ?? []).length > 0) {
-          const summary = entries.map((entry) =>
+          const summary = goEntries.map((entry) =>
             Object.fromEntries(
               SUMMARY_KEYS.map((key) => [key, entry[key] === undefined ? "<absent>" : entry[key]]),
             ),

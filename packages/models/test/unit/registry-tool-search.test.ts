@@ -104,7 +104,11 @@ describe("native tool search in the Codex catalog", () => {
   });
 
   it("is false for a model that Claude and another provider both serve", () => {
-    const codex = { source: source("codex-a", "codex"), models: [info("shared-model", "gpt-5.5")] };
+    const codex = {
+      source: source("codex-a", "codex"),
+      models: [info("shared-model", "gpt-5.6-terra")],
+    };
+
     const both = claude("claude-a", {}, [info("shared-model", SONNET)]);
     expect(advertised(GATE, [both, codex]).get("shared-model")).toBe(false);
   });

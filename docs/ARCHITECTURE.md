@@ -527,7 +527,8 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   the Go content-hash ids (`synthesize.ts`, verified against the Go synthesizer via `tools/fixturegen/credentials`).
   `derive.ts` turns a stored file into the immutable `Credential` (priority, weight, prefix, headers, exclusions,
   aliases, plan/domain attributes); global exclusions and aliases are applied at selection time, so config edits take
-  effect immediately. Config credentials are never stored; their runtime state is pruned when their id disappears.
+  effect immediately. A file's own `excluded_models` adds to its channel's `oauth-excluded-models` (the credential's
+  `excluded_models` attribute is the union); Go (`b015f208`) lets a non-empty per-file list replace the channel's. Config credentials are never stored; their runtime state is pruned when their id disappears.
 - **Selection** (`selection/`, pure and deterministic, clock injected): candidate set -> availability (`availability.ts`,
   incl. "never an expired OAuth token") -> highest priority tier -> strategy (`strategies.ts`: round-robin, smooth
   weighted round-robin, fill-first) -> optional session affinity (`affinity.ts`, TTL cache keyed
@@ -1279,6 +1280,8 @@ models and Home.
 unparseable versions), modalities, priorities, Devin display names, `client.codex.optimize-multi-agent-v2` (`multi_agent_version`),
 `client.codex.enable-apply-patch` (`apply_patch_tool_type: freeform` only when every provider of the exact public model has an
 executor, `supportsApplyPatchProviders`) and `cpa_capabilities.web_search` for `client_version=cpa`. The body is plain `JSON.stringify` output.
+Difference from Go: `grok-imagine-video-1.5-lite` is hidden (`visibility: hide`) like the other Grok Imagine video models;
+Go's `isCodexClientImageOrVideoModel` leaves it out and lists it as a chat model (the listing test masks that one field).
 Fixtures: the real Go `OpenAIModels` handler over the registry scenarios (`codexClient` section of `packages/models/test/fixtures/registry.json`:
 per-entry and whole-body hashes of Go's sorted compact bytes, which the test reproduces itself before hashing).
 

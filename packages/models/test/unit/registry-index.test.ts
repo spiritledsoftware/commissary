@@ -73,7 +73,7 @@ describe("LookupStaticModelInfo", () => {
     const empty = new ModelRegistryIndex([], fixtureNow());
     expect(empty.lookupModelInfo(catalogs, "gpt-image-2")?.id).toBe("gpt-image-2");
     expect(empty.lookupModelInfo(catalogs, "devin/swe-2")?.ownedBy).toBe("cognition");
-    expect(empty.lookupModelInfo(catalogs, "gpt-5.5", "codex")?.id).toBe("gpt-5.5");
+    expect(empty.lookupModelInfo(catalogs, "gpt-5.6-terra", "codex")?.id).toBe("gpt-5.6-terra");
   });
 });
 
