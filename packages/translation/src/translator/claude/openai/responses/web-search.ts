@@ -89,6 +89,7 @@ const convertResponsesWebSearchCallToClaudeBlocksWithQuery = (
   item: Json,
   fallbackQuery: string,
   withResult: boolean,
+  lookup?: ReadonlyMap<string, Json>,
 ): JsonObject[] => {
   const toolUseID = claudeWebSearchToolUseID(str(get(item, "id")).trim());
 
@@ -115,7 +116,8 @@ const convertResponsesWebSearchCallToClaudeBlocksWithQuery = (
     content: [],
   };
 
-  const content = responsesWebSearchResultsToClaude(get(item, "results"));
+  // A result the client dropped is restored from the session's cache, when the executor found one (9d453bc0).
+  const content = responsesWebSearchResultsToClaude(get(item, "results")) ?? lookup?.get(toolUseID);
 
   if (content !== undefined) result.content = content;
 
@@ -160,7 +162,10 @@ export class ResponsesWebSearchHistory {
   /** The paused item's query, carried to its continuation item. */
   private readonly pausedQuery = new Map<number, string>();
 
-  constructor(items: ReadonlyArray<Json>) {
+  constructor(
+    items: ReadonlyArray<Json>,
+    private readonly lookup?: ReadonlyMap<string, Json>,
+  ) {
     this.boundaryAfter = items.map(() => false);
     let boundary = false;
 
@@ -209,6 +214,7 @@ export class ResponsesWebSearchHistory {
       item,
       query,
       !(isPausedItem(item) && tail),
+      this.lookup,
     );
   }
 }
@@ -259,4 +265,57 @@ export const attachClaudeCitations = (
   textBlock.citations = citations;
 
   return textBlock;
+};
+
+/** `claudeWebSearchResultContentEmpty`: a `web_search_tool_result` content that is missing, null or an empty array. */
+export const claudeWebSearchContentEmpty = (content: Json | undefined): boolean =>
+  content === undefined || content === null || (isArr(content) && content.length === 0);
+
+/** Whether a `web_search_tool_result` among the blocks has no content (Go `claudeBlocksHaveEmptyWebSearchResult`). */
+export const claudeBlocksHaveEmptyWebSearchResult = (blocks: ReadonlyArray<Json>): boolean =>
+  blocks.some(
+    (block) =>
+      str(get(block, "type")) === "web_search_tool_result" &&
+      claudeWebSearchContentEmpty(get(block, "content")),
+  );
+
+/**
+ * Removes `web_search_result_location` citations from text blocks (Go `stripClaudeWebSearchCitationsFromParts`).
+ * Anthropic intermittently rejects a citation whose `encrypted_index` has no matching search result in the turn.
+ */
+export const stripClaudeWebSearchCitations = (blocks: ReadonlyArray<JsonObject>): void => {
+  for (const block of blocks) {
+    if (str(block.type) !== "text" || !isArr(block.citations)) continue;
+
+    const kept = block.citations.filter(
+      (citation) => str(get(citation, "type")) !== "web_search_result_location",
+    );
+
+    if (kept.length === block.citations.length) continue;
+
+    if (kept.length === 0) delete block.citations;
+    else block.citations = kept;
+  }
+};
+
+/**
+ * The Claude `server_tool_use` ids of the `web_search_call` items of a Responses input that carry no usable results:
+ * the ones a session cache could restore (`web-search-results.ts` in the Claude executor).
+ */
+export const responsesWebSearchCallsWithoutResults = (input: Json | undefined): string[] => {
+  const items = get(input, "input");
+  const ids: string[] = [];
+
+  if (!isArr(items)) return ids;
+
+  for (const item of items) {
+    if (str(get(item, "type")) !== "web_search_call") continue;
+
+    if (responsesWebSearchResultsToClaude(get(item, "results")) !== undefined) continue;
+    const id = claudeWebSearchToolUseID(str(get(item, "id")).trim());
+
+    if (id !== "" && !ids.includes(id)) ids.push(id);
+  }
+
+  return ids;
 };

@@ -63,6 +63,12 @@ export interface TranslateRequestOptions {
    * dropping it. The Claude executor decides it per attempt (credential, upstream model, org switch).
    */
   readonly nativeToolSearch?: boolean;
+  /**
+   * Responses -> Claude: cached `web_search_tool_result` content by Claude `server_tool_use` id, for replayed
+   * `web_search_call` items that arrive without usable results (Go `WithWebSearchResultLookup`). The Claude executor reads
+   * the session's cache before translating; absent means no lookup.
+   */
+  readonly webSearchResults?: ReadonlyMap<string, Json>;
 }
 
 /**

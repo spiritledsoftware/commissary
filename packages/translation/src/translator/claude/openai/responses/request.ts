@@ -58,7 +58,12 @@ import {
   toolSearchOutputText,
   toolSearchToolToClaude,
 } from "./tool-search.ts";
-import { attachClaudeCitations, ResponsesWebSearchHistory } from "./web-search.ts";
+import {
+  attachClaudeCitations,
+  claudeBlocksHaveEmptyWebSearchResult,
+  ResponsesWebSearchHistory,
+  stripClaudeWebSearchCitations,
+} from "./web-search.ts";
 import type { TranslateRequestOptions } from "../../../registry.ts";
 
 const first = (...values: Array<Json | undefined>): Json | undefined =>
@@ -236,6 +241,13 @@ const convertRequest = (
   let pendingParts: JsonObject[] = [];
   let pendingToolUseParts: JsonObject[] = [];
 
+  // An assistant turn whose web search has no result: its citations would point at nothing (9acf81d3).
+  let turnHasEmptyWebSearchResult = false;
+
+  const endWebSearchTurn = (): void => {
+    turnHasEmptyWebSearchResult = false;
+  };
+
   const flushPendingMessage = (): void => {
     if (pendingRole === "") return;
     let parts = pendingParts;
@@ -247,6 +259,13 @@ const convertRequest = (
       if (separator !== undefined) combined.push(separator);
       combined.push(...pendingToolUseParts);
       parts = combined;
+    }
+
+    if (
+      pendingRole === "assistant" &&
+      (turnHasEmptyWebSearchResult || claudeBlocksHaveEmptyWebSearchResult(parts))
+    ) {
+      stripClaudeWebSearchCitations(parts);
     }
 
     if (parts.length > 0) {
@@ -332,7 +351,7 @@ const convertRequest = (
   const emittedToolResults = new Set<string>();
   const emittedRawToolUses = new Set<string>();
 
-  const webSearchHistory = new ResponsesWebSearchHistory(inputItems);
+  const webSearchHistory = new ResponsesWebSearchHistory(inputItems, options?.webSearchResults);
 
   for (const [itemIndex, item] of inputItems.entries()) {
     if (isSystemLevelRole(str(get(item, "role")))) {
@@ -450,6 +469,8 @@ const convertRequest = (
 
           if (!exists(last.cache_control)) attachCacheControl(last, item);
           appendParts(role, partsJSON);
+
+          if (role === "user") endWebSearchTurn();
         }
 
         break;
@@ -458,7 +479,11 @@ const convertRequest = (
       case "web_search_call": {
         const blocks = webSearchHistory.claudeBlocks(itemIndex, item);
 
-        if (blocks.length > 0) appendParts("assistant", blocks);
+        if (blocks.length > 0) {
+          if (claudeBlocksHaveEmptyWebSearchResult(blocks)) turnHasEmptyWebSearchResult = true;
+          appendParts("assistant", blocks);
+        }
+
         break;
       }
 
@@ -524,6 +549,7 @@ const convertRequest = (
         // Outputs without a paired tool_use in this input would be orphan tool_results, which Claude rejects.
         if (rawID === "" || !emittedRawToolUses.has(rawID)) {
           appendParts("user", standaloneToolOutputToClaudeText(output));
+          endWebSearchTurn();
           break;
         }
 
@@ -566,6 +592,7 @@ const convertRequest = (
         // An output without a paired search call would be an orphan tool_result, which Claude rejects.
         if (rawID === "" || !emittedRawToolUses.has(rawID)) {
           appendParts("user", [{ type: "text", text: toolSearchOutputText(item, names) }]);
+          endWebSearchTurn();
           break;
         }
 

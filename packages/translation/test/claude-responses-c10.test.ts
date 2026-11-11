@@ -3,7 +3,10 @@
 import { describe, expect, it } from "vitest";
 import { get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { convertOpenAIResponsesRequestToClaude } from "../src/translator/claude/openai/responses/request.ts";
-import { convertClaudeResponseToOpenAIResponses } from "../src/translator/claude/openai/responses/response.ts";
+import {
+  convertClaudeResponseToOpenAIResponses,
+  convertClaudeResponseToOpenAIResponsesNonStream,
+} from "../src/translator/claude/openai/responses/response.ts";
 import { str } from "../src/translator/common/gjson.ts";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
 
@@ -229,6 +232,18 @@ describe("tool_use-deferred web search (df860eb9)", () => {
     expect(get(search, "results")).toBeUndefined();
   });
 
+  it("keeps the search in_progress in a non-stream answer too", () => {
+    const body = deferredTurn()
+      .map((event) => `data: ${JSON.stringify(event)}`)
+      .join("\n");
+
+    const out = parse(convertClaudeResponseToOpenAIResponsesNonStream(context(), body) ?? "");
+    const search = outputItems(out)[0];
+
+    expect(get(search, "status")).toBe("in_progress");
+    expect(get(search, "results")).toBeUndefined();
+  });
+
   it("replays it without an invented result next to the tool output", () => {
     const deferred = outputItems(terminalResponse(deferredTurn()));
 
@@ -253,5 +268,148 @@ describe("tool_use-deferred web search (df860eb9)", () => {
 
     expect(types(blocks)).toBe("tool_use,server_tool_use,web_search_tool_result,text");
     expect(get(blocks[1], "input.query")).toBe("deferred query");
+  });
+});
+
+describe("replayed web search citations without results (9acf81d3, 9d453bc0)", () => {
+  const search = (id: string, extra: JsonObject = {}): JsonObject => ({
+    type: "web_search_call",
+    id: `ws_srvtoolu_${id}`,
+    status: "completed",
+    action: { type: "search", query: `q${id}` },
+    ...extra,
+  });
+
+  const answer = (text: string, index: string): JsonObject => ({
+    type: "message",
+    role: "assistant",
+    content: [
+      {
+        type: "output_text",
+        text,
+        annotations: [
+          {
+            type: "web_search_result_location",
+            url: "https://example.com/a",
+            title: "A",
+            cited_text: text,
+            encrypted_index: index,
+          },
+        ],
+      },
+    ],
+  });
+
+  const convert = (items: JsonObject[], webSearchResults?: ReadonlyMap<string, Json>): Json =>
+    convertOpenAIResponsesRequestToClaude(
+      "claude-opus-5-5",
+      { model: "claude-opus-5-5", tools: [{ type: "web_search" }], input: items },
+      false,
+      webSearchResults === undefined ? undefined : { webSearchResults },
+    );
+
+  const content = (request: Json, message: number): Json[] => {
+    const blocks = get(get(request, "messages"), String(message) + ".content");
+
+    return Array.isArray(blocks) ? blocks : [];
+  };
+
+  it("drops the citations and keeps the text when the search has no results", () => {
+    const out = convert([
+      userText("search question"),
+      search("1"),
+      answer("Cited answer.", "IDX_A"),
+      userText("Reply with OK"),
+    ]);
+
+    const blocks = content(out, 1);
+
+    expect(types(blocks)).toBe("server_tool_use,web_search_tool_result,text");
+    expect(get(blocks[1], "content")).toEqual([]);
+    expect(get(blocks[2], "text")).toBe("Cited answer.");
+    expect(get(blocks[2], "citations")).toBeUndefined();
+  });
+
+  it("drops them when the results degrade to empty (no encrypted_content)", () => {
+    const out = convert([
+      userText("question"),
+      search("1", { results: [{ title: "T", url: "https://example.com/a" }] }),
+      answer("Cited answer.", "IDX_A"),
+      userText("follow up"),
+    ]);
+
+    expect(get(content(out, 1)[2], "citations")).toBeUndefined();
+  });
+
+  it("drops unbacked citations after an interleaved client tool call of the same turn", () => {
+    const out = convert([
+      userText("question"),
+      search("1"),
+      { type: "function_call", call_id: "call_1", name: "exec", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "ok" },
+      answer("After tool.", "IDX_A"),
+      userText("follow up"),
+    ]);
+
+    const message = get(out, "messages.3.content");
+    const block = Array.isArray(message) ? message[0] : undefined;
+
+    expect(Array.isArray(message) ? get(block, "text") : message).toBe("After tool.");
+    expect(get(block, "citations")).toBeUndefined();
+  });
+
+  it("keeps the citations of a later turn whose search has results", () => {
+    const out = convert([
+      userText("q1"),
+      search("1"),
+      answer("Turn 1 answer.", "IDX_1"),
+      userText("q2"),
+      search("2", {
+        results: [{ title: "2", url: "https://example.com/2", encrypted_content: "ENC_2" }],
+      }),
+      answer("Turn 2 answer.", "IDX_2"),
+      userText("q3"),
+    ]);
+
+    expect(get(content(out, 1)[2], "citations")).toBeUndefined();
+    expect(get(content(out, 3)[2], "citations.0.encrypted_index")).toBe("IDX_2");
+  });
+
+  it("drops them when any search of the turn lacks results", () => {
+    const out = convert([
+      userText("q"),
+      search("1", {
+        results: [{ title: "1", url: "https://example.com/1", encrypted_content: "ENC_1" }],
+      }),
+      search("2"),
+      answer("Combined answer.", "IDX_2"),
+      userText("next"),
+    ]);
+
+    const blocks = content(out, 1);
+
+    expect(get(blocks[4], "citations")).toBeUndefined();
+    expect(get(blocks[4], "text")).toBe("Combined answer.");
+  });
+
+  it("restores a cached result by its server_tool_use id and keeps the citations", () => {
+    const cached: Json = [
+      {
+        type: "web_search_result",
+        url: "https://example.com/a",
+        title: "A",
+        encrypted_content: "ENC",
+      },
+    ];
+
+    const out = convert(
+      [userText("q"), search("1"), answer("Cited answer.", "IDX_A"), userText("next")],
+      new Map([["srvtoolu_1", cached]]),
+    );
+
+    const blocks = content(out, 1);
+
+    expect(get(blocks[1], "content")).toEqual(cached);
+    expect(get(blocks[2], "citations.0.encrypted_index")).toBe("IDX_A");
   });
 });

@@ -55,6 +55,11 @@ export {
   convertOpenAIResponsesRequestToClaudeWithCompat,
 } from "./translator/claude/openai/responses/request.ts";
 
+export {
+  claudeWebSearchContentEmpty,
+  responsesWebSearchCallsWithoutResults,
+} from "./translator/claude/openai/responses/web-search.ts";
+
 export { shortenCodexCallIdIfNeeded } from "./translator/codex/claude/request.ts";
 
 export {
