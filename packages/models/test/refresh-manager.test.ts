@@ -87,7 +87,7 @@ describe("alarm multiplexing", () => {
       type: "codex",
       access_token: "a",
       refresh_token: "r",
-      expired: iso(T0 + 30 * HOUR), // due T0+6h
+      expired: iso(T0 + 102 * HOUR), // due T0+6h (96 h lead)
     });
     fixture.add("vertex-a.json", { type: "vertex", service_account: {}, project_id: "p" }); // no lead
     fixture.add("claude-noreftoken.json", {

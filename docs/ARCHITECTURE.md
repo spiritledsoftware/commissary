@@ -1223,7 +1223,7 @@ Port of `auto_refresh_loop.go` + `conductor_refresh.go` + the per-provider `Refr
 (Cloudflare-free, unit tested with a fake host/alarm/clock) is owned by the `ControlPlane` DO, which is the only writer:
 
 - **Scheduling** (`schedule.ts`): `nextRefreshCheckAt` is a pure function of (now, credential, state) with the Go leads
-  (codex 24 h, claude 4 h, antigravity 30 min, xai/kimi/kimi-ai/kimi.ai 5 min; devin, meta, kimi.com, vertex never).
+  (codex 96 h, claude 4 h, antigravity 30 min, xai/kimi/kimi-ai/kimi.ai 5 min; devin, meta, kimi.com, vertex never).
   One alarm is multiplexed over all credentials: `rearm()` takes the minimum over the stored credentials (no heap) and
   is called after every credential mutation, after each alarm run and by the cron `sweepRefresh()`. `alarm()` refreshes
   what is due (`oauth.auth-auto-refresh-workers`, default 16, concurrently) and always re-arms, never sooner than 30 s
