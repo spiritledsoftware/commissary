@@ -22,7 +22,10 @@ import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { TranslationError } from "../../registry.ts";
 import { contentHasGeminiFunctionResponse } from "../../gemini/common/contents.ts";
 import { attachDefaultSafetySettings } from "../../gemini/common/safety.ts";
-import { sanitizeGeminiRequestThoughtSignatures } from "../../gemini/common/signature.ts";
+import {
+  sanitizeGeminiRequestThoughtSignatures,
+  sanitizeGeminiSystemInstruction,
+} from "../../gemini/common/signature.ts";
 import { mapSanitizedFunctionName, sanitizedFunctionNameMap } from "../../common/tool-names.ts";
 
 const DECLARATION_KEYS = ["functionDeclarations", "function_declarations"] as const;
@@ -458,6 +461,7 @@ const hasSignatureKeyAnywhere = (value: Json): boolean => {
 
 /** `SanitizeAntigravityClaudeGeminiRequestSignatures`: Claude-target replay rules for Gemini-format parts. */
 export const sanitizeAntigravityClaudeGeminiRequestSignatures = (root: Json): Json => {
+  sanitizeGeminiSystemInstruction(root, "request.contents");
   const contents = get(root, "request.contents");
 
   if (!isJsonArray(contents)) return root;
@@ -578,6 +582,9 @@ export const convertGeminiRequestToAntigravity = (
     set(root, "request.systemInstruction", systemInstruction);
     del(root, "request.system_instruction");
   }
+
+  // Cloud Code Assist fails Part.data oneof deserialisation on an empty part object (CLIProxyAPI f42f5871).
+  sanitizeGeminiSystemInstruction(root, "request.contents");
 
   normalizeResponseSchema(root);
   normalizeRoles(root);

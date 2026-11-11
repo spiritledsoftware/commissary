@@ -2,7 +2,7 @@
  * Gemini thought-signature validation, replay policy and request sanitising.
  *
  * Go source: internal/signature/gemini_sanitize.go (SanitizeGeminiRequestThoughtSignatures,
- * GeminiReplaySignatureOrBypass), internal/signature/gemini_validation.go (InspectGeminiThoughtSignature,
+ * SanitizeGeminiSystemInstruction, GeminiReplaySignatureOrBypass), internal/signature/gemini_validation.go (InspectGeminiThoughtSignature,
  * ValidateGeminiThoughtSignatures, ValidateGeminiFunctionCallPairing), internal/signature/provider_compatibility.go
  * (SplitSignatureProviderPrefix, SignaturePayloadWithoutProviderPrefix and the Gemini row of
  * DecideSignatureCompatibility). `decideGeminiSignature` is the Gemini-target specialisation of the decision table in
@@ -324,6 +324,35 @@ const deleteSignatureFields = (part: Json): void => {
 const hasServerToolBlock = (part: Json): boolean =>
   ["toolCall", "tool_call", "toolResponse", "tool_response"].some((key) => exists(part, key));
 
+const isEmptyPartObject = (part: Json): boolean =>
+  isJsonObject(part) && Object.keys(part).length === 0;
+
+/**
+ * `SanitizeGeminiSystemInstruction`: removes empty part objects (`{}`) from `systemInstruction.parts` and
+ * `system_instruction.parts` at the envelope level of `contentsPath`, and drops the instruction itself when nothing
+ * is left: upstream protobuf validation rejects a Part whose `data` oneof is unset (CLIProxyAPI 4c46f0aa).
+ */
+export const sanitizeGeminiSystemInstruction = (payload: Json, contentsPath: string): Json => {
+  const trimmed = contentsPath.trim();
+  const dot = trimmed.lastIndexOf(".");
+  const prefix = dot > 0 ? trimmed.slice(0, dot + 1) : "";
+
+  for (const key of ["systemInstruction", "system_instruction"]) {
+    const path = `${prefix}${key}`;
+    const parts = get(get(payload, path), "parts");
+
+    if (!isJsonObject(get(payload, path)) || !isJsonArray(parts)) continue;
+    const kept = parts.filter((part) => !isEmptyPartObject(part));
+
+    if (kept.length === parts.length) continue;
+
+    if (kept.length === 0) del(payload, path);
+    else set(payload, `${path}.parts`, kept);
+  }
+
+  return payload;
+};
+
 /**
  * `SanitizeGeminiRequestThoughtSignatures`: applies the Gemini replay policy in place to `payload[contentsPath]`
  * (`contents` or `request.contents`). Provider signatures stay on their parts, only a missing/incompatible *first*
@@ -334,7 +363,9 @@ export const sanitizeGeminiRequestThoughtSignatures = (
   payload: Json,
   contentsPath = "contents",
 ): Json => {
-  const contents = get(payload, contentsPath.trim() === "" ? "contents" : contentsPath.trim());
+  const path = contentsPath.trim() === "" ? "contents" : contentsPath.trim();
+  sanitizeGeminiSystemInstruction(payload, path);
+  const contents = get(payload, path);
 
   if (!isJsonArray(contents)) return payload;
 

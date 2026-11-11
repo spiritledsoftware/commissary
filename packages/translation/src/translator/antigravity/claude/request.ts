@@ -48,6 +48,7 @@ import { attachDefaultSafetySettings } from "../../gemini/common/safety.ts";
 import {
   GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR,
   sanitizeGeminiRequestThoughtSignatures,
+  sanitizeGeminiSystemInstruction,
 } from "../../gemini/common/signature.ts";
 import { isClaudeCodeAttributionSystemText } from "../../common/claude-messages.ts";
 import { cleanJsonSchemaForAntigravity } from "../../gemini/util/json-schema.ts";
@@ -948,6 +949,7 @@ export const convertClaudeRequestToAntigravity = (
   attachDefaultSafetySettings(out, "request.safetySettings");
 
   if (isGeminiTarget) sanitizeGeminiRequestThoughtSignatures(out, "request.contents");
+  else sanitizeGeminiSystemInstruction(out, "request.contents");
 
   const refusal = drops.err(out);
 
