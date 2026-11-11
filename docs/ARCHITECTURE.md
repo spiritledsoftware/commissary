@@ -1833,8 +1833,7 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
 - **Meta subscription telemetry** (`executor/meta/subscription-usage.ts`): `response.subscription_usage` frames are dropped
   from streams and aggregated answers by a line filter the shared Responses SSE code applies; an `event:` line is held
   until its data line passes the upstream error check.
-- **Meta deviations from Go**: local `countTokens` does not count the appended namespace (the golden token fixtures
-  predate it; revisit with the fixture regeneration); the UA platform is the captured `linux-x86_64` (a Worker has no host
+- **Meta deviations from Go**: the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
   TTFT of non-stream calls are the response-header time, not the first body byte (as for Codex and xAI).

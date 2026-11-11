@@ -43,16 +43,10 @@ export type MetaPrepared = ResponsesPrepared;
 
 /**
  * Meta's tool preparation: the `web_search` sanitising, then the `muse` namespace append (before the payload rules).
- * Deviation from Go: the namespace is an attestation detail of upstream calls; local token counting (`stream = false`)
- * keeps counting the caller's tools until the token fixtures are regenerated (ticket F2).
+ * Local token counting counts the namespace too, like Go.
  */
-const prepareMetaTools =
-  (appendNamespace: boolean) =>
-  (body: Json): Json => {
-    const sanitized = sanitizeMetaWebSearchTools(body);
-
-    return appendNamespace ? ensureMetaMuseToolNamespace(sanitized) : sanitized;
-  };
+const prepareMetaTools = (body: Json): Json =>
+  ensureMetaMuseToolNamespace(sanitizeMetaWebSearchTools(body));
 
 export const prepareMetaRequest = (
   registry: TranslatorRegistry,
@@ -71,7 +65,7 @@ export const prepareMetaRequest = (
     {
       provider,
       payloadProtocol: provider,
-      prepareTools: prepareMetaTools(stream),
+      prepareTools: prepareMetaTools,
       signatureTargetModel: resolveMetaSignatureTargetModel,
       reasoning: (ctx) => reasoningOptionsForMeta(metaCreds(ctx.credential).baseUrl),
     },
