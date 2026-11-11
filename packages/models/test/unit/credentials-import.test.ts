@@ -139,7 +139,7 @@ claude-api-key:
 /**
  * Attributes where Commissary deliberately differs from the Go synthesizer, by fixture case. Go lets a non-empty
  * per-file `excluded_models` replace the channel's `oauth-excluded-models` (Go `b015f208`); Commissary keeps the
- * union of both (docs/ARCHITECTURE.md, "Sources").
+ * union of both (docs/ARCHITECTURE.md, "Per-file exclusions").
  */
 const KEPT_DIFFERENCES: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map([
   ["global exclusions and per-file", { excluded_models: "gemini-3-*,other,own-model" }],

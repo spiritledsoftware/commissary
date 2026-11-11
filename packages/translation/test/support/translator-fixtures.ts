@@ -4,7 +4,7 @@
  * (Go's key order and HTML escaping are not part of the contract); SSE framing and non-JSON text stay exact.
  */
 import { expect, it } from "vitest";
-import type { Json } from "@commissary/json";
+import { isJsonObject, type Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
 import { expandEmbeddedJson } from "./structural.ts";
@@ -134,7 +134,10 @@ const keptRequestDifferences = (
 
   if (c.from !== "interactions") delete kept["max_output_tokens"];
 
-  if (c.from === "openai" && kept["input"] === undefined) kept["input"] = [];
+  const messages = isJsonObject(c.request) ? c.request["messages"] : undefined;
+  const noMessages = messages === undefined || (Array.isArray(messages) && messages.length === 0);
+
+  if (c.from === "openai" && noMessages && kept["input"] === undefined) kept["input"] = [];
 
   return kept;
 };

@@ -527,8 +527,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   the Go content-hash ids (`synthesize.ts`, verified against the Go synthesizer via `tools/fixturegen/credentials`).
   `derive.ts` turns a stored file into the immutable `Credential` (priority, weight, prefix, headers, exclusions,
   aliases, plan/domain attributes); global exclusions and aliases are applied at selection time, so config edits take
-  effect immediately. A file's own `excluded_models` adds to its channel's `oauth-excluded-models` (the credential's
-  `excluded_models` attribute is the union); Go (`b015f208`) lets a non-empty per-file list replace the channel's. Config credentials are never stored; their runtime state is pruned when their id disappears.
+  effect immediately. Config credentials are never stored; their runtime state is pruned when their id disappears.
+- **Per-file exclusions**: a file's own `excluded_models` adds to its channel's `oauth-excluded-models` (the credential's
+  `excluded_models` attribute is the union); Go (`b015f208`) lets a non-empty per-file list replace the channel's.
 - **Selection** (`selection/`, pure and deterministic, clock injected): candidate set -> availability (`availability.ts`,
   incl. "never an expired OAuth token") -> highest priority tier -> strategy (`strategies.ts`: round-robin, smooth
   weighted round-robin, fill-first) -> optional session affinity (`affinity.ts`, TTL cache keyed
@@ -1725,7 +1726,8 @@ Deviations from Go (all deliberate, documented in code headers):
     `gemini` and `antigravity` call `sanitizeNonVertexGeminiRequestThoughtSignatures` (bare-Tink -> the bypass sentinel on the
     first call of a group, dropped elsewhere), `vertex` the preserving sanitiser, and the translators always the preserving one.
     Native Interactions drops a bare-Tink `thought` step except on Vertex (`allowVertexBareTink`), and keeps a `thought` step
-    only with a replayable Gemini signature (Go `a68c7d8e` ported ahead of its Meta and router-suffix parts).
+    only with a replayable Gemini signature (Go `a68c7d8e`; its Meta and router-suffix parts are under _Signature validation_,
+    "Meta, router suffixes and model families").
   - _Parallel groups (C9, Go `e5434f65`)_: a text part (an empty signature carrier too) ends a parallel functionCall group, so the
     next call is signed (the sentinel when it has no signature) instead of 400ing; a thought part does not end it.
 - **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**
