@@ -72,7 +72,7 @@ export default defineConfig({
   },
   lint: {
     options: {
-      // Rules that need type information, through tsrslint (tools/oxlint.sh, ADR 0047).
+      // Rules that need type information, through tsrs-lint (tools/oxlint.sh, ADR 0050).
       typeAware: true,
       // TypeScript's own errors are tsrs's (`pnpm run typecheck`, ADR 0046): one checker, one TypeScript version.
       typeCheck: false,

@@ -31,8 +31,7 @@ updates:
       # workerd tests hold Vitest at 5.0.x until they pass on 5.1 with @cloudflare/vitest-plugin (docs/DEVELOPMENT.md,
       # "Dependency notes"). effect-tsgo patches tsrs, and each release patches only the tsrs versions it lists (ADR
       # 0047). tsrs (the typechecker) is pinned exactly in pnpm-workspace.yaml's catalog: its version names the
-      # TypeScript release it ports. tsrslint is oxlint's type-aware backend until tsrs ships one
-      # (oxc-project/tsrs#378).
+      # TypeScript release it ports, and its `tsrs-lint` is oxlint's type-aware backend (ADR 0050).
       toolchain:
         patterns:
           [
@@ -43,7 +42,6 @@ updates:
             "@cloudflare/vitest-plugin",
             "@effect/tsgo",
             "tsrs",
-            "@maschwenk/tsrslint",
           ]
       effect:
         patterns: ["effect", "@effect/*"]

@@ -1,0 +1,34 @@
+---
+status: accepted, amends ADR-0047 and ADR-0049 (the type-aware backend)
+---
+
+# tsrs-lint is Oxlint's type-aware backend
+
+tsrs now ships its own Oxlint backend: the `tsrs` package has a second bin, `tsrs-lint` (`tsrs --lint`), which Oxlint
+runs the way it runs tsgolint (oxc-project/tsrs#378). It replaces tsrslint (`@maschwenk/tsrslint`), the stopgap ADR
+0047 chose until this landed. `tools/oxlint.sh` points `OXLINT_TSGOLINT_PATH` at `node_modules/.bin/tsrs-lint` and
+runs `vp lint`, and `@maschwenk/tsrslint` is gone.
+
+## Measurements
+
+Over the whole repository on an Apple Silicon laptop (tsrs 0.22.0-ts7.1.0-beta, 2026-11-12), back to back: tsrs-lint
+reported the same findings as tsrslint 0.1.6, but for one more `no-unnecessary-type-assertion` warning and a few
+`no-unsafe-type-assertion` messages that elide their types differently. Run time was the same, 5.7 s against 5.8 s.
+
+## Consequences
+
+- The type-aware rules run on the same tsrs, and so the same TypeScript, as the typecheck, and move with the catalog's
+  `tsrs` pin; there is no second package to keep in step. The installed tsrs is Effect-patched (ADR 0047), but the
+  lint run reports no Effect diagnostics: they stay in `pnpm run typecheck`.
+- tsrs ships binaries for macOS (arm64, x64), Linux (glibc and musl, x64 and arm64) and Windows x64, so on macOS and
+  Linux `pnpm run lint` and the Git hooks no longer need Apple Silicon or glibc. `tools/oxlint.sh` is a Bash script,
+  so on Windows they still need a POSIX shell such as WSL or Git Bash.
+- In an editor, set `OXLINT_TSGOLINT_PATH` to the checkout's absolute `node_modules/.bin/tsrs-lint`.
+
+## Considered Options
+
+- **Keeping tsrslint.** It works, but it is a third-party port that has to track tsrs on its own, and a second
+  package in the toolchain group.
+- **Dropping `tools/oxlint.sh`.** Vite+ sets `OXLINT_TSGOLINT_PATH` to the `oxlint-tsgolint` it bundles when the
+  caller has not, so bare `vp lint` would run tsgolint, not tsrs-lint. The wrapper stays until Vite+ can be told
+  which backend to run.
