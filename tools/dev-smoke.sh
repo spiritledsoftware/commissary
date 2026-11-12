@@ -19,8 +19,9 @@ if [ "$mode" = cloud ]; then
   export SIGN_IN_GITHUB_CLIENT_ID="${SIGN_IN_GITHUB_CLIENT_ID:-smoke-github-client}"
   export SIGN_IN_GITHUB_CLIENT_SECRET="${SIGN_IN_GITHUB_CLIENT_SECRET:-smoke-github-secret}"
 fi
-node_modules/.bin/vp run --filter @commissary/web --cache build
+pnpm exec vp run --filter @commissary/web --cache build
 log=$(mktemp)
+# The binary itself, not `pnpm exec`: `kill "$pid"` below must reach `alchemy dev`, not a wrapper.
 ALCHEMY_STATE=local node_modules/.bin/alchemy dev --stage smoke >"$log" 2>&1 &
 pid=$!
 cleanup() {

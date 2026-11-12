@@ -1,4 +1,4 @@
-// Vite config of the control panel. `pnpm run build` (`vite build`) writes `dist/index.html` and `dist/assets/*` (the
+// Vite config of the control panel. `pnpm run build` (`vp build`) writes `dist/index.html` and `dist/assets/*` (the
 // bundle and the font's licence, `assets/licenses/`), which the Worker serves at `/` and `/assets`
 // (apps/app/src/management/web-panel.ts). `pnpm --dir apps/web run dev` serves the panel with hot reload and
 // forwards `/v9` to a running `pnpm run dev` Worker, and Commissary Cloud's sign-in calls (`/api`) to its auth Worker

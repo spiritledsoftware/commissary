@@ -301,7 +301,7 @@ are pinned once in `pnpm-workspace.yaml`'s `catalog`, named `catalog:` in each p
 they cannot drift apart (two copies of `effect` in one bundle break its services).
 
 The root `package.json` runs the tasks with Vite Task (`vp run`, ADR 0049): `typecheck` runs each package's script of
-that name (`vp run -r --parallel --cache typecheck`) and then the root's `typecheck:root` (the deploy code), `build`
+that name (`vp run -r --parallel --concurrency-limit 10 --cache typecheck`) and then the root's `typecheck:root` (the deploy code), `build`
 each package's `build` (the panel's only), and `test` each package's `test` (`tools/test.sh`, "Tests" below). `lint`
 is no task: one `vp lint` and one `vp fmt --check` over the repository, and the computerd version check. The packages
 depend on each other's sources, not on build output, so no task waits for another package's (`--parallel`).
@@ -436,15 +436,16 @@ stays with that Worker.
 - **Runs.** `pnpm run test` (`tools/test.sh`) runs every package's `test` script (`vp test run`) through `vp run`,
   uncached (a cached task runs without the budget's variables below, "Workspace and tasks"). `pnpm run test --shard=N/3`
   (CI's three jobs) shards every package's run; one package: `pnpm --dir <package dir> exec vp test run [file]`.
-- **Local test budget.** A run of 10 packages at once and each Vitest one worker per core less one, and
-  many of the workers are a workerd process each (a Miniflare per worker, `@cloudflare/vitest-plugin`), so an unbudgeted run starts dozens of heavy processes. Locally `pnpm run test` runs `vp run`
+- **Local test budget.** An unbudgeted run (10 packages at once, each Vitest with its default of one worker per core
+  less one, and many of the workers a workerd process, a Miniflare each, `@cloudflare/vitest-plugin`) starts dozens of
+  heavy processes. Locally `pnpm run test` runs `vp run`
   with `--concurrency-limit $COMMISSARY_TEST_PACKAGES` (default 2), and every `vitest.config.ts` sets `test.maxWorkers` to
   `testWorkers()` (`tools/vitest/test-workers.ts`; the Node.js packages through `nodePackageTests`): `COMMISSARY_TEST_WORKERS`
   if set, else the cores divided by `COMMISSARY_TEST_PACKAGES` (at least 1), so packages at once × workers each stays
   near the core count (8 cores: 2 × 4). With `CI` set (GitHub Actions) 10 packages test at once and `testWorkers()`
   is `undefined`, so Vitest keeps its own. Tune it on the command line, e.g. `COMMISSARY_TEST_PACKAGES=1 pnpm run test` for the
-  lightest run (one package, all cores) or `COMMISSARY_TEST_WORKERS=1 pnpm run test`. A package run directly
-  (`pnpm --dir <package dir> run test`, `vp run` without the script) takes the budget as if two packages ran. Vitest's own `VITEST_MAX_WORKERS`, if set, beats the config. A new `vitest.config.ts` sets `maxWorkers: testWorkers()` too.
+  lightest run (one package, all cores) or `COMMISSARY_TEST_WORKERS=1 pnpm run test`. A package run on its own
+  (`pnpm --dir <package dir> run test`, or `vp test run` there) takes the budget as if two packages ran. Vitest's own `VITEST_MAX_WORKERS`, if set, beats the config. A new `vitest.config.ts` sets `maxWorkers: testWorkers()` too.
 - **Cross-org suite** (ADR 0044). `apps/app/test/org-isolation.test.ts` writes the same names (credential, key, session
   and model names) in three orgs (two made through the management API, and `global`) and checks that each store shows
   every org only its own: KV (`OrgKv`, the signature store, video bindings, Antigravity state and entitlements),

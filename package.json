@@ -22,7 +22,7 @@
     "repos:sync": "tools/sync-reference-repos.sh",
     "smoke": "sh tools/dev-smoke.sh",
     "test": "sh tools/test.sh",
-    "typecheck": "vp run -r --parallel --cache typecheck && vp run --cache typecheck:root",
+    "typecheck": "vp run -r --parallel --concurrency-limit 10 --cache typecheck && vp run --cache typecheck:root",
     "typecheck:root": "tsrs -p tsconfig.infra.json"
   },
   "devDependencies": {

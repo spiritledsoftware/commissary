@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047
 ---
 
 # pnpm installs, and Vite+ runs the toolchain
@@ -34,7 +34,8 @@ the per-package `turbo.json` input lists have no counterpart: a change in `packa
 of the packages that import it, found by the files tsrs read. `typecheck` and `build` are cached
 (`node_modules/.vite/task-cache`, one per worktree). `test` is not: a cached task runs in a cleaned environment, which
 would drop the local test budget's `COMMISSARY_TEST_*`, and a package script cannot name variables to keep. Tests and
-typechecks run with `--parallel`, since the packages are source-only and wait on nothing of each other's.
+typechecks run with `--parallel`, since the packages are source-only and wait on nothing of each other's, at most 10
+at once as under Turborepo (fewer for the local test budget).
 
 ## Measurements
 
@@ -54,6 +55,8 @@ On an 8-core Apple Silicon laptop (2026-11-12), one run each:
   (`apps/web/src/lib/spend.ts`) is formatted differently by 0.74.
 - Locally, `pnpm run test` re-runs every package each time, where Turborepo answered an unchanged package from its
   cache. CI ran without a cache before and still does.
+- The test files import Vitest's API from `vite-plus/test`, so the vendored anti-slop rule `no-module-mocking` takes
+  `vi` from there as well as from `vitest` (`tools/oxlint/anti-slop/UPSTREAM.md`).
 - `vp run` starts a package's script in the package's directory with the caller's `PWD`; the workerd projects reset it
   (`tools/vitest/workerd.ts`) so workerd does not warn on every start.
 - Git hooks live in `.vite-hooks/`; `vp config` (in `prepare`) installs Vite+'s dispatcher and sets `core.hooksPath`.

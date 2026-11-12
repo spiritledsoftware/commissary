@@ -3,9 +3,37 @@
 // the control panel's Vite settings in apps/web/vite.config.ts. docs/DEVELOPMENT.md, "Lint and format".
 import { defineConfig } from "vite-plus";
 
+/** The `@commissary/<package>/testing` helpers stay in test files. */
+const TESTING_ONLY = {
+  regex: "^@commissary/[^/]+/testing$",
+  message: 'A package\'s ./testing helpers are for test files only (docs/DEVELOPMENT.md, "Tests").',
+};
+
+/** Packages depend on nothing in apps/. */
+const NO_APPS = {
+  regex: "(^|/)apps/",
+  message: "Packages import nothing from apps/*: an app depends on packages, never the reverse.",
+};
+
+/** The sandbox's Cloudflare libraries load lazily, behind its provider. */
+const SANDBOX_LAZY = {
+  regex: "^(@cloudflare/computer|just-bash)(/|$)",
+  message:
+    "@cloudflare/computer and just-bash stay behind Cloudflare's sandbox provider (packages/tools/src/sandbox/cloudflare/, #222), which loads them lazily.",
+};
+
+/** The org-wide state reaches no area. */
+const STATE_NO_AREAS = {
+  regex: "^@commissary/(models|billing|tools)(/|$)",
+  message:
+    "The org-wide state imports nothing from an area: an area reaches it through its ControlPlane part (#134, #148).",
+};
+
+/** `no-restricted-imports` with these patterns. */
+const restrictImports = (...patterns: ReadonlyArray<{ regex: string; message: string }>) =>
+  ["error", { patterns }] as const;
+
 export default defineConfig({
-  // `vp staged`, run by .vite-hooks/pre-commit: the staged files formatted, then linted (type-aware, through
-  // tools/oxlint.sh). The Effect diagnostics surface at pre-push (`pnpm run typecheck`) or in CI (ADR 0047).
   staged: {
     "*": "vp fmt --no-error-on-unmatched-pattern",
     "*.{ts,mts,cts,js,mjs,cjs}": "tools/oxlint.sh --quiet --no-error-on-unmatched-pattern",
@@ -42,7 +70,9 @@ export default defineConfig({
   },
   lint: {
     options: {
+      // Rules that need type information, through tsrslint (tools/oxlint.sh, ADR 0047).
       typeAware: true,
+      // TypeScript's own errors are tsrs's (`pnpm run typecheck`, ADR 0046): one checker, one TypeScript version.
       typeCheck: false,
     },
     plugins: ["typescript", "unicorn", "oxc"],
@@ -59,6 +89,7 @@ export default defineConfig({
         name: "boundaries",
         specifier: "./tools/oxlint/boundaries/index.ts",
       },
+      // Vite+'s own rules (`vite-plus/prefer-vite-plus-imports` below).
       {
         name: "vite-plus",
         specifier: "vite-plus/oxlint-plugin",
@@ -100,18 +131,9 @@ export default defineConfig({
       "boundaries/billing-imports": "error",
       "boundaries/org-scoped-kv": "error",
       "boundaries/tools-imports": "error",
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              regex: "^@commissary/[^/]+/testing$",
-              message:
-                'A package\'s ./testing helpers are for test files only (docs/DEVELOPMENT.md, "Tests").',
-            },
-          ],
-        },
-      ],
+      "no-restricted-imports": ["error", { patterns: [TESTING_ONLY] }],
+      // The test files import Vitest through Vite+ (`vite-plus/test`) and the lint plugins its Oxlint API
+      // (`vite-plus/lint/plugins`), which match the versions Vite+ bundles (ADR 0049).
       "vite-plus/prefer-vite-plus-imports": "error",
     },
     ignorePatterns: [
@@ -148,101 +170,26 @@ export default defineConfig({
       },
       {
         files: ["packages/**"],
-        rules: {
-          "no-restricted-imports": [
-            "error",
-            {
-              patterns: [
-                {
-                  regex: "^@commissary/[^/]+/testing$",
-                  message:
-                    'A package\'s ./testing helpers are for test files only (docs/DEVELOPMENT.md, "Tests").',
-                },
-                {
-                  regex: "^(@cloudflare/computer|just-bash)(/|$)",
-                  message:
-                    "@cloudflare/computer and just-bash stay behind Cloudflare's sandbox provider (packages/tools/src/sandbox/cloudflare/, #222), which loads them lazily.",
-                },
-                {
-                  regex: "(^|/)apps/",
-                  message:
-                    "Packages import nothing from apps/*: an app depends on packages, never the reverse.",
-                },
-              ],
-            },
-          ],
-        },
+        rules: { "no-restricted-imports": restrictImports(TESTING_ONLY, SANDBOX_LAZY, NO_APPS) },
       },
       {
         files: ["packages/tools/src/sandbox/cloudflare/**"],
-        rules: {
-          "no-restricted-imports": [
-            "error",
-            {
-              patterns: [
-                {
-                  regex: "^@commissary/[^/]+/testing$",
-                  message:
-                    'A package\'s ./testing helpers are for test files only (docs/DEVELOPMENT.md, "Tests").',
-                },
-                {
-                  regex: "(^|/)apps/",
-                  message:
-                    "Packages import nothing from apps/*: an app depends on packages, never the reverse.",
-                },
-              ],
-            },
-          ],
-        },
+        rules: { "no-restricted-imports": restrictImports(TESTING_ONLY, NO_APPS) },
       },
       {
         files: ["packages/state/src/**"],
         rules: {
-          "no-restricted-imports": [
-            "error",
-            {
-              patterns: [
-                {
-                  regex: "^@commissary/[^/]+/testing$",
-                  message:
-                    'A package\'s ./testing helpers are for test files only (docs/DEVELOPMENT.md, "Tests").',
-                },
-                {
-                  regex: "^(@cloudflare/computer|just-bash)(/|$)",
-                  message:
-                    "@cloudflare/computer and just-bash stay behind Cloudflare's sandbox provider (packages/tools/src/sandbox/cloudflare/, #222), which loads them lazily.",
-                },
-                {
-                  regex: "(^|/)apps/",
-                  message:
-                    "Packages import nothing from apps/*: an app depends on packages, never the reverse.",
-                },
-                {
-                  regex: "^@commissary/(models|billing|tools)(/|$)",
-                  message:
-                    "The org-wide state imports nothing from an area: an area reaches it through its ControlPlane part (#134, #148).",
-                },
-              ],
-            },
-          ],
+          "no-restricted-imports": restrictImports(
+            TESTING_ONLY,
+            SANDBOX_LAZY,
+            NO_APPS,
+            STATE_NO_AREAS,
+          ),
         },
       },
       {
         files: ["packages/*/test/**"],
-        rules: {
-          "no-restricted-imports": [
-            "error",
-            {
-              patterns: [
-                {
-                  regex: "(^|/)apps/",
-                  message:
-                    "Packages import nothing from apps/*: an app depends on packages, never the reverse.",
-                },
-              ],
-            },
-          ],
-        },
+        rules: { "no-restricted-imports": restrictImports(NO_APPS) },
       },
     ],
   },
