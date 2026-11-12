@@ -1,7 +1,7 @@
 // Tool grants (ADR 0038): what a member's grants give of the tools of org toolkits' shared credentials. A grant gives
 // all of a toolkit's tools, its read tools (by tool class) or named tools by stable id; a member's reach is the union of
 // the grants for everyone, for them and for their teams; there is no deny.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ToolGrantEntry } from "../../src/grants/grant.ts";
 import { grantedTools } from "../../src/grants/reach.ts";
 

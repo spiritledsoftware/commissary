@@ -3,7 +3,7 @@
 // recomputes it when a price changes later.
 import { env } from "cloudflare:workers";
 import { Duration, Effect, Layer } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { ConfigReader } from "../src/config/reader.ts";
 import type { PriceOverrideValue } from "../src/config/store.ts";
 import { WorkerExecutionContext, GLOBAL_ORG, OrgId } from "@commissary/core";

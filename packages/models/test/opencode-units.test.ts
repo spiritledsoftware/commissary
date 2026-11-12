@@ -1,5 +1,5 @@
 // OpenCode Zen/Go executor units: protocol resolution, gateway headers and error classification.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import {
   OPENCODE_MODEL_COOLDOWN_MS,

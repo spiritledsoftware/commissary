@@ -1,5 +1,5 @@
 // /v9/management/credentials* and /routing/cooldown/reset through the router with the real ControlPlane.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   claudeFile,
   controlPlane,

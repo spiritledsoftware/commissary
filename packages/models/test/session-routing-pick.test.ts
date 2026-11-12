@@ -1,7 +1,7 @@
 // LCP conversation affinity inside the credential pool: requests without an explicit session stay on the credential
 // that served their conversation, forks/compactions get their own identities, failures drop only the attempted
 // sequence, and the derived / message-hash identities bind like explicit ones (selector.go Pick/OnResult).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PickResult, ReportResult } from "../src/credentials/selection/types.ts";
 import type { CredentialPool } from "../src/credentials/pool.ts";
 import { extractCanonicalTurns, prepareFingerprints } from "../src/session-routing/canonical.ts";

@@ -3,7 +3,7 @@
 // credentials were (so the private toolkits it served stay served). Reached through the ControlPlane's storage and a restart (`evictDurableObject`).
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { controlPlaneOf } from "../src/index.ts";
 

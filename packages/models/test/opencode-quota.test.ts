@@ -1,6 +1,6 @@
 // OpenCode Go usage quotas, pure parts: the `/usage` payload as quota windows, the probe target of a config key, the
 // Accounts entry of a config key, and the usage-limit errors with their reset parsing.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { emptyState } from "../src/credentials/model.ts";
 import { synthesizeConfigCredentials } from "../src/credentials/synthesize.ts";
 import {

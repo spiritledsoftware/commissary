@@ -5,7 +5,7 @@
 // handoff; a 2025 client gets the page's link in words; the call that started a handoff is a successful call in its
 // usage record. The Live View route answers `Cache-Control: no-store` with its link.
 import { env } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { AccessPrincipal, type AccessIdentity } from "@commissary/auth";

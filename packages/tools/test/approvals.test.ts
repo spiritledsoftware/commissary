@@ -6,7 +6,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { type Duration, Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ApprovalRules } from "@commissary/contract/approvals";
 import type { FormAction, ToolCall } from "../src/control-plane-part.ts";
 import { fakeMcpServer, serveFakeMcpServers } from "./support/mcp-server.ts";

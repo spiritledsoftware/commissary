@@ -1,7 +1,7 @@
 // The auth host's own routes and CORS (src/http/cors.ts, src/http/routes.ts): the sign-in page and the panel on the app
 // host call it with credentials, so it answers that one origin, and no other; `/healthz` and Better Auth's health check
 // answer for the deploy checks (tools/check-cloud-deploy.sh).
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { APP_ORIGIN, call, installFakes, restoreFetch } from "./support.ts";
 
 beforeAll(installFakes);

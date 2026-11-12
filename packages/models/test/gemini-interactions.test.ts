@@ -1,6 +1,6 @@
 // End-to-end tests of POST /v1beta/interactions: target validation, native Interactions passthrough on a
 // `gemini-interactions` credential, translation to generateContent on a plain Gemini credential, agent routing.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import { nativeGeminiSignature, vertexBareTink } from "./support/gemini-signatures.ts";

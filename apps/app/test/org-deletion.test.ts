@@ -2,7 +2,7 @@
 // Through the management API with the real ControlPlanes, D1, KV, SessionState and a Platform registry of its own.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { deleteOrg, DELETION_BUDGET } from "../src/platform/org-deletion.ts";
 import { type OrgDeletionStep, orgScopedName, OrgId } from "@commissary/core";
 import { addressName } from "@commissary/state";

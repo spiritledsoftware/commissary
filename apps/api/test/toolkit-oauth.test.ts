@@ -4,7 +4,7 @@
 // app host; a Worker that does not know the app host (a preview) serves none.
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isClientApiPath, TOOLKIT_OAUTH_CLIENT_PATH } from "@commissary/core";
 import { misdirected } from "../src/http/hosts.ts";
 import worker from "../src/index.ts";

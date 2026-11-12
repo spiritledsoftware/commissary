@@ -2,7 +2,7 @@
 // document's URL where an authorization server can fetch it), the `Bearer` challenge's auth-params (RFC 6750 §3), the
 // order of the well-known URIs discovery tries (RFC 8414 §3.1, RFC 9728 §3.1, the MCP spec's order), which resource
 // a server's metadata may name (RFC 8707, RFC 9728 §3.3), and when a credential's token gets its refresh.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   bearerChallenge,
   namesSource,

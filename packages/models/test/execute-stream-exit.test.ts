@@ -1,7 +1,7 @@
 // What a stream's exit reports for the attempt (`toExecutionError`): the upstream error as it is, the downstream's own
 // stops as a request-scoped 500, nothing for interrupts.
 import { Cause } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ExecutionError } from "../src/executor/errors.ts";
 import { toExecutionError } from "../src/handlers/execute.ts";
 

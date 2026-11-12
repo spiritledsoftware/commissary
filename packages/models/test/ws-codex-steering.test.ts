@@ -1,6 +1,6 @@
 // Codex response steering / full duplex (`upstream.codex.response-steering`, codex_websockets_duplex.go) end to end: a client
 // socket through the Worker handler to a mocked upstream socket that the executor owns until the client goes away.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Effect, Layer } from "effect";
 import type { Config } from "../src/config/schema.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";

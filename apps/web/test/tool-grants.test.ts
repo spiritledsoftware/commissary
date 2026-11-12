@@ -1,7 +1,7 @@
 // The Grants page's tool grants (src/lib/tool-grants.ts, #209, ADR 0038): drafts of each kind of grant (all, read, named
 // tools) and what is wrong with them, the bodies they become, named tools by their current names with the vanished ones
 // missing, and how the grants read by member, by team and by toolkit.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ToolGrant } from "@commissary/contract/grants";
 import type { MemberView, TeamView } from "@commissary/contract/members";
 import type { ToolkitView, ToolView } from "@commissary/contract/tools";

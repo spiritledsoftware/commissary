@@ -3,7 +3,7 @@
 // credentials anywhere, the owned-org limit, and suspension of people and orgs by platform admins. Sign-up itself is the
 // auth Worker's (apps/auth/test/sign-up.test.ts). The client API, which takes API keys only, is the API Worker's
 // (apps/api/test/hosted/gate.test.ts, suspension included): the app Worker refuses it with a 404.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { resetStandingCaches } from "@commissary/auth";
 import type { Deployment } from "@commissary/contract/orgs";
 import { FAILING_SESSION_TOKEN, FAKE_SESSION_COOKIE } from "../worker.ts";

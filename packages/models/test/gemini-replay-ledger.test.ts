@@ -3,7 +3,7 @@
 // back into the next request, for the Claude, OpenAI chat and Responses clients that do not carry them. Each target has its
 // own SessionState store; native Gemini and Interactions clients make no ledger calls; token counting only peeks.
 import { Effect, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   GEMINI_REPLAY_STORE,
   makeSessionStateReplayLedger,

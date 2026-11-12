@@ -9,7 +9,7 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { Effect, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { browserSessionStub, CLOSED_KEPT_MS } from "../src/browser/session-object.ts";

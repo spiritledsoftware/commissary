@@ -6,7 +6,7 @@
 // applies the outbound guard (also on a redirect; and `git` has no way out of its own). A fake second provider serves
 // the same tools.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Schema } from "effect";
 import type { SandboxNetwork } from "@commissary/contract/tools";
 import { OrgId } from "@commissary/core";

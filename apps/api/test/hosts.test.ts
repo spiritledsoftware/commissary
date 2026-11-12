@@ -4,7 +4,7 @@
 // the Worker's default export with the host settings bound (dev bypass on `localhost`, see vitest.config.ts).
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { misdirected } from "../src/http/hosts.ts";
 import worker from "../src/index.ts";
 

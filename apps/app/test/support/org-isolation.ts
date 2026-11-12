@@ -1,7 +1,7 @@
 // The cross-org suite's harness (ADR 0044, `docs/DEVELOPMENT.md` "Tests"): a store is one `storeCase`, and the suite runs
 // every case against the same names in three orgs. A new store (tool calls, approvals, runs, sandbox and browser
 // sessions, profiles) adds one entry to `STORES` in `test/org-isolation.test.ts`.
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import type { OrgId } from "@commissary/core";
 
 /** An org of the suite: stores keyed by the org id use `id`, the management API's `/orgs/<slug>/...` paths the `slug`. */

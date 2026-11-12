@@ -1,6 +1,6 @@
 // Tool and toolkit names (ADR 0037): `[a-z0-9_]` only, `<toolkit>_<tool>`, at most 46 characters, a longer one cut and
 // ended with a four-character hash of the whole name; a toolkit's default name is its source's host-derived slug.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   defaultToolkitName,
   fullToolName,

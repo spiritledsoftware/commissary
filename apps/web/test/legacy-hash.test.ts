@@ -1,6 +1,6 @@
 // Upstream panel bookmarks (`/management.html#/...`, redirected to `/#/...`) mapped to the panel's pages
 // (src/lib/legacy-hash.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { legacyHashTarget } from "../src/lib/legacy-hash.ts";
 
 describe("legacyHashTarget", () => {

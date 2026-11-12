@@ -3,7 +3,7 @@
  * (`test/fixtures/translator/`) and the Worker's executor-rewrite cases run through it. Outputs compare structurally
  * (Go's key order and HTML escaping are not part of the contract); SSE framing and non-JSON text stay exact.
  */
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { isJsonObject, type Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";

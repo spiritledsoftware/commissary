@@ -2,7 +2,7 @@
 // process-wide counters or timestamps in generated tool-call ids (`needs: ["id-normalization"]`, ids are masked on
 // both sides before comparing) and cases that depend on the thinking summary hooks (`needs: ["thinking-summary"]`,
 // the real hooks are applied here). Everything else must match the Go output exactly.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState, type SummaryHooks } from "../src/translator/registry.ts";

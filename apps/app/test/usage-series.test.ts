@@ -3,7 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { afterAll, beforeEach, expect, it as plain } from "vitest";
+import { afterAll, beforeEach, expect, it as plain } from "vite-plus/test";
 import { ManagementApi } from "@commissary/contract/api";
 import { ManagementError } from "@commissary/contract/errors";
 import { type Harness, makeHarness, resetControlPlane } from "./support/management.ts";

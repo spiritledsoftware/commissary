@@ -4,7 +4,7 @@ This document records the binding decisions for the TypeScript/Effect rewrite of
 Cloudflare Workers behind Cloudflare Zero Trust Access. Behavioural references for the Go implementation live in
 `docs/research/*.md`. The Go code is a reference, not the authority (ADR 0019): Commissary copies its behaviour where that
 is the better design and differs where it is not. It is the read-only reference checkout in `.repos/CLIProxyAPI` (upstream [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), cloned by
-`bun install`); Go paths cited here (`internal/...`, `sdk/...`) are relative to it.
+`pnpm install`); Go paths cited here (`internal/...`, `sdk/...`) are relative to it.
 
 ## Goals and non-goals
 
@@ -22,7 +22,7 @@ realtime (WebRTC/SIP), the AI Studio `wsrelay` gateway, and deprecated `/v0/mana
 
 ## Layout
 
-A Bun workspace run by Turborepo (ADR 0046): Workers and the panel in `apps/`, libraries in `packages/` (scope `@commissary/*`,
+A pnpm workspace on Vite+ (ADR 0049): Workers and the panel in `apps/`, libraries in `packages/` (scope `@commissary/*`,
 source-only: they export TypeScript and whatever imports them compiles it). The deploy code stays at the root. Paths
 such as `src/...` and `test/...` in the rest of this document are relative to `apps/app/`; translation's modules are
 cited as `translation/...` (relative to `packages/translation/src/`), core's as `core/...` (relative to
@@ -31,7 +31,7 @@ cited as `translation/...` (relative to `packages/translation/src/`), core's as 
 to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/src/`) and the JSON path engine as `packages/json`.
 
 ```
-.                             workspace root and deploy root (Alchemy, no Wrangler config); turbo.json
+.                             workspace root and deploy root (Alchemy, no Wrangler config); vite.config.ts
   alchemy.run.ts              infrastructure: app, API, state and (Cloud) auth Workers, DOs, KV, D1 (+ migrations),
                               assets, cron, zone routes, Access
   infra/                      deploy settings (.env), Cloudflare Access provisioning, a Cloud preview's app origin
@@ -148,7 +148,7 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
                               grants)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
     src/catalog/              the toolkit catalog (#207): integrations.sh's trimmed registry (the bundled snapshot
-                              integrations-sh.json and its trim, ./integrations-sh for `bun run toolkits:sync`), the
+                              integrations-sh.json and its trim, ./integrations-sh for `pnpm run toolkits:sync`), the
                               sources' credentials from integrations.sh's v3 documents (integrations-sh-credentials.json,
                               ./integrations-sh-credentials), the catalog additions, the catalog's services and search,
                               its KV keys (stored.ts, all the cron refresh reads), the isolate's catalog and the cron
@@ -185,7 +185,7 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     src/sse.ts                SSE line splitting and frame builders
     test/                     Node.js tests + fixtures generated from the Go code; test/testing.ts is ./testing
   tools/fixturegen/           Go programs (own module, root go.work) that emit golden fixtures from the Go code
-  tools/sync-reference-repos.sh  clones/updates the reference repositories in .repos/ (bun install, bun run repos:sync)
+  tools/sync-reference-repos.sh  clones/updates the reference repositories in .repos/ (pnpm install, pnpm run repos:sync)
   .repos/CLIProxyAPI/         read-only Go reference checkout (git-ignored)
 ```
 
@@ -779,7 +779,7 @@ Core contracts every provider slice implements (Go references in each module hea
   for unsupported-part refusals). Golden fixtures: `corpus/codex-*.json`; **generate them with `TZ=UTC`** (Gemini timestamps
   use the process time zone in Go). The Interactions `interaction.completed` event embeds the current time, so it is
   covered by a fake-timer unit test instead of a fixture. Request `tool_use.input` text is re-serialised compactly (Go
-  forwards the raw bytes), hence the corpus files are excluded from the formatter (`.oxfmtrc.jsonc`).
+  forwards the raw bytes), hence the corpus files are excluded from the formatter (`fmt.ignorePatterns` in `vite.config.ts`).
 - **Executor** (`executor/codex/executor.ts`): per attempt `translate -> Thinking.apply -> model/stream fields ->
   instructions -> image_generation tool -> reasoning sanitising -> parallel_tool_calls -> tool schema normalisation ->
   reasoning replay -> prompt cache key + Session-Id -> input id sanitising -> finalizePayload (last) -> headers (routing
@@ -1173,7 +1173,7 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
     quirk is not repeated for `devin/` ids in `lookupModelInfo`), and Go's hard-coded Codex/xAI/Devin built-ins
     (`builtins.json`) are now additions.
   - _Bundled and stored copies_: `catalog/models-dev.json` is the trimmed snapshot shipped with the Worker (regenerated
-    with `bun run catalog:sync [url|file]`, `tools/sync-models-dev-catalog.ts`, idempotent). The same document is stored in KV
+    with `pnpm run catalog:sync [url|file]`, `tools/sync-models-dev-catalog.ts`, idempotent). The same document is stored in KV
     `CACHE` (`registry/models-dev.json`) by the refresh; `CatalogStore` (`catalog-store.ts`) serves the KV copy per isolate,
     re-read at most once a minute, and falls back to the bundled one when KV is empty, unreadable or invalid. `models.catalog: embed` ignores the KV copy (the registry
     and the OpenCode executor read the bundled one at once, whatever KV still holds). The request path never fetches.
@@ -3776,7 +3776,7 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
   Worker, the auth Worker to the app Worker, and the `FREE_RATE_LIMIT` and `PAYG_RATE_LIMIT` rate-limit bindings to the API
   Worker (`infra/settings.ts` validates their namespaces). Deploy order: state, auth, app, API (a preview: state, API, auth, app). CI deploys
   a preview as Commissary Cloud while its pull request has the `cloud-preview` label and checks it with
-  `tools/check-cloud-deploy.sh`; `COMMISSARY_MODE=cloud bun run smoke` runs it under `alchemy dev`.
+  `tools/check-cloud-deploy.sh`; `COMMISSARY_MODE=cloud pnpm run smoke` runs it under `alchemy dev`.
 
 ## Billing (`billing/`, `models/handlers/metering.ts`, `apps/api/src/http/gate.ts`, `billing/routes.ts`)
 
@@ -4489,7 +4489,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     documents and GraphQL endpoints with a public `https:` locator (no CLI, no stdio command, no placeholder host), and
     the fields it reads, sorted (≈3,700 sources); an icon is kept only at an `https:` URL (the panel shows it as an
     image the browser loads; an icon proxy, if one comes, fetches it through the outbound guard). The snapshot ships as
-    `catalog/integrations-sh.json` (`bun run toolkits:sync`), read through the same trim as a refreshed copy, so a snapshot
+    `catalog/integrations-sh.json` (`pnpm run toolkits:sync`), read through the same trim as a refreshed copy, so a snapshot
     that does not decode fails loudly rather than being cast; the cron task `toolkit-catalog-refresh` (deployment-wide,
     every 3 hours with the others) and `POST /toolkit-catalog/refresh` (org admins) fetch the index again through the
     outbound guard (30 s, at most 8 MiB), trim it and keep it in KV `CACHE` (`DeploymentKv`,
@@ -4516,7 +4516,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     (`oauth`), `oauth2_cc` a client credentials grant, `two_step` a token exchange, and `basic`, `bearer`, `oauth1`,
     `tba`, `jwt`, `app`, `aws_sigv4`, `compound` the kinds of the same names (#206); `signature` and `custom`, and an
     entry that needs several credentials at once, have no kind and are left out. An OpenAPI document says how to sign in
-    itself, so its source may list none. The index notes how to sign in on curated records only, so `bun run toolkits:sync`
+    itself, so its source may list none. The index notes how to sign in on curated records only, so `pnpm run toolkits:sync`
     also reads each kept domain's v3 document (`/api/<domain>/surface`: integrations.sh does not rate-limit it; four at
     a time, retried, cached under `node_modules/.cache/integrations-sh/` so a stopped run resumes) and matches each
     source to the surface of its kind at its URL (or a `specAlternates` twin); what that surface says ships as
@@ -5227,7 +5227,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     `SandboxProvider` interface (open, bash, read, write, list, close, each as an owner, with the call's `ComputerMeter`
     (#224), and purge and `stopComputer`, for the ControlPlane; a `SandboxError` with a reason the toolkit words).
     Cloudflare's sandbox (`tools/sandbox/cloudflare/`, source `cloudflare`) is the one adapter, and the only code that
-    imports `@cloudflare/computer` or just-bash (lint: `no-restricted-imports` in `.oxlintrc.json`; pinned at 0.10.0,
+    imports `@cloudflare/computer` or just-bash (lint: `no-restricted-imports` in `vite.config.ts`'s `lint`; pinned at 0.10.0,
     with just-bash pinned at 3.2.0 by a workspace override, upgraded together in a Dependabot group of their own once
     the sandbox tests pass): each session is a `SandboxSession` Durable Object in the state Worker, named
     `<org>:<session id>`, holding the session's `@cloudflare/computer` Workspace (its files, in the object's SQLite)
@@ -5304,7 +5304,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     (`COMMISSARY_COMPUTER_INSTANCE`: `basic`, `standard-1` (the default: computerd holds its copy of the files in
     memory, and a runtime from mise is 100 to 200 MB unpacked) to `standard-4`). The image pins its two bases by digest
     (Dependabot's `docker` updates), computerd's to the `@cloudflare/computer` version (`tools/check-computerd.sh`,
-    run by `bun run lint`). Cold start, `mise use node@22` and the per-session cost are not measured yet: they need a
+    run by `pnpm run lint`). Cold start, `mise use node@22` and the per-session cost are not measured yet: they need a
     deployed stage with the computer. The workerd tests run real sessions with a fake computer in the container's
     place (`test/support/fake-computer.ts`) over a fake `ctx.container` (`test/support/fake-container.ts`), through
     `@cloudflare/computer`'s own launch (`WorkspaceContainerAPI`) and the real egress path (`WorkspaceProxy` to the

@@ -1,7 +1,7 @@
 // Billing does nothing on a self-hosted Commissary (ADR 0042, ADR 0043): its routes (`/v9/management/billing*` and
 // Polar's webhook) answer like a path the router does not know, even to a platform admin. Commissary Cloud's route is
 // tested in test/hosted/billing.test.ts.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { isolatedPlatform, makeHarness } from "./support/management.ts";
 
 const registry = isolatedPlatform();

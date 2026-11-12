@@ -1,6 +1,6 @@
 // OpenAI-compatible parity (#29 part 2): text-only tool-result normalisation and derived prompt cache keys, against the
 // real Go helpers (`go run ./tools/fixturegen/compatparity`) and through the executor.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { OpenAICompatGroup } from "../src/config/schema.ts";
 import { makeOpenAICompatExecutor } from "../src/executor/openai-compat/executor.ts";
 import {

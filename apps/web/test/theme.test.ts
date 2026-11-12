@@ -1,5 +1,5 @@
 // The panel's theme choice (src/lib/theme.ts): what a stored value means and how the metas follow a choice.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   colorSchemeContent,
   parseThemeChoice,

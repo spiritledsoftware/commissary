@@ -1,6 +1,6 @@
 // OpenAI chat -> Antigravity request (ticket C6; upstream 80aa2b1d): tool_choice none keeps the tool declarations, so a
 // later turn's replayed history is not bound to the current tool policy.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 

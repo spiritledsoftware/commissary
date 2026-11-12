@@ -9,7 +9,7 @@
 // are masked from then on, as after a Live View. Only the session's member gets its Live View (a 60-second link, never
 // in a tool result nor a log); an org admin lists and ends the org's sessions but watches none.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Effect, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import type { ToolCall, ToolCallOutcome } from "../src/control-plane-part.ts";

@@ -1,5 +1,5 @@
 // Refresh scheduling math and failure/success state transitions (pure, no I/O).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { emptyState } from "../src/credentials/model.ts";
 import { applyRefreshFailure, applyRefreshSuccess } from "../src/credentials/refresh/outcome.ts";
 import { isInvalidGrant, isUnauthorized } from "../src/credentials/refresh/error.ts";

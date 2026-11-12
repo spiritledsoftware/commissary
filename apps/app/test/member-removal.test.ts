@@ -3,7 +3,7 @@
 // and the org share stays. Through the management API and the real ControlPlane.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import {
   ADMIN,

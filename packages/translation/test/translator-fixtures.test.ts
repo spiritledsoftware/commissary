@@ -1,7 +1,7 @@
 // Golden translator fixtures generated from the Go registry by `go run ./tools/fixturegen/translator`.
 // Every file under test/fixtures/translator is picked up automatically; provider slices only add corpus files. The
 // executor-rewrite cases are Models' (packages/models/test/unit/translator-executor-fixtures.test.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { setModelInfoLookup } from "../src/translator/model-info.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";

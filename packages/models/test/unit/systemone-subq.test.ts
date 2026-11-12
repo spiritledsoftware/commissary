@@ -1,7 +1,7 @@
 // SubQ's request body (`executor/systemone/subq.ts`, ADR 0032): TypeSafe assets become SubQ's `images` with their
 // media types, and requests over SubQ's image limits are refused before any image is read or encoded.
 import { Effect } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { JsonObject } from "@commissary/json";
 import { ExecutionError } from "../../src/executor/errors.ts";
 import { subqBody } from "../../src/executor/systemone/subq.ts";

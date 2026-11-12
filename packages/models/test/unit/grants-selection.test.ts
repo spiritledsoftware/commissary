@@ -1,7 +1,7 @@
 // Grants in selection (ADR 0023): a member's reach leaves out the shared credentials and upstream models they have no
 // grant for before priority tiers, strategy and session affinity look at the candidates. Everything that cannot be
 // reached answers like an unknown model.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { planRetry } from "../../src/credentials/selection/retry.ts";
 import { ALL_MODELS } from "../../src/grants/grant.ts";
 import {

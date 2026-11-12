@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { embeddedModelsDev, modelsDevFromText } from "../src/registry/catalog.ts";
 import { CATALOG_KEYS } from "../src/registry/catalog-store.ts";
 import {

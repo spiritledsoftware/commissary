@@ -7,7 +7,7 @@ import {
   routerSuffixed,
 } from "./support/signatures.ts";
 import { Clock, Effect, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { metaCreds, requireMetaToken } from "../src/executor/meta/credentials.ts";
 import {
   isMetaSubscriptionQuota,

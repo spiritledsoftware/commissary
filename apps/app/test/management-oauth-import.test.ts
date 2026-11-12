@@ -1,7 +1,7 @@
 // POST /v9/management/oauth/import?provider=vertex through the router with the real ControlPlane, and the private-key
 // normalisation against the Go `NormalizeServiceAccountMap` (`sessionFixtures` of `@commissary/models/testing`,
 // tools/fixturegen/session).
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { controlPlane, makeHarness, resetControlPlane } from "./support/management.ts";
 import type { Json } from "@commissary/json";
 import {

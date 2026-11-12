@@ -1,6 +1,6 @@
 // Go `internal/util/sanitize_test.go` `TestCleanClaudeToolArguments` and `…_ImplicitOpenObjectPreservesArguments`
 // (CLIProxyAPI 202b8b8c, e1fb2521): argument cleaning against the original and the translated (sent) tool schemas.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { tryParseJson } from "@commissary/json";
 import {
   claudeToolIsParameterless,

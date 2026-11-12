@@ -1,7 +1,7 @@
 // OAuth login routes (management + public callbacks) through the router with the real ControlPlane Durable Object.
 import { runInDurableObject } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   controlPlane,
   jsonInit,

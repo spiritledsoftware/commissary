@@ -8,8 +8,8 @@ dist
 .env.*
 !.env.example
 !.env.cloud.example
-# Turborepo: local task cache and logs
-.turbo
+# Vitest's attachments and caches (one .vitest per package)
+.vitest
 
 # Reference repositories (tools/sync-reference-repos.sh)
 .repos/

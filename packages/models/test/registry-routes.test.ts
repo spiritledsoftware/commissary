@@ -4,7 +4,7 @@ import { FULL_ACCESS } from "../src/credentials/ownership.ts";
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { ConfigReader } from "../src/config/reader.ts";
 import { behindClientGate } from "./support/client-gate.ts";
 import { requestContext } from "./support/context.ts";

@@ -1,7 +1,7 @@
 // The auth Worker's RPC (`SignInService`, `@commissary/auth`; src/index.ts), as the app Worker's service binding calls
 // it: whose session a cookie is, ending people's or a domain's sessions, and deleting a sign-in account.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { resetStandingCaches } from "@commissary/auth";
 import {
   clearPeople,

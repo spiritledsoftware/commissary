@@ -1,7 +1,7 @@
 // Claude client -> Codex / Chat: mid-conversation `tool_addition` blocks and deferred-tool discovery (Go:
 // internal/translator/codex/claude/codex_claude_{request,response}_test.go, internal/translator/openai/claude/
 // openai_claude_request_test.go; upstream 12d97cfe, 374056f2).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   asString,
   get,

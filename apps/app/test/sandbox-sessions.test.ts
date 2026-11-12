@@ -3,7 +3,7 @@
 // as in org-isolation.test.ts), each answer decoded with the contract. What each session says of itself, and the
 // cases of who sees and who may end one, are `@commissary/tools`' tests (test/sandbox-sessions.test.ts).
 import { env } from "cloudflare:workers";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { EndedSandboxSession, SandboxSessionsList } from "@commissary/contract/sandbox-sessions";
 import { ADMIN, isolatedPlatform, jsonInit, makeHarness, token } from "./support/management.ts";

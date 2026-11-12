@@ -3,7 +3,7 @@
  * from CLIProxyAPI ae65e26d (sdk/api/handlers/openai/openai_responses_framing_{metadata,recovery}_test.go), driven
  * through the framer the way `forwardResponsesStream` drives it: chunks, then the end-of-stream flush.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { responsesFramer } from "../src/handlers/responses/framer.ts";
 
 const COMPLETED = 'event: response.completed\ndata: {"type":"response.completed"}\n\n';

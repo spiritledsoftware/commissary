@@ -5,7 +5,7 @@
 // is public on the app host. A self-hosted Commissary answers 404 (test/billing-self-hosted.test.ts).
 import { env } from "cloudflare:workers";
 import { Schema } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { seedRequestsUsed, setPlan } from "@commissary/billing/testing";
 import { BillingView } from "@commissary/contract/billing";
 import { platformOf } from "@commissary/state";

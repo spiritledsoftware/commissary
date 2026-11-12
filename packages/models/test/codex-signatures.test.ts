@@ -1,7 +1,7 @@
 // C9 PR B (Go 7a0b7563, 674dbe8f, cc5682c5, a68c7d8e): the Codex executor's reasoning-signature policy end to end. The
 // signature target is the upstream model (or the requested Meta, Grok or GPT model behind an unmapped alias), a router
 // suffix survives on openrouter.ai only, and a cached signature meets the same policy as a client-sent one.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
 import { makeInMemoryReplayStore } from "../src/executor/codex/replay.ts";
 import type { ExecutorOptions } from "../src/executor/types.ts";

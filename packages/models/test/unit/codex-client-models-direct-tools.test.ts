@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildCodexClientModels } from "../../src/registry/codex-client-models.ts";
 import type { ModelInfo } from "../../src/registry/model-info.ts";
 import type { JsonObject } from "@commissary/json";

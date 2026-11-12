@@ -6,7 +6,7 @@
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { AccessPrincipal } from "@commissary/auth";
 import { type OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";

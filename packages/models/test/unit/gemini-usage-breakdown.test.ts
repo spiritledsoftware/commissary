@@ -1,6 +1,6 @@
 // The Gemini executors' usage helpers (`executor/gemini/usage.ts`) carry the v2 token accounting breakdown:
 // reasoning is separate from the candidates, cache is part of the input, and invalid counts are `inconsistent`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   parseGeminiStreamUsage,
   parseGeminiUsageBody,

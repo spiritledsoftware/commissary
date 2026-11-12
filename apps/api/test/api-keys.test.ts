@@ -10,7 +10,7 @@ import { assert, it as effectIt } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { TestClock } from "effect/testing";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import {
   type AccessJwks,
   AccessPrincipal,

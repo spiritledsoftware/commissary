@@ -5,7 +5,7 @@ import { createHmac } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { Context } from "effect";
 import { HttpRouter } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { newOrgId, type OrgId } from "@commissary/core";
 import { platformOf } from "@commissary/state";
 import { type BillingBindings, BillingEnv } from "../src/api.ts";

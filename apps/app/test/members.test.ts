@@ -3,7 +3,7 @@
 // 0006's rule per org, and that a removed member is refused on the next request. Through the router with the real
 // ControlPlanes and a Platform registry of its own; every test works in an org of its own.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   ADMIN,
   claudeFile,

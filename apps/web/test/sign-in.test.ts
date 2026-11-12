@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { safeNextPath, signInProblem } from "../src/lib/sign-in.ts";
 
 describe("the page to open after signing in", () => {

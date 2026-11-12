@@ -2,7 +2,7 @@
 // message: a provider's `base_url` (a provider key group, a config import, an auth file upload and an auth file's field
 // patch), a Vertex service account's `token_uri` (the import and an auth file upload) and the `models.catalog` source
 // (a settings save and a config import).
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import { makeServiceAccount, type TestServiceAccount } from "@commissary/models/testing";
 import { jsonInit, makeHarness, resetControlPlane } from "./support/management.ts";

@@ -1,7 +1,7 @@
 // Credential import/synthesis parity with the Go server (golden fixtures from `go run ./tools/fixturegen/credentials`)
 // plus merge, expiry, redaction and weight rules.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parseConfigYaml } from "../../src/config/codec.ts";
 import { deriveFileCredential } from "../../src/credentials/derive.ts";
 import { accessTokenExpiry, parseJwtExp } from "../../src/credentials/expiry.ts";

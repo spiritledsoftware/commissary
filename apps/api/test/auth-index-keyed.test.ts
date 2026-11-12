@@ -4,7 +4,7 @@
 // mocked, through the global `fetch`. The management reads, and the views that join on the index, are the app Worker's
 // (apps/app/test/auth-index-keyed.test.ts).
 import { env, exports } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   authIndexOf,
   emptyKeyAuthIndexOf,

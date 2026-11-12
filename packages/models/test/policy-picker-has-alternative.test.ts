@@ -3,7 +3,7 @@
 import { env } from "cloudflare:workers";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { CredentialPicker } from "../src/executor/picker.ts";
 import { withCredentialPolicy } from "../src/executor/policy-picker.ts";
 import { envContext } from "./support/context.ts";

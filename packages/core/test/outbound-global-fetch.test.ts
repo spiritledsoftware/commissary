@@ -1,6 +1,6 @@
 // The outbound guard around a library's own `fetch` calls (#200: the OAuth provider's CIMD and JWKS fetches): inside
 // `withOutboundGuard` every hop is checked and redirects are followed by the guard; outside it `fetch` is untouched.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   MAX_OUTBOUND_REDIRECTS,
   OUTBOUND_REFUSED_MESSAGE,

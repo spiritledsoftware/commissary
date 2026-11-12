@@ -1,6 +1,6 @@
 // CLIProxyAPI 9a35fa12 (sdk/api/handlers/handlers_errors.go, issue7017_retry_after_test.go): a locally computed
 // Retry-After outranks the raw upstream one, even with passthrough-headers.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ExecutionError } from "../../src/executor/errors.ts";
 import { errorResponse } from "../../src/handlers/respond.ts";
 

@@ -4,7 +4,7 @@
 // Worker's objects (the routes that set them up are the app Worker's, apps/app/test/hosted/sso.test.ts); the identity
 // providers and Google are fakes behind the global `fetch`.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { resetStandingCaches } from "@commissary/auth";
 import { type IdpSettings, serviceProviderOf } from "@commissary/auth/sso";
 import type { OrgId } from "@commissary/core";

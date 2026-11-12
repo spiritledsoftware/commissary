@@ -4,7 +4,7 @@
 import { env } from "cloudflare:workers";
 import { Effect, Layer, Option, Result } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import {
   type AccessError,
   accessRefusal,

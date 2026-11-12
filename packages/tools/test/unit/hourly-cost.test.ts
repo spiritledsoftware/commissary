@@ -1,7 +1,7 @@
 // What metered time costs at a price per hour (#214, #224): browser time at the price per browser hour and computer time
 // at the price per computer hour, one mechanism, prorated by the millisecond and rounded half up to whole micro-USD,
 // computed exactly at every price an org admin may set, where the product of the two passes 2^53.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   HOUR_PRICES,
   hourlyCost,

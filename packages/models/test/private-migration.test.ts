@@ -2,7 +2,7 @@
 // ownership (no `owner` columns, no `private_credentials` column, no private key tables), restarts it so its constructor
 // migrates, and checks that everything that existed is shared and still works. A second restart changes nothing.
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { controlPlane } from "./support/control-plane.ts";
 import { storedText } from "@commissary/state/testing";

@@ -9,7 +9,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { type Duration, Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { TOOLKIT_OAUTH_CLIENT_PATH } from "@commissary/core";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import { clientMetadata, SIGN_IN_CALLBACK_PATH } from "../src/oauth/urls.ts";

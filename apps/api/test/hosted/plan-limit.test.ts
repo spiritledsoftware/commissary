@@ -6,7 +6,7 @@
 // Free with 5 requests a minute here, vitest.config.ts: the tests seed the month's count instead of sending 25,000
 // requests. The month turning is tested with `TestClock` in packages/billing.)
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { FREE_USAGE, requestsUsed, seedRequestsUsed, setPlan } from "@commissary/billing/testing";
 import type { OrgId } from "@commissary/core";
 import { resetUsageDb, withModelsPart } from "@commissary/models/testing";

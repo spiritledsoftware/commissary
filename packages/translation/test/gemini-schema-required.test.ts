@@ -1,7 +1,7 @@
 // The Gemini cleaner's passes that rewrite a node's `required` list: nullable properties leave it
 // (`flattenTypeArrays`), and `allOf` branches merge theirs into it (`mergeAllOf`). Order and de-duplication are the
 // behaviour under test.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get } from "@commissary/json";
 import { cleanJsonSchemaForGemini } from "../src/translator/gemini/util/json-schema.ts";
 

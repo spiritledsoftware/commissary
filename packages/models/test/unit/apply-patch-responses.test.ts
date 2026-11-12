@@ -1,6 +1,6 @@
 // Responses-format apply_patch bridge against the real Go implementation (`go run ./tools/fixturegen/applypatch`):
 // request normalisation, the common bridge and the executor-owned state with the xAI folded dispatcher.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   normalizeApplyPatchResponses,
   ApplyPatchResponsesState,

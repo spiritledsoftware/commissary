@@ -1,6 +1,6 @@
 // Terminal error frames of the Responses WebSocket: which failures reach the client and the frame they get
 // (CLIProxyAPI b5e6027c: shouldExposeResponsesUpstreamError, buildResponsesWebsocketErrorPayload).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ExecutionError } from "../../src/executor/errors.ts";
 import {
   buildErrorPayload,

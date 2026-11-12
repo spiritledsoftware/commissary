@@ -1,5 +1,5 @@
 // The removed upstream-panel routes (api-call, latest-version, log stubs, model definitions, ...) and the legacy panel redirect.
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { jsonInit, makeHarness, resetControlPlane, token } from "./support/management.ts";
 
 const harness = makeHarness((request) => ({

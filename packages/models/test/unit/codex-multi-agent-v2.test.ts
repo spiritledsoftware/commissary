@@ -1,6 +1,6 @@
 // Codex multi-agent v2 / orphan delegation rewriting against the real Go functions
 // (`go run ./tools/fixturegen/multiagent`).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   hasCodexMultiAgentV2NamespaceConflict,
   optimizeCodexMultiAgentV2RequestForAuth,

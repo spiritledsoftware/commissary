@@ -2,7 +2,7 @@
 // with their indexes and rows, when it next starts (apps/state/src/control-plane.ts), and leaves every other table.
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 
 const RETIRED = [

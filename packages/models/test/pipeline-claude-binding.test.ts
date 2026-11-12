@@ -3,7 +3,7 @@
 // `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` and the `thinking-binding-controls` beta
 // (CLIProxyAPI 911f49cb, e13bc9a1). Anthropic: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { prepareLocalCountBody } from "../src/executor/claude/pipeline.ts";
 import { makeSessionStateContinuityStore } from "../src/executor/claude/continuity.ts";
 import { makeSessionStateDatePinStore } from "../src/executor/claude/date-pin.ts";

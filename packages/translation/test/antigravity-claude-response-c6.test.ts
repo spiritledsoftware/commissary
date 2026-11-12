@@ -1,6 +1,6 @@
 // Antigravity -> Claude Messages responses (ticket C6; upstream 202b8b8c, e1fb2521, 912a038b, 24b04548).
 // Expected values come from the Go tests of those commits (antigravity_claude_response_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

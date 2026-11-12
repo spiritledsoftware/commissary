@@ -1,6 +1,6 @@
 // The per-plan request-rate ceiling of Commissary Cloud (packages/billing/src/rate-limit.ts) is the client API's, which the
 // API Worker serves (apps/api/test/hosted/rate-limit.test.ts): the management API on the app Worker is not limited.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { call, clearPeople, installFakes, panelHeaders, restoreFetch, signIn } from "./support.ts";
 
 beforeAll(async () => {

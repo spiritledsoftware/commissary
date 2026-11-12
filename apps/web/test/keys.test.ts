@@ -1,6 +1,6 @@
 // The provider keys page's model (src/lib/keys.ts): sections, key standing, group facts, and the group form's
 // validation and the write it becomes (stored keys by auth_index, nothing the form does not show is lost).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   OPENCODE_PROTOCOLS,
   type ProviderKeysList,

@@ -1,7 +1,7 @@
 // Session routing against the Go implementation (`go run ./tools/fixturegen/session`,
 // test/fixtures/session.json): canonical turns and fingerprints, the derived content-hash identity, the message-hash
 // fallback, identity helpers and scripted LCP matcher scenarios.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { extractSessionInfo, isGuardianRequest } from "../../src/handlers/session.ts";
 import type { Json, JsonObject } from "@commissary/json";
 import { derivedAntigravitySessionId } from "../../src/executor/antigravity/derived-session.ts";

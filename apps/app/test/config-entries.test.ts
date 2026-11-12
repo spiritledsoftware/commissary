@@ -1,7 +1,7 @@
 // Config entries (ADR 0025): per-entry revisions, the Go config import, the migration of a stored document, and the
 // entry routes (`/settings`, `/provider-keys/groups`, `/model-rules/*`) through the router and the real ControlPlane.
 import { runInDurableObject } from "cloudflare:test";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { Effect } from "effect";
 import type { Json } from "@commissary/json";
 import type { ProviderKeysList } from "@commissary/contract/provider-keys";

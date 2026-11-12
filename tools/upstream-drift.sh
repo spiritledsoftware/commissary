@@ -24,7 +24,7 @@ commits="$(git -C "$reference" log --no-merges --format='- [`%h`](https://github
 failing=""
 for package in packages/json packages/models packages/translation; do
   results="$(mktemp)"
-  (cd "$package" && bunx vitest run --reporter=json --outputFile="$results") >/dev/null 2>&1 || true
+  (cd "$package" && pnpm exec vp test run --reporter=json --outputFile="$results") >/dev/null 2>&1 || true
   failing+="$(jq -r --arg root "$PWD/" '.testResults[] | select(.status != "passed") | "- `" + (.name | ltrimstr($root)) + "`"' "$results")"$'\n'
   rm -f "$results"
 done
@@ -47,7 +47,7 @@ fi
   echo
   echo "${failing:-None: the new commits do not change any behaviour covered by the fixtures.}"
   echo
-  echo "To port: \`bun run repos:sync\`, regenerate (\`tools/upstream-drift.sh\`), port the Go changes until \`bun run test\`"
+  echo "To port: \`pnpm run repos:sync\`, regenerate (\`tools/upstream-drift.sh\`), port the Go changes until \`pnpm run test\`"
   echo "passes with the new fixtures, then set \`tools/fixturegen/UPSTREAM_COMMIT\` to the reference commit."
 } >"$report"
 exit 10

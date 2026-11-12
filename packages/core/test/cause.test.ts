@@ -1,6 +1,6 @@
 // Log-safe cause summaries.
 import { Cause, Data } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { causeSummary, redactUrls } from "../src/index.ts";
 
 class CatalogError extends Data.TaggedError("CatalogError")<{ readonly message: string }> {}

@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs"
   },
   "dependencies": {
@@ -29,6 +29,7 @@
     "jose": "catalog:",
     "samlify": "2.15.1",
     "tsrs": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:"
   }
 }

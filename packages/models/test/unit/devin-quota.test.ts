@@ -1,5 +1,5 @@
 // Devin account-wide quota exhaustion (CLIProxyAPI b946d54e, helps/devin_quota_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ExecutionError } from "../../src/executor/errors.ts";
 import {
   devinQuotaRetryAfterMs,

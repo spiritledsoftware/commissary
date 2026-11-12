@@ -1,6 +1,6 @@
 // The org's retention periods in the panel (src/lib/retention.ts, ADR 0027): usage records', how it
 // is worded, what the form accepts and the body of `PATCH /org` it sends.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parseRetentionDays, retentionPayload, retentionSentence } from "../src/lib/retention.ts";
 
 describe("retentionSentence", () => {

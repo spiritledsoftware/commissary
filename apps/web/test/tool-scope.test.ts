@@ -1,6 +1,6 @@
 // The tool scope editor's model (src/lib/tool-scope.ts, #200): drafts of stored scopes, the scope a draft sends, what it
 // gives of the tools the member may use, and how the API keys page words a key's tools.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { UsableTools } from "@commissary/contract/tools";
 import {
   draftOfScope,

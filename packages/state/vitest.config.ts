@@ -3,7 +3,7 @@
 // Platform registry and SessionState. Compatibility settings as the deployed Worker's (alchemy.run.ts,
 // apps/app/vitest.config.ts); the bindings are the ones `StateObjectEnv` names (test/env.d.ts).
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 import { workerdTestOptions } from "../../tools/vitest/workerd.ts";
 

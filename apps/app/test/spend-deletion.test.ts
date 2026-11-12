@@ -2,7 +2,7 @@
 // the Worker's org deletion. A member's and an API key's: packages/models/test/spend-deletion.test.ts.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { Effect } from "effect";
 import { ModelsEnv } from "@commissary/models/api";
 import { orgDeletionStep } from "@commissary/models/management";

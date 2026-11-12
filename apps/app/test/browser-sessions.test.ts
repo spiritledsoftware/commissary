@@ -2,7 +2,7 @@
 // gate and the role table, and the real ControlPlane with the Tools part, each answer decoded with the contract. This
 // ControlPlane has no browser, so no session is ever open; the sessions themselves, their handoffs and Live Views, and
 // who may watch or end one are `@commissary/tools`' tests (test/browser-handoff.test.ts).
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { BrowserSessionsList } from "@commissary/contract/browser-sessions";
 import { ADMIN, isolatedPlatform, jsonInit, makeHarness, token } from "./support/management.ts";

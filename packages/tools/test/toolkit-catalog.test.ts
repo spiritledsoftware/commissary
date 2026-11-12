@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import { it as effectIt } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { OutboundHttpClientLive } from "@commissary/core";
 import { platformOf } from "@commissary/state";
 import { type Catalog, embeddedCatalog } from "../src/catalog/catalog.ts";

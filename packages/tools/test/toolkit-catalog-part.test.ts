@@ -3,7 +3,7 @@
 // Commissary Cloud's managed OAuth app with the service (its secret never shown), unless the org gives the toolkit an
 // OAuth app of its own, and only a toolkit added from that service's entry does.
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import { SIGN_IN_CALLBACK_PATH } from "../src/oauth/urls.ts";
 import {

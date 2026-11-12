@@ -2,7 +2,7 @@
 // document in YAML, a 3.1 document in JSON and a Swagger 2.0 one. Upstream names (an operationId, or the method and
 // path), input schemas joining every parameter location and the body with `$ref`s resolved, what a call needs, a
 // deprecated operation flagged, and schemas kept within their size.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Result } from "effect";
 import { MAX_YAML_DOCUMENT_BYTES } from "../../src/openapi/document.ts";
 import { openApiToolList } from "../../src/openapi/tools.ts";

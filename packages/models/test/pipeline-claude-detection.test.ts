@@ -2,7 +2,7 @@
 // 6d4102f3, d2e61d19): `x-app: cli-bg`, the `sdk-ts` and configured `native-entrypoints` entrypoints, `(external, cli,
 // <field>)` User-Agent extensions, and the caller's Stainless headers under `cloak_mode: never`.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { collectForwardedBlocks } from "../src/executor/claude/cloaking.ts";
 import {
   makeMemoryDeviceProfileStore,

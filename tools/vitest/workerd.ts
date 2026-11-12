@@ -11,3 +11,8 @@
  * Imports nothing: this file sits outside every package (node-package.ts explains why that matters).
  */
 export const workerdTestOptions = { fsModuleCache: false } as const;
+
+// `vp run` starts a package's `test` script in the package's directory but hands it the `PWD` of the directory it was
+// started in, and workerd warns of the mismatch on every start ("PWD environment variable doesn't match current
+// directory"). The workerd processes Miniflare starts inherit this process's environment: give them the right one.
+process.env["PWD"] = process.cwd();

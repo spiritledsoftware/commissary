@@ -1,5 +1,5 @@
 // The throttle of an org's lookups at integrations.sh (#207): a fixed window a key, with how long until it ends.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { LOOKUP_WINDOW_MS, LookupThrottle } from "../../src/catalog/lookup-throttle.ts";
 
 describe("LookupThrottle", () => {

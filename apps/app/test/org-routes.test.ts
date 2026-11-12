@@ -1,7 +1,7 @@
 // Orgs through the management API (ADR 0021): platform admins list, create and rename orgs, address one with
 // `/v9/management/orgs/<slug>/...`, and everyone else keeps to `global`. Through the router with the real ControlPlanes
 // and a Platform registry of its own (`isolatedPlatform`).
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { ProviderKeysList } from "@commissary/contract/provider-keys";
 import type { RoutingModels } from "@commissary/contract/routing";
 import type { SettingsView } from "@commissary/contract/settings";

@@ -1,7 +1,7 @@
 // Unit tests of the xAI building blocks: credential routing, error rules, tool/input normalisation, response event
 // processing, the replay store and local $ref inlining.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import type { Json, JsonObject } from "@commissary/json";
 import { inlineLocalRefs } from "../src/executor/helps/inline-refs.ts";

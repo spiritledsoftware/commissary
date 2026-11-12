@@ -2,7 +2,7 @@
 // reasoning text from `output_item.done` when no summary deltas streamed, and `response.reasoning_text.delta` streams
 // like a summary delta.
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { convertCodexResponseToClaude } from "../src/translator/codex/claude/response.ts";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
 

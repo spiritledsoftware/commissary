@@ -1,5 +1,5 @@
 // Connecting an account in the panel (src/lib/connect.ts): the pasted address check and auth-file names.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OAuthProvider } from "@commissary/contract/oauth";
 import {
   authFileName,

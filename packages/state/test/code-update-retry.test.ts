@@ -2,7 +2,7 @@
 // (`retryOnCodeUpdate`, ADR 0030, #128). The wrapped stubs are checked on the test Worker's real ControlPlane (calls and
 // pipelined part calls answer as the runtime's do) and on fake stubs whose first calls fail as a reset does.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { isCodeUpdateReset, retryingNamespace, retryOnCodeUpdate } from "../src/index.ts";
 

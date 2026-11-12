@@ -14,7 +14,7 @@
     "./testing": "./test/testing.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs"
   },
   "dependencies": {
@@ -38,6 +38,7 @@
     "@types/js-yaml": "catalog:",
     "@types/node": "catalog:",
     "tsrs": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:"
   }
 }

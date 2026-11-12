@@ -1,6 +1,6 @@
 // Gemini thought signatures across OpenAI chat translations (ticket C8; upstream 38706390). Expected values come from the Go
 // tests (openai_gemini_request_test.go, openai_gemini_response_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

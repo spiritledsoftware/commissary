@@ -1,7 +1,7 @@
 // The Billing part of the ControlPlane (src/part.ts, src/store.ts) on real SQLite storage: the plan every org starts on,
 // the counters per calendar month in UTC and the Free plan's stop (ADR 0042), through the RPC surface the Workers use.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { newOrgId } from "@commissary/core";
 import { tablesOf } from "@commissary/state/testing";
 import { FREE_USAGE, seedRequestsUsed, setPlan } from "./testing.ts";

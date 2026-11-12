@@ -6,7 +6,7 @@
 // set up straight through the state Worker's objects (the panel's routes are the app Worker's).
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { newOrgId, type OrgId } from "@commissary/core";
 import { resetUsageDb } from "@commissary/models/testing";
 import { platformOf } from "@commissary/state";

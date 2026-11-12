@@ -5,43 +5,45 @@ Design decisions: [`ARCHITECTURE.md`](ARCHITECTURE.md) (module layout, runtime t
 where it differs from Go).
 
 The Go server ([router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) is a reference, not the
-authority (ADR 0019). It is not part of this repository: `bun install` (the `prepare` script, skipped when `CI` is set) clones it into
-`.repos/CLIProxyAPI` as a read-only reference, and fast-forwards it at every later install (Bun runs `prepare` each time);
-`bun run repos:sync` (`tools/sync-reference-repos.sh`, a fast-forward of upstream `main`) refreshes it alone.
+authority (ADR 0019). It is not part of this repository: `pnpm install` (the `prepare` script, skipped when `CI` is set) clones it into
+`.repos/CLIProxyAPI` as a read-only reference, and fast-forwards it at every later install (pnpm runs `prepare` each time);
+`pnpm run repos:sync` (`tools/sync-reference-repos.sh`, a fast-forward of upstream `main`) refreshes it alone.
 Go paths cited in code and docs (`internal/...`, `sdk/...`) are relative to that checkout.
 
 ## Requirements
 
-- Bun (the version in `package.json`'s `packageManager`, pinned again in `mise.toml`) and Node.js 22+ (CI uses the
-  version in `.node-version`). Bun installs the dependencies and runs the scripts; Vitest, Vite and the catalog sync
-  scripts run on Node.js, and alchemy on Bun (ADR 0046).
+- pnpm (the version in `package.json`'s `packageManager`, pinned again in `mise.toml`) and Node.js 22.22.3+ or
+  24.11.1+ (`engines`: Alchemy's CLI needs them on Node.js; CI uses the version in `.node-version`). pnpm installs
+  the dependencies and runs the scripts; Vite+ (`vite-plus`, a dependency: `pnpm exec vp`) is the toolchain, and
+  everything runs on Node.js, alchemy included (ADR 0049). A global `vp` (viteplus.dev) works too: it hands over to
+  the project's own.
 - Go (only for `tools/fixturegen`) and the reference checkout above.
 
 ## Commands
 
-Run from the repository root. `typecheck`, `lint`, `test` and `build` run through Turborepo (`turbo.json`), which
-caches each task: run again with no change, a task replays its logs (and `build` its output) instead of running. See
-"Workspace and Turborepo" below.
+Run from the repository root. `typecheck`, `test` and `build` run each package's script of that name through Vite
+Task (`vp run`), which caches `typecheck` and `build`: run again with no change, a task replays its logs (and `build`
+its output) instead of running. See "Workspace and tasks" below.
 
-| Script                       | Purpose                                                                                                                                                                                                                                                                     |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bun install`                | Install dependencies and clone/update the Go reference checkout (`.repos/`)                                                                                                                                                                                                 |
-| `bun run repos:sync`         | Clone or fast-forward the reference repositories in `.repos/` (`tools/sync-reference-repos.sh`)                                                                                                                                                                             |
-| `bun run dev`                | Builds the panel, then `alchemy dev`: the app (:1337), API (:1339) and state (:1338) Workers, and the auth Worker (:1340) with `COMMISSARY_MODE=cloud`, in workerd with emulated DO/KV/D1, hot reload (`ALCHEMY_STATE=local` avoids a Cloudflare login)                     |
-| `bun run build`              | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
-| `bun --cwd apps/web run dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `bun run dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                    |
-| `bun run typecheck`          | `tsrs`, with the Effect diagnostics, over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                          |
-| `bun run lint`               | `lint:root`: `oxlint` over the whole repository (`tools/oxlint.sh`: type-aware rules through tsrslint, anti-slop and boundaries rules) + `oxfmt --check` + `tools/check-computerd.sh`                                                                                       |
-| `bun run format`             | `oxfmt`                                                                                                                                                                                                                                                                     |
-| `bun run test`               | Each package's `vitest run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`bun run test --shard=1/3`)                                                                        |
-| `bun run smoke`              | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
-| `bun run plan`               | `alchemy plan`: preview infrastructure changes (needs a Cloudflare profile)                                                                                                                                                                                                 |
-| `bun run deploy`             | `alchemy deploy`                                                                                                                                                                                                                                                            |
-| `bun run destroy`            | `alchemy destroy`: delete every resource of a stage                                                                                                                                                                                                                         |
-| `bun run logs`               | `alchemy logs` (`--tail`)                                                                                                                                                                                                                                                   |
-| `bun run ci:setup`           | Deploy `stacks/github.ts`: CI's Cloudflare token, check service token and GitHub environments (`docs/DEPLOY.md`)                                                                                                                                                            |
-| `bun run catalog:sync`       | Regenerate the bundled models.dev snapshot `packages/models/src/registry/catalog/models-dev.json` (`tools/sync-models-dev-catalog.ts [url\|file]`); the catalog additions are edited by hand                                                                                |
-| `bun run toolkits:sync`      | Regenerate the bundled integrations.sh snapshot and its credentials in `packages/tools/src/catalog/` (`tools/sync-integrations-sh-catalog.ts [url\|file] [--fresh] [--no-credentials]`); the toolkit catalog additions are edited by hand                                   |
+| Script                        | Purpose                                                                                                                                                                                                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install`                | Install dependencies and clone/update the Go reference checkout (`.repos/`)                                                                                                                                                                                                 |
+| `pnpm run repos:sync`         | Clone or fast-forward the reference repositories in `.repos/` (`tools/sync-reference-repos.sh`)                                                                                                                                                                             |
+| `pnpm run dev`                | Builds the panel, then `alchemy dev`: the app (:1337), API (:1339) and state (:1338) Workers, and the auth Worker (:1340) with `COMMISSARY_MODE=cloud`, in workerd with emulated DO/KV/D1, hot reload (`ALCHEMY_STATE=local` avoids a Cloudflare login)                     |
+| `pnpm run build`              | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
+| `pnpm --dir apps/web run dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `pnpm run dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                   |
+| `pnpm run typecheck`          | `tsrs`, with the Effect diagnostics, over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                          |
+| `pnpm run lint`               | `vp lint` over the whole repository (`tools/oxlint.sh`: type-aware rules through tsrslint, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                                  |
+| `pnpm run format`             | `vp fmt`                                                                                                                                                                                                                                                                    |
+| `pnpm run test`               | Each package's `vp test run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`pnpm run test --shard=1/3`)                                                                      |
+| `pnpm run smoke`              | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
+| `pnpm run plan`               | `alchemy plan`: preview infrastructure changes (needs a Cloudflare profile)                                                                                                                                                                                                 |
+| `pnpm run deploy`             | `alchemy deploy`                                                                                                                                                                                                                                                            |
+| `pnpm run destroy`            | `alchemy destroy`: delete every resource of a stage                                                                                                                                                                                                                         |
+| `pnpm run logs`               | `alchemy logs` (`--tail`)                                                                                                                                                                                                                                                   |
+| `pnpm run ci:setup`           | Deploy `stacks/github.ts`: CI's Cloudflare token, check service token and GitHub environments (`docs/DEPLOY.md`)                                                                                                                                                            |
+| `pnpm run catalog:sync`       | Regenerate the bundled models.dev snapshot `packages/models/src/registry/catalog/models-dev.json` (`tools/sync-models-dev-catalog.ts [url\|file]`); the catalog additions are edited by hand                                                                                |
+| `pnpm run toolkits:sync`      | Regenerate the bundled integrations.sh snapshot and its credentials in `packages/tools/src/catalog/` (`tools/sync-integrations-sh-catalog.ts [url\|file] [--fresh] [--no-credentials]`); the toolkit catalog additions are edited by hand                                   |
 
 ## Infrastructure
 
@@ -76,14 +78,14 @@ Worker hands its part a fake (`packages/tools/test/worker.ts`), and an app test 
 bind them (`workerLoaders`, a Durable Object namespace) and their test Workers export `SandboxSession`,
 `SandboxEgress` and `WorkspaceServiceProxy` beside the ControlPlane.
 
-Under `bun run dev` with `COMMISSARY_MODE=cloud`, Commissary Cloud's OAuth server for MCP clients (#200) is on, with its KV
+Under `pnpm run dev` with `COMMISSARY_MODE=cloud`, Commissary Cloud's OAuth server for MCP clients (#200) is on, with its KV
 namespace emulated: its issuer is the app Worker (`http://localhost:1337`) and its resource the API Worker's `/mcp`
 (`http://localhost:1339/mcp`), so an MCP client on the same machine can sign in against them (the consent page's
 `__Host-` cookie is `Secure`, which browsers accept on `localhost`).
 
 **Known limitation: `alchemy dev` has no browser.** Browser Run's `quickAction()` has no local emulation
 (its remote mode would need a Cloudflare login), so `alchemy.run.ts` binds `BROWSER` on deployed stages only, whatever
-`COMMISSARY_BROWSER` says: under `bun run dev` and `bun run smoke` there is no browser toolkit, and `/me` reports no browser
+`COMMISSARY_BROWSER` says: under `pnpm run dev` and `pnpm run smoke` there is no browser toolkit, and `/me` reports no browser
 binding. Its behaviour is covered by the Tools tests over a fake binding; trying it for real takes a deployed stage (a
 PR preview).
 
@@ -93,7 +95,7 @@ PR preview).
 
 ```bash
 printf '{"name":"t","main":"apps/app/src/index.ts","compatibility_date":"2026-08-01","compatibility_flags":["nodejs_compat","global_fetch_strictly_public"]}' > /tmp/rt.json
-bunx wrangler@4 types --include-env=false -c /tmp/rt.json tools/workers/worker-configuration.d.ts
+pnpm dlx wrangler@4 types --include-env=false -c /tmp/rt.json tools/workers/worker-configuration.d.ts
 ```
 
 then restore the three-line header comment. Durable Object classes are SQLite-backed; Alchemy derives their class migrations from the
@@ -111,15 +113,15 @@ ControlPlane learns its org from. So each dev entry replaces the state namespace
 object's name, over a service binding (`DEV_STATE_BRIDGE`) to the state Worker's `DevStateBridge`, which replays it on
 a real stub of its own objects. Service-binding RPC to a named entrypoint keeps working through the dev registry, so
 every Worker sees the state Worker's one copy of each object. No dev entry, nor the bridge, is in a deployed bundle.
-`bun run smoke` waits for each Worker's ready line. Deployed, Cloudflare sets `ctx.id.name` for an object reached by
+`pnpm run smoke` waits for each Worker's ready line. Deployed, Cloudflare sets `ctx.id.name` for an object reached by
 `getByName` (Durable Object ID docs), so the preview deploy is where the script-name bindings are checked. Locally the
 panel names its own origin as the client API's address; the API Worker answers on :1339.
 
-With `COMMISSARY_MODE=cloud` (in the shell or `.env`) `bun run dev` runs Commissary Cloud: the auth Worker (`apps/auth`)
+With `COMMISSARY_MODE=cloud` (in the shell or `.env`) `pnpm run dev` runs Commissary Cloud: the auth Worker (`apps/auth`)
 starts too, on :1340, with a local `SignIn` database, Turnstile's always-passing test keys unless `TURNSTILE_*` are set,
 and the app Worker on :1337 as its app origin (a host-only `localhost` session cookie spans the ports). Sign-in with
 GitHub or Google needs an OAuth app of your own whose callback is `http://localhost:1340/api/auth/callback/github` (or
-`/google`) in `SIGN_IN_*`. `COMMISSARY_MODE=cloud bun run smoke` checks it (CI's `smoke (alchemy dev, Commissary Cloud)`),
+`/google`) in `SIGN_IN_*`. `COMMISSARY_MODE=cloud pnpm run smoke` checks it (CI's `smoke (alchemy dev, Commissary Cloud)`),
 and the panel's dev server forwards `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`).
 
 ### State RPC: expand, then contract
@@ -162,8 +164,8 @@ are not one atomic step across the reset, as a Spend charge is not either.
 
 ## Layout
 
-`ARCHITECTURE.md` ("Layout" plus one section per subsystem) is the map. The repository is a Bun workspace
-(`workspaces` in the root `package.json`): Workers and the panel in `apps/`, libraries in `packages/`, under the scope `@commissary/*`.
+`ARCHITECTURE.md` ("Layout" plus one section per subsystem) is the map. The repository is a pnpm workspace
+(`packages` in `pnpm-workspace.yaml`): Workers and the panel in `apps/`, libraries in `packages/`, under the scope `@commissary/*`.
 
 - `apps/app` (`@commissary/app`): the app Worker (`Commissary`): panel and the management API; it binds the state Worker's Durable Objects and, on Commissary Cloud, the auth Worker. `src/access` (the gate middleware over `@commissary/auth`),
   `src/http` (router, the client API's 404, plain 404s),
@@ -286,7 +288,7 @@ are not one atomic step across the reset, as a Spend charge is not either.
   `tools/fixturegen`, Go programs that emit golden fixtures, see below), `go.work`, `.repos/`, `docs/` and the lint,
   format and commit configs.
 
-## Workspace and Turborepo
+## Workspace and tasks
 
 Internal packages are source-only: `package.json` `exports` point at TypeScript in `src/` (`./*` → `./src/*.ts` for
 the contract, named entry points for the others; `./testing` at `test/testing.ts`, "Tests" below), there is no build step, and whatever imports a package compiles it
@@ -295,33 +297,30 @@ the contract, named entry points for the others; `./testing` at `test/testing.ts
 from `apps/state` (types in `src/`, the classes in its test and dev entries), `apps/api` only the classes' types (and
 the classes in its test entry), `apps/web` imports only
 `@commissary/contract` from the workspace, and packages import nothing from `apps/` (lint rule). Versions that several packages share (`effect`, `tsrs`, `vitest`, …)
-are pinned once in the root `package.json`'s `workspaces.catalog`, named `catalog:` in each package's `package.json` so
+are pinned once in `pnpm-workspace.yaml`'s `catalog`, named `catalog:` in each package's `package.json` so
 they cannot drift apart (two copies of `effect` in one bundle break its services).
 
-`turbo.json` declares the tasks: `typecheck`, `test` and `build` run each package's script of that name, and the root
-adds `typecheck:root` (the deploy code) and `lint:root` (one `oxlint`/`oxfmt` run over the repository, and the computerd version check). The packages
-depend on each other's sources, not on build output, so every package task depends on `transit`, a task with no script whose
-hash covers a package's files and those of its dependencies (Turborepo's transit-node pattern): a change in
-`packages/contract` re-runs the panel's, auth's, state's, Tools' and the Worker's tasks, one in `packages/json` re-runs translation's and the
-Worker's (and Models'), one in `packages/core` or `packages/auth` re-runs state's, Models', Tools' and the Worker's (and core's
-auth's too), one in `packages/state` re-runs Models', Tools', the state Worker's, the app Worker's and the API Worker's, and one in
-`packages/models` re-runs the state Worker's, the app Worker's and the API Worker's (`apps/state` is a dependency of
-`apps/app` and `apps/api`), as does one in `packages/tools`, which also re-runs Models' (Models' tests use `@commissary/tools/testing` through a dev dependency; the root lists Models as a dev dependency for its deploy code, which re-runs no other package's tasks). The root `typecheck` and `test` tasks also hash `tools/vitest/` (the packages' Vitest configs import it), and
-`typecheck` hashes `tools/workers/` (the Workers runtime types); a
-package's `turbo.json` appends the root files its tasks read (`"$TURBO_EXTENDS$"`; `apps/app`: `infra/bundle.ts`,
-`infra/preview-origin.ts`, `infra/settings.ts`, `migrations/`; `apps/auth`: `infra/bundle.ts`, `migrations/`; `apps/api`
-and `packages/models`: `migrations/`). The cache is local
-(`.turbo/cache`, one per git worktree: `cacheDir` keeps a worktree from writing into the main checkout's); there is
-no remote cache. `bunx turbo run <task> --force`
-ignores it, `--dry` shows what would run and why. `bun run test` also sets a local budget ("Tests" below); CI keeps
-Turborepo's and Vitest's defaults.
+The root `package.json` runs the tasks with Vite Task (`vp run`, ADR 0049): `typecheck` runs each package's script of
+that name (`vp run -r --parallel --cache typecheck`) and then the root's `typecheck:root` (the deploy code), `build`
+each package's `build` (the panel's only), and `test` each package's `test` (`tools/test.sh`, "Tests" below). `lint`
+is no task: one `vp lint` and one `vp fmt --check` over the repository, and the computerd version check. The packages
+depend on each other's sources, not on build output, so no task waits for another package's (`--parallel`).
+
+`typecheck` and `build` are cached. Vite Task records the files a task reads (and the files it writes, which a cache
+hit restores) and runs it again when one of them changes, so a change in `packages/contract` re-runs the
+`typecheck` of every package that imports it, and a change to a root file a package reads (`tools/vitest/`,
+`tools/workers/`, `infra/bundle.ts`, `migrations/`, …) re-runs that package's; no task lists its inputs. A cached task
+runs in a cleaned environment (`PATH`, `HOME`, `CI` and a few more), which is
+why `test` is not cached: its runs read `COMMISSARY_TEST_*` ("Tests" below). The cache is local
+(`node_modules/.vite/task-cache`, one per git worktree); there is no remote cache. `vp run --no-cache <task>` ignores
+it, `vp cache clean` empties it, and `vp run -v` or `vp run --last-details` says why each task ran.
 
 ## Model catalog
 
 Every provider's models come from models.dev plus the catalog additions (ADR 0020; `docs/ARCHITECTURE.md`, "Model registry
 and `/models` endpoints"). Three things are checked in under `packages/models/src/registry/catalog/`:
 
-- `models-dev.json`: the trimmed models.dev snapshot a fresh deploy starts from. `bun run catalog:sync` regenerates it from
+- `models-dev.json`: the trimmed models.dev snapshot a fresh deploy starts from. `pnpm run catalog:sync` regenerates it from
   `https://models.dev/api.json` (or a URL or saved file given as argument); syncing a trimmed file rewrites it unchanged.
   A deployed Worker refreshes its own copy every 3 hours and from the Models page ("Refresh catalog").
 - `additions.json`: what models.dev lacks (models it does not list, facts such as `thinking.dynamicAllowed`, Codex plans,
@@ -338,9 +337,9 @@ The toolkit catalog (#207; `docs/ARCHITECTURE.md`, "Toolkit catalog") comes from
 additions. Three files are checked in under `packages/tools/src/catalog/`:
 
 - `integrations-sh.json`: integrations.sh's index (`https://integrations.sh/api.json`) trimmed to the MCP servers, OpenAPI
-  documents and GraphQL endpoints Commissary can build, the snapshot a fresh deploy starts from. `bun run toolkits:sync`
+  documents and GraphQL endpoints Commissary can build, the snapshot a fresh deploy starts from. `pnpm run toolkits:sync`
   regenerates it (or from a URL or saved file given as argument); syncing a trimmed file rewrites it unchanged. A deployed
-  Worker refreshes its own copy every 3 hours. The formatter leaves it alone (`.oxfmtrc.jsonc`).
+  Worker refreshes its own copy every 3 hours. The formatter leaves it alone (`fmt.ignorePatterns` in `vite.config.ts`).
 - `integrations-sh-credentials.json`: how each of those sources signs in, by its slug, from its domain's v3 document
   (`https://integrations.sh/api/<domain>/surface`), which the same command fetches for every kept domain (≈2,000; four at
   a time, retried on `429` and `5xx`, a few minutes). The documents are cached under `node_modules/.cache/integrations-sh/`,
@@ -364,8 +363,8 @@ and its own `tsconfig.json` checks it with neither DOM nor Workers types). `apps
 panel with DOM types, `tsconfig.node.json` the Vite and Vitest configs and the tests. The tests (`apps/web/test/`)
 cover the DOM-free modules of `src/lib` and run in Node.js, in UTC. Design context: `PRODUCT.md` and `.impeccable/`.
 
-Local loop: `bun run dev` in one terminal, `bun --cwd apps/web run dev` in another, open http://localhost:5173 (the
-dev Access bypass applies). The build output in `apps/web/dist/` is gitignored; `bun run dev` and `bun run smoke` build it
+Local loop: `pnpm run dev` in one terminal, `pnpm --dir apps/web run dev` in another, open http://localhost:5173 (the
+dev Access bypass applies). The build output in `apps/web/dist/` is gitignored; `pnpm run dev` and `pnpm run smoke` build it
 first, CI before smoke and deploy. A new top-level page needs its path segment in `PANEL_SECTIONS`
 (`apps/app/src/management/zones.ts`) so the Worker serves `index.html` for it.
 
@@ -434,20 +433,18 @@ stays with that Worker.
   imports only in `test/` folders.
 - **Fixtures** sit in the `test/fixtures/` of the package whose tests read them (below). A dependant reads them through
   `./testing`, never by a relative path into another package.
-- **Runs.** `bun run test` (`tools/test.sh`) is `turbo run test`: transit nodes re-run a package's tests and its dependants' when its files
-  change, and an unchanged package is answered from the cache. `bun run test --shard=N/3` (CI's three jobs) shards
-  every package's run; one package: `bun --cwd <package dir> vitest run [file]`.
-- **Local test budget.** Turborepo runs up to 10 packages at once and each Vitest one worker per core less one, and
-  many of the workers are a workerd process each (a Miniflare per worker, `@cloudflare/vitest-plugin`), so an unbudgeted run starts dozens of heavy processes. Locally `bun run test` runs turbo
-  with `--concurrency=$COMMISSARY_TEST_PACKAGES` (default 2), and every `vitest.config.ts` sets `test.maxWorkers` to
+- **Runs.** `pnpm run test` (`tools/test.sh`) runs every package's `test` script (`vp test run`) through `vp run`,
+  uncached (a cached task runs without the budget's variables below, "Workspace and tasks"). `pnpm run test --shard=N/3`
+  (CI's three jobs) shards every package's run; one package: `pnpm --dir <package dir> exec vp test run [file]`.
+- **Local test budget.** A run of 10 packages at once and each Vitest one worker per core less one, and
+  many of the workers are a workerd process each (a Miniflare per worker, `@cloudflare/vitest-plugin`), so an unbudgeted run starts dozens of heavy processes. Locally `pnpm run test` runs `vp run`
+  with `--concurrency-limit $COMMISSARY_TEST_PACKAGES` (default 2), and every `vitest.config.ts` sets `test.maxWorkers` to
   `testWorkers()` (`tools/vitest/test-workers.ts`; the Node.js packages through `nodePackageTests`): `COMMISSARY_TEST_WORKERS`
   if set, else the cores divided by `COMMISSARY_TEST_PACKAGES` (at least 1), so packages at once × workers each stays
-  near the core count (8 cores: 2 × 4). With `CI` set (GitHub Actions) turbo keeps its default concurrency and `testWorkers()`
-  is `undefined`, so Vitest keeps its own. Tune it on the command line, e.g. `COMMISSARY_TEST_PACKAGES=1 bun run test` for the
-  lightest run (one package, all cores) or `COMMISSARY_TEST_WORKERS=1 bun run test`. Both variables are `passThroughEnv` of the
-  `test` task (`turbo.json`: strict mode filters other variables out of tasks), outside its hash: they change how many
-  run at once, not a result, so a cached package stays cached. A package run directly (`bun --cwd <package dir> run test`, `turbo run test`
-  without the script) takes the budget as if two packages ran. Vitest's own `VITEST_MAX_WORKERS`, if set, beats the config. A new `vitest.config.ts` sets `maxWorkers: testWorkers()` too.
+  near the core count (8 cores: 2 × 4). With `CI` set (GitHub Actions) 10 packages test at once and `testWorkers()`
+  is `undefined`, so Vitest keeps its own. Tune it on the command line, e.g. `COMMISSARY_TEST_PACKAGES=1 pnpm run test` for the
+  lightest run (one package, all cores) or `COMMISSARY_TEST_WORKERS=1 pnpm run test`. A package run directly
+  (`pnpm --dir <package dir> run test`, `vp run` without the script) takes the budget as if two packages ran. Vitest's own `VITEST_MAX_WORKERS`, if set, beats the config. A new `vitest.config.ts` sets `maxWorkers: testWorkers()` too.
 - **Cross-org suite** (ADR 0044). `apps/app/test/org-isolation.test.ts` writes the same names (credential, key, session
   and model names) in three orgs (two made through the management API, and `global`) and checks that each store shows
   every org only its own: KV (`OrgKv`, the signature store, video bindings, Antigravity state and entitlements),
@@ -472,7 +469,7 @@ repository root, e.g. `go run ./tools/fixturegen/translator` (use `TZ=UTC` for t
 longer generated from Go (ADR 0020): `…/registry` only records the listing fixtures, and `packages/models/test/fixtures/go-catalog-served.json`
 (the ids Go served when the catalog moved to models.dev) is pinned, it does not follow the reference checkout.
 
-The reference checkout follows upstream `main`, so regenerating after `bun run repos:sync` shows what changed upstream: a
+The reference checkout follows upstream `main`, so regenerating after `pnpm run repos:sync` shows what changed upstream: a
 fixture diff is a change to consider (port the Go change and commit the new fixtures, or keep Commissary's behaviour and
 leave the fixture as it is), not noise to commit blindly. Some
 fixtures contain generated ids or timestamps that differ on every run; the tests mask those.
@@ -492,23 +489,25 @@ them and reports the upstream commits since that commit and the test files that 
 
 ## Git hooks
 
-`bun install` enables the Husky hooks in `.husky/` (the `prepare` script runs `husky`):
+`pnpm install` enables the Git hooks in `.vite-hooks/` (the `prepare` script runs `vp config`, which installs Vite+'s
+dispatcher in `.vite-hooks/_` and points `core.hooksPath` at it):
 
-- `pre-commit`: lint-staged formats staged files with `oxfmt` and lints staged scripts with `tools/oxlint.sh --quiet`
-  (errors only). The Effect diagnostics are not part of lint (ADR 0047), so an Effect error such as `floatingEffect`
+- `pre-commit`: `vp staged` (the `staged` block of `vite.config.ts`) formats staged files with `vp fmt` and lints staged
+  scripts with `tools/oxlint.sh --quiet` (errors only), one after the other. The Effect diagnostics are not part of lint (ADR 0047), so an Effect error such as `floatingEffect`
   surfaces at `pre-push` or in CI, not at commit.
 - `commit-msg`: commitlint with `@commitlint/config-conventional` (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `style:`, `test:`, `ci:`, …; header and body lines up to 100 characters).
-- `pre-push`: `bun run typecheck && bun run lint`. The test suite runs in CI.
+- `pre-push`: `pnpm run typecheck && pnpm run lint`. The test suite runs in CI.
 
-Skip them once with `git commit --no-verify` / `git push --no-verify`, or for a whole shell with `HUSKY=0`.
+Skip them once with `git commit --no-verify` / `git push --no-verify`, or for a whole shell with `VP_GIT_HOOKS=0`
+(`vp hooks disable` turns them off in one clone).
 
 ## CI and deployment
 
 `.github/workflows/ci.yml` runs typecheck, lint, actionlint and zizmor, the tests in three shards, and the smoke test;
 then deploys a preview per pull request and production from `main`. Setup and behaviour: [DEPLOY.md](DEPLOY.md).
 A documentation-only change (Markdown files anywhere, everything under `docs/`) skips all of it (`tools/ci-changes.sh`):
-the required checks still pass, so run `bun run format` before committing Markdown (the pre-commit hook does).
+the required checks still pass, so run `pnpm run format` before committing Markdown (the pre-commit hook does).
 Actions are pinned by commit SHA (Dependabot updates them weekly, `.github/dependabot.yml`), jobs get only the
 permissions they need, and deploy jobs use no dependency cache.
 
@@ -519,15 +518,16 @@ copies it into the Linear team SPI but into no project, and the workflow puts th
 
 ## Lint and format
 
-`bun run lint` runs oxlint, `oxfmt --check` and `tools/check-computerd.sh` (the computer image's computerd and
-`@cloudflare/computer` name one version, ADR 0041). oxlint (`.oxlintrc.json`) is type-aware (`options.typeAware`). Its
-backend is tsrslint (`@maschwenk/tsrslint`, tsgolint's rules ported to Rust on tsrs) instead of `oxlint-tsgolint`, until
-tsrs ships a backend of its own (oxc-project/tsrs#378, ADR 0047). `tools/oxlint.sh` starts oxlint with
-`OXLINT_TSGOLINT_PATH` set to tsrslint's binary, so run oxlint through it (`bun run lint` and lint-staged do), not as bare
-`oxlint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `bunx tsrslint-path`. tsrslint ships binaries only
-for macOS arm64 and glibc Linux on x64 and arm64, so `bun run lint` and the `pre-commit` and `pre-push` hooks fail on
-Intel Macs, Windows and musl Linux. oxlint leaves TypeScript's own errors to `bun run typecheck`
-(`options.typeCheck: false`: tsrs is the one TypeScript gate, ADR 0046). On top of its own rules it runs:
+`pnpm run lint` runs `vp lint` (Oxlint), `vp fmt --check` (Oxfmt) and `tools/check-computerd.sh` (the computer image's
+computerd and `@cloudflare/computer` name one version, ADR 0041). Both take their settings from the root
+`vite.config.ts` (`lint` and `fmt`, ADR 0049), over the whole repository. Oxlint is type-aware (`lint.options.typeAware`).
+Its backend is tsrslint (`@maschwenk/tsrslint`, tsgolint's rules ported to Rust on tsrs) instead of the
+`oxlint-tsgolint` Vite+ bundles, until tsrs ships a backend of its own (oxc-project/tsrs#378, ADR 0047).
+`tools/oxlint.sh` starts `vp lint` with `OXLINT_TSGOLINT_PATH` set to tsrslint's binary (Vite+ sets the variable only
+when it is unset), so run the linter through it (`pnpm run lint` and `vp staged` do), not as bare `vp lint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `pnpm exec tsrslint-path`. tsrslint ships binaries only
+for macOS arm64 and glibc Linux on x64 and arm64, so `pnpm run lint` and the `pre-commit` and `pre-push` hooks fail on
+Intel Macs, Windows and musl Linux. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
+(`lint.options.typeCheck: false`, so `vp check` is not this repository's check either: tsrs is the one TypeScript gate, ADR 0046). On top of its own rules it runs:
 
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
   repository; edit its rules there.
@@ -543,7 +543,7 @@ Intel Macs, Windows and musl Linux. oxlint leaves TypeScript's own errors to `bu
   (`deploymentKvOf(env)`, names from `deploymentKey`); a new area that adds a binding of its own adds its helper file
   to the rule's list. Per-isolate caches of org data are an `OrgCache` by convention, which lint does not check.
 
-The **Effect diagnostics** (`@effect/tsgo`) are not part of lint; they come from `bun run typecheck` (ADR 0047). The
+The **Effect diagnostics** (`@effect/tsgo`) are not part of lint; they come from `pnpm run typecheck` (ADR 0047). The
 `prepare` script (`effect-tsgo patch --no-typescript --tsrs`) patches the installed tsrs after every install, and the
 plugin settings in `tsconfig.base.json` hold the severities: the rule defaults (`@effect/tsgo`'s recommended preset) plus
 `anyUnknownInErrorContext` and `unsafeEffectTypeAssertion` as errors and `strictEffectProvide` as a warning. Effect
@@ -589,31 +589,34 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
 
 ## Dependency notes
 
-- Bun's settings (ADR 0046) are in the root `package.json`, which holds no comments, and `bunfig.toml`; why each is
-  there:
+- pnpm's settings (ADR 0049) are in `pnpm-workspace.yaml`, which says in comments why each is there:
   - `overrides`: `xpath` at one version (samlify, through Better Auth's SSO plugin, pulls three copies, and one keeps
     the auth Worker's bundle smaller); `just-bash` at the version `@cloudflare/computer` bundled into the worker-shell
     modules a sandbox session's shell runs, which the computer's fallback rule also parses with (#222, #223,
     `packages/tools/src/sandbox/cloudflare/fallback.ts`; `test/unit/sandbox-fallback.test.ts` fails when they differ):
     both are pinned exactly and move together, by hand, after `packages/tools/test/sandbox-toolkit.test.ts` passes;
-    `@effect/platform-node-shared` at `effect`'s version (see `alchemy` below).
-  - `patchedDependencies`: `patches/@alchemy.run%2Fcloudflare@<version>.patch` (a Container application attached to an
-    existing Durable Object class; it patches both `lib/` and `src/`, which Bun loads through the package's `bun`
-    export condition). `bun install` fails on a patch that no longer applies after an upgrade: drop it if upstream fixed
-    the problem, else port it (`bun patch @alchemy.run/cloudflare` starts a new one).
-  - `trustedDependencies`: the packages whose install scripts run; the list replaces Bun's default one. `esbuild` and
-    `workerd` fetch their platform binaries; `tsrs` runs none, but `effect-tsgo patch` rewrites its binary in place (ADR
-    0047), and a trusted package (with its dependencies) stays in the checkout's own
-    `node_modules/.bun` instead of Bun's global store, which every other checkout on the machine shares. Blocked on
-    purpose (`bun pm untrusted` lists them): `@mongodb-js/zstd` and `node-liblzma` (native
-    compressors just-bash may use in Node.js; the sandbox's shell runs in a Dynamic Worker without them).
-  - `bunfig.toml`: the isolated linker (a package sees only what it declares, as under pnpm), the global store (one
-    copy of each package for every checkout and worktree) and a minimum release age of one day. `node_modules` is then
-    mostly links into Bun's cache: after the cache is cleared (`bun pm cache rm`), `Cannot find package` errors mean
-    the links dangle, and `bun install` makes them again.
+    `vite` and `vitest` at the catalog's (Vite+'s, below), with `peerDependencyRules` letting the packages that peer on
+    Vite take Vite+'s core.
+  - `patchedDependencies`: `patches/@alchemy.run__cloudflare@<version>.patch` (a Container application attached to an
+    existing Durable Object class; it patches both `lib/`, which Node.js loads, and `src/`, which Bun's `bun` export
+    condition would). `pnpm install` fails on a patch that no longer applies after an upgrade: drop it if upstream fixed
+    the problem, else port it (`pnpm patch @alchemy.run/cloudflare@<version>` starts a new one).
+  - `allowBuilds`: the packages whose install scripts run. `esbuild` and `workerd` fetch their platform binaries.
+    Blocked on purpose: `@mongodb-js/zstd` and `node-liblzma` (native compressors just-bash may use in Node.js; the
+    sandbox's shell runs in a Dynamic Worker without them). `effect-tsgo patch` (the `prepare` script, ADR 0047) runs
+    no install script: it moves the installed tsrs binary aside and copies the patched one in its place, a new file, so
+    the copy in pnpm's store, which other checkouts link to, is never written.
+  - `minimumReleaseAge`: a release is installed a day after it is published, against packages hijacked and
+    republished.
+- Vite+ (`vite-plus`, ADR 0049) bundles Vite, Vitest, Oxlint and Oxfmt; the catalog pins it exactly, with `vitest` at
+  the version it bundles and `vite` as its core (`npm:@voidzero-dev/vite-plus-core@<version>`, which Dependabot does
+  not move). It is held at 1.4.0, the last release that bundles Vitest 5.0.x (see `@cloudflare/vitest-plugin` below),
+  so its Oxlint (1.89) and Oxfmt (0.74) are older than the standalone ones were; move all three together once the
+  workerd tests pass on Vitest 5.1. Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
+  replaces `@oxlint/plugins` in the lint plugins (`vite-plus/prefer-vite-plus-imports` reports the old imports).
 - `@maschwenk/tsrslint` (oxlint's type-aware backend, "Lint and format") is pinned exactly and stands in until tsrs
   ships a backend of its own (oxc-project/tsrs#378). When it does, remove the package and `tools/oxlint.sh`, and let
-  oxlint find the backend in `node_modules/.bin` (ADR 0047). `@effect/tsgo` patches only the tsrs versions it lists, so
+  `vp lint` use the backend it finds (ADR 0047). `@effect/tsgo` patches only the tsrs versions it lists, so
   it moves with tsrs, in the same Dependabot group.
 - TypeScript 7.1 through tsrs (`tsrs`, a Rust port of TypeScript 7 that takes `tsc`'s flags; ADR 0046), pinned exactly
   in the catalog: its version names the TypeScript release it ports (`0.20.1-ts7.1.0-beta` ports 7.1.0-beta), so an
@@ -621,19 +624,17 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   (app Worker, workerd types), `apps/api/tsconfig.json` (API Worker, workerd types), `apps/auth/tsconfig.json` (auth Worker, workerd types), `apps/state/tsconfig.json` (state Worker, workerd types), `apps/web/tsconfig.app.json` (panel, DOM types) and `tsconfig.node.json` (its Node.js side),
   `packages/contract/tsconfig.json` (no runtime types), `packages/auth`, `packages/core`, `packages/json` and `packages/translation` (Node.js types,
   no Workers types), `packages/state`, `packages/billing`, `packages/models` and `packages/tools` (workerd types, with the Node.js tests of `test/unit/`
-  checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); Turborepo caches it. The installed tsrs is Effect-patched, so it also reports the Effect diagnostics ("Lint and format", ADR 0047). The `typescript` package is no longer a dependency of the
+  checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); `vp run` caches it. The installed tsrs is Effect-patched, so it also reports the Effect diagnostics ("Lint and format", ADR 0047). The `typescript` package is no longer a dependency of the
   repository; it is still installed for commitlint's config loader, which declares it as a peer.
 - `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`) is used because it supports vitest 5,
   which `@effect/vitest@4` requires. Vitest is held at 5.0.x (the catalog's `vitest`): under 5.1 with the plugin, work a
   test schedules (a forked fiber's start, a timer) does not run while the test awaits RPC to the test Worker's own
   Durable Objects, which breaks tests that let a forked task go on meanwhile (`packages/billing/test/scheduled.test.ts`),
   and two more fail on 5.1 alone (`apps/app/test/management-batch.test.ts`: an alarm set past 2189;
-  `packages/tools/test/browser-handoff.test.ts`: an `AsyncLocalStorage`-bound call outside its request). Move it once those pass on the new version. The workerd projects
+  `packages/tools/test/browser-handoff.test.ts`: an `AsyncLocalStorage`-bound call outside its request). Move it, and Vite+ with it (above), once those pass on the new version; they still failed on Vitest 5.1.0 with `@cloudflare/vitest-plugin` 1.8.0. The workerd projects
   also turn Vitest's file-system module cache off (`tools/vitest/workerd.ts`).
-- `alchemy` (2.0.0 beta, pinned) needs `@effect/platform-node` for its CLI under Node.js and `@effect/platform-bun` under
-  Bun, which it hands itself to when Bun launched it (`bun run deploy`, `bunx alchemy`); `@effect/platform-bun` depends on
-  `@effect/platform-node-shared` with a caret, so the root `overrides` hold it at `effect`'s version (its newest release
-  can want a newer `effect`, which would install a second copy): move it with `effect`; `@distilled.cloud/cloudflare` is pinned to
+- `alchemy` (2.0.0 beta, pinned) needs `@effect/platform-node` for its CLI, which runs on Node.js (it hands itself to
+  Bun only when Bun launched it); `@distilled.cloud/cloudflare` is pinned to
   the version `@alchemy.run/cloudflare` uses (the Access settings step calls the Cloudflare API with Alchemy's
   credentials). Alchemy's Cloudflare and GitHub providers are packages of their own, `@alchemy.run/cloudflare` and
   `@alchemy.run/github`, pinned to `alchemy`'s version and moved with it.

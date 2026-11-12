@@ -1,5 +1,5 @@
 // End-to-end tests (workerd) of the xAI Responses WebSocket transport against a mocked upstream WebSocket.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { asString, type JsonObject } from "@commissary/json";

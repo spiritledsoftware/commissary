@@ -1,6 +1,6 @@
 // End-to-end tests (workerd) of the Codex provider: /v1/responses (+compact, Codex aliases), chat completions routed
 // to Codex, error classification, payload rules as the last mutation, images and alpha search against a mocked upstream.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import {
   providerKeyCredential,

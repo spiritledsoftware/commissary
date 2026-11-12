@@ -3,7 +3,7 @@
 // and the org setting turns private credentials off without deleting them. Selection itself is tested in
 // credentials-ownership.test.ts; here the same rule is checked end to end.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import {
   ADMIN,

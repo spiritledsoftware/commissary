@@ -4,7 +4,7 @@
 // or removed, takes its name from stored toolkits that had it, and serves the same tools whatever browser provider is
 // behind it.
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Schema } from "effect";
 import type { GrantSubject, ToolGrantBody } from "@commissary/contract/grants";
 import { withPart } from "@commissary/state/testing";

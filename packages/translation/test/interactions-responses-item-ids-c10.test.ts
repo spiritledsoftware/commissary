@@ -1,6 +1,6 @@
 // Fallback item ids of the Interactions -> Responses stream are unique per response (Go:
 // internal/translator/openai/interactions/responses/interactions_openai_responses_response_test.go; upstream b0db5448).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import { interactionsToOpenAIResponsesResponse } from "../src/translator/openai/interactions/responses/response-interactions-to-responses.ts";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";

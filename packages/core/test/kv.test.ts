@@ -1,5 +1,5 @@
 // Org-scoped KV and caches (ADR 0044): org data is reachable only through the org's own names.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   deploymentKey,
   deploymentKv,

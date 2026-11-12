@@ -1,7 +1,7 @@
 // The Toolkits page's model (src/lib/toolkits.ts, #208, ADR 0036, ADR 0037): each row's kind, source, sign-in state, tool
 // count and flags, the order of the rows, what an org admin sees of other members' private toolkits, and which controls
 // each caller gets.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type {
   LimitedToolkitView,
   ToolkitCredentialView,

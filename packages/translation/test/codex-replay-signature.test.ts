@@ -2,7 +2,7 @@
 // target model, and the Claude -> Codex request translator that uses it. Expected values come from
 // translator/common/codex_replay_signature_test.go and codex_claude_request_test.go.
 import { get, type Json } from "@commissary/json";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   codexReplaySignatureForTarget,
   resolveCodexReplayTargetModel,

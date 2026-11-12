@@ -3,7 +3,7 @@
 // deletion's budget; another org's stay, even one whose id starts with the deleted org's, and so do the clients.
 import { env } from "cloudflare:workers";
 import { Effect } from "effect";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import type { McpOAuthConfig } from "../src/oauth/config.ts";
 import { deleteOrgSignIns, orgDeletionStep } from "../src/org-deletion.ts";

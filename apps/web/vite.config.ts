@@ -1,19 +1,19 @@
-// Vite config of the control panel. `bun run build` (`vite build`) writes `dist/index.html` and `dist/assets/*` (the
+// Vite config of the control panel. `pnpm run build` (`vite build`) writes `dist/index.html` and `dist/assets/*` (the
 // bundle and the font's licence, `assets/licenses/`), which the Worker serves at `/` and `/assets`
-// (apps/app/src/management/web-panel.ts). `bun --cwd apps/web run dev` serves the panel with hot reload and
-// forwards `/v9` to a running `bun run dev` Worker, and Commissary Cloud's sign-in calls (`/api`) to its auth Worker
+// (apps/app/src/management/web-panel.ts). `pnpm --dir apps/web run dev` serves the panel with hot reload and
+// forwards `/v9` to a running `pnpm run dev` Worker, and Commissary Cloud's sign-in calls (`/api`) to its auth Worker
 // (ADR 0030).
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { build, defineConfig, type Plugin } from "vite";
+import { build, defineConfig, type Plugin } from "vite-plus";
 
-/** `bun run dev` Worker the dev server forwards API calls to. */
+/** `pnpm run dev` Worker the dev server forwards API calls to. */
 const workerUrl = process.env["COMMISSARY_DEV_URL"] ?? "http://localhost:1337";
 
-/** `bun run dev` auth Worker (Commissary Cloud only) the dev server forwards sign-in calls to. */
+/** `pnpm run dev` auth Worker (Commissary Cloud only) the dev server forwards sign-in calls to. */
 const authWorkerUrl = process.env["COMMISSARY_AUTH_DEV_URL"] ?? "http://localhost:1340";
 
 const themeBootEntry = fileURLToPath(new URL("src/theme-boot.ts", import.meta.url));

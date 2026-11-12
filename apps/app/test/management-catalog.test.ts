@@ -1,7 +1,7 @@
 // The model catalog's status and on-demand refresh (`GET /models/catalog`, `POST /models/catalog/refresh`) through the
 // router with the real ControlPlane (settings), the Platform registry (refresh lease) and KV, and mocked outbound HTTP.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { CatalogRefresh, CatalogStatus } from "@commissary/contract/catalog";
 import { platformOf } from "@commissary/state";
 import {

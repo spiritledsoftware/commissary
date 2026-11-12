@@ -2,7 +2,7 @@
 // table, and the real ControlPlane with the Tools part, each answer decoded with the contract. The profiles' own rules
 // (sessions opening from them and saving into them, sealing, the private-toolkits setting) are `@commissary/tools`'
 // tests (test/browser-profiles.test.ts); here the routes are checked end to end.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import {
   BrowserProfileGrants,

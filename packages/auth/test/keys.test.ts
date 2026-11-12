@@ -1,7 +1,7 @@
 // The text of API keys and management keys (ADR 0022, ADR 0026): what a key names, how much secret it carries, and
 // that it parses back. Moved from the Worker's api-keys.test.ts.
 import { OrgId } from "@commissary/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mintApiKey, parseApiKey } from "../src/index.ts";
 
 describe("the key text", () => {

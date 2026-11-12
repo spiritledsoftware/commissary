@@ -2,7 +2,7 @@
 // empty database, it creates exactly what Better Auth expects, and a second run changes nothing.
 import { env } from "cloudflare:workers";
 import { getMigrations } from "better-auth/db/migration";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import signIn from "../../../migrations/sign-in/0001_better_auth.sql?raw";
 import { authOptions } from "../src/sign-in/auth.ts";
 import { statementsOf } from "./support.ts";

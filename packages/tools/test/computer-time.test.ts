@@ -6,7 +6,7 @@
 // the computer time and its cost are exact; the computer is the test Worker's fake (`support/fake-computer.ts`), whose
 // commands take no time.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Effect, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import type { NewSpendLimit } from "@commissary/state/spend";

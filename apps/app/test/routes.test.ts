@@ -1,7 +1,7 @@
 // The app Worker's own routes: `/healthz`, the panel at `/`, and the plain 404 of unknown routes. It answers no CORS
 // (src/http/not-found.ts): the client API, which does, is the API Worker's (apps/api/test/routes.test.ts).
 import { exports } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 const fetchWorker = (path: string, init?: RequestInit) =>
   exports.default.fetch(new Request(`https://commissary.test${path}`, init));

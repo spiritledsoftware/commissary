@@ -1,6 +1,6 @@
 // End-to-end (workerd, real SessionState Durable Object): replay and continuation state written while serving one
 // request is found by the next request, which is a separate Worker invocation with its own request context.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import { nativeGeminiSignature } from "./support/gemini-signatures.ts";

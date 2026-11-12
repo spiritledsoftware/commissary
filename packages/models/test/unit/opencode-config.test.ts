@@ -1,7 +1,7 @@
 // `api-keys.opencode-zen` / `api-keys.opencode-go`: parser and encoded document round trip. The management `/config`
 // paths are tested in the Worker (`apps/app/test/opencode-config.test.ts`).
 import { Effect, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { decodeConfig, encodeConfig, parseConfigYaml } from "../../src/config/codec.ts";
 import { Config } from "../../src/config/schema.ts";
 import { synthesizeConfigCredentials } from "../../src/credentials/synthesize.ts";

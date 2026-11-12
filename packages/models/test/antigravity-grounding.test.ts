@@ -1,7 +1,7 @@
 // Antigravity web-search grounding: Vertex Search redirect URLs are resolved with HEAD (no redirect follow) before the
 // response is translated (Go helps/antigravity_grounding_urls_test.go plus the executor wiring).
 import { Effect } from "effect";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import {
   isVertexSearchRedirect,
   resolveGroundingUrl,

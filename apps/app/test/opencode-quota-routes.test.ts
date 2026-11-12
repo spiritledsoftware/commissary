@@ -5,7 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { Effect, Schema } from "effect";
-import { afterAll, beforeEach, expect } from "vitest";
+import { afterAll, beforeEach, expect } from "vite-plus/test";
 import { CredentialEntry } from "@commissary/contract/credentials";
 import {
   controlPlane,

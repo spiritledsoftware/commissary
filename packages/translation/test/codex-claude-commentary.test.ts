@@ -1,7 +1,7 @@
 // Codex commentary phase <-> Claude thinking blocks (Go: internal/translator/codex/claude/
 // codex_claude_commentary_{phase,replay,cross_format}_test.go and internal/signature/claude_messages_sanitize_compat_test.go;
 // upstream 376015c3, 531721bf).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import {
   restoreCodexCommentaryMarkers,

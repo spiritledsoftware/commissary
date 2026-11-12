@@ -1,6 +1,6 @@
 // Prices and the cost of an attempt (src/usage/pricing.ts, ADR 0024): known Claude, OpenAI and Gemini attempts with
 // cache reads and writes and reasoning tokens, the override that wins over the catalog, the model without a price.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { embeddedModelsDev } from "../../src/registry/catalog.ts";
 import { trimModelsDev } from "../../src/registry/models-dev.ts";
 import { ensureTokenBreakdown } from "../../src/usage/accounting.ts";

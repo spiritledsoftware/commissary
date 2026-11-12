@@ -4,7 +4,7 @@
 // (alchemy.run.ts, apps/app/vitest.config.ts); the bindings are the ones test/env.d.ts declares, with the Worker tests'
 // fixed keys.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import { nodePackageTests } from "../../tools/vitest/node-package.ts";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 import { workerdTestOptions } from "../../tools/vitest/workerd.ts";

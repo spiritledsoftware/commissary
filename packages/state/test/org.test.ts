@@ -1,7 +1,7 @@
 // The ControlPlane stubs of an org (ADR 0021, `org.ts`): an org's ControlPlane is named by the org id, and an object
 // with any other name has no org, so it never serves `global`'s state by default.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { orgOfControlPlane } from "../src/index.ts";
 
 describe("orgOfControlPlane", () => {

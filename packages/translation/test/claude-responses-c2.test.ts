@@ -1,7 +1,7 @@
 // Claude -> Responses translators: stop reasons, pause_turn, parallel_tool_calls, empty text (Go:
 // internal/translator/claude/openai/responses/claude_openai-responses_{stop_reasons,request}_test.go; upstream
 // df07b1e5, d495e24c, aadb34f9).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { convertOpenAIResponsesRequestToClaude } from "../src/translator/claude/openai/responses/request.ts";
 import {

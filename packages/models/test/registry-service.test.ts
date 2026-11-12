@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import { CatalogStore } from "../src/registry/catalog-store.ts";
 import { lookupStaticModelInfo } from "../src/registry/catalog.ts";
 import { ModelRegistry, ModelRegistryError, SNAPSHOT_TTL_MS } from "../src/registry/service.ts";

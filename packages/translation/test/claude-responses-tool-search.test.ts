@@ -1,7 +1,7 @@
 // Codex client-executed `tool_search` on Claude (native tool search) (Go: internal/translator/claude/openai/responses/
 // claude_openai-responses_tool_search_test.go and ..._tool_search_disabled_test.go, internal/runtime/executor/helps/
 // responses_tool_search_test.go; upstream 58c0f6a2, a68ad134, aeec5e97, 8eed08ef, 97ba1e89, 48ad3487).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

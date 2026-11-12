@@ -2,7 +2,7 @@
 // (ticket C7; upstream 154d5144 readOnly/writeOnly, a43026d7 contentMediaType/contentEncoding, e9ba5c50
 // discriminator, 9126772d dependentRequired/dependentSchemas/dependencies). Each keyword is removed wherever it is a
 // keyword while a property that merely carries the same name stays.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import {
   cleanJsonSchemaForAntigravity,

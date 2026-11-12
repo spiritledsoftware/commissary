@@ -4,7 +4,7 @@
 import { Effect, Layer, Result, Stream } from "effect";
 import type { Json, JsonObject } from "@commissary/json";
 import type { HttpServerRequest } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AccessPrincipal } from "@commissary/auth";
 import {
   BOOTSTRAP_MAX_BUFFERED_BYTES,

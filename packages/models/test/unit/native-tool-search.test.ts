@@ -1,7 +1,7 @@
 // The per-attempt native tool search decision (Go: internal/runtime/executor/claude_executor.go `SupportsNativeToolSearch`,
 // helps/claude_tool_search_model_test.go; upstream 52992659, 03a3cfec, 48ad3487).
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parseConfigYaml } from "../../src/config/codec.ts";
 import { claudeModelLacksToolSearch } from "../../src/executor/claude/classify.ts";
 import { nativeToolSearchFor } from "../../src/executor/claude/tool-search.ts";

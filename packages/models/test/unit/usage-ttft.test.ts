@@ -1,5 +1,5 @@
 // TTFT: token-event detection per protocol (helps/*_ttft_helpers.go) and the reporter's first-packet fallback.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { UsageReporter } from "../../src/usage/reporter.ts";
 import {
   isChatTokenEvent,

@@ -2,7 +2,7 @@
 // and Chat Completions (Go: gemini/openai/responses/gemini_openai-responses_tool_search_test.go,
 // antigravity/openai/responses/antigravity_openai-responses_tool_search_test.go,
 // openai/openai/responses/openai_openai-responses_tool_search_test.go; upstream 77fd91e8, 90c447d3, 8c9a7851).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

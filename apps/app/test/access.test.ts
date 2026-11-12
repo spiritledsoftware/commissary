@@ -5,7 +5,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import { authenticateRequest } from "../src/access/authenticate.ts";
 import { type AccessJwks, authenticateClient, callerScope } from "@commissary/auth";
 import {

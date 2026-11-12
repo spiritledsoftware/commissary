@@ -5,7 +5,7 @@ import {
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { Effect } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { CurrentOrg, GLOBAL_ORG, OrgId, type ScheduledTask } from "@commissary/core";
 import { platformOf } from "@commissary/state";
 import { alarmOf } from "@commissary/state/testing";

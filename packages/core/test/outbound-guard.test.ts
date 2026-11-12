@@ -1,6 +1,6 @@
 // The outbound guard (ADR 0044, docs/THREAT-MODEL.md): which user-supplied URLs Commissary fetches.
 import { Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from "../src/index.ts";
 
 const DEPLOYED: OutboundPolicy = { ownHosts: [], localDevelopment: false };

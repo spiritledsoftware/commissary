@@ -5,7 +5,7 @@
 // servers a document names and on calls, and documents of several MB, fetched and uploaded, JSON and YAML, within and
 // above their limits.
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import { MAX_DOCUMENT_BYTES } from "../src/http/call.ts";

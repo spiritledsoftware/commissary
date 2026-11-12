@@ -8,7 +8,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { Layer } from "effect";
 import { HttpRouter } from "effect/http";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { AUD, fakeJwksLayer, makeFakeJwks } from "@commissary/auth/testing";
 import { GLOBAL_ORG, newOrgId, type OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";

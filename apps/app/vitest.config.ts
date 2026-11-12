@@ -1,5 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import { BUNDLE_ALIASES } from "../../infra/bundle.ts";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 import { workerdTestOptions } from "../../tools/vitest/workerd.ts";
@@ -84,8 +84,8 @@ const worker = (bindings: Record<string, string>) =>
       // Dynamic Workers (ADR 0043: every deployment has them): where a sandbox session's just-bash runs.
       workerLoaders: { LOADER: {} },
       assets: {
-        // The control panel's build (`bun run build`), as deployed. No test reads it (a missing folder serves nothing):
-        // the tests that need a panel bind their own `ASSETS`, so it is not an input of the test task (turbo.json).
+        // The control panel's build (`pnpm run build`), as deployed. No test reads it (a missing folder serves nothing):
+        // the tests that need a panel bind their own `ASSETS`, so its files are not read by the tests.
         directory: "../web/dist",
         binding: "ASSETS",
         routerConfig: { invoke_user_worker_ahead_of_assets: true },

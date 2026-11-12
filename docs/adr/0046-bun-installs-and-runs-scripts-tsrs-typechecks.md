@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0047 (tsrslint is oxlint's type-aware backend, and tsrs reports the Effect diagnostics) and ADR-0048 (two blocked packages are gone)
+status: accepted, amended by ADR-0047 (tsrslint is oxlint's type-aware backend, and tsrs reports the Effect diagnostics) and ADR-0048 (two blocked packages are gone); Bun superseded by ADR-0049 (pnpm installs, and Vite+ runs the toolchain)
 ---
 
 # Bun installs and runs scripts, tsrs typechecks, Vitest stays on Node.js

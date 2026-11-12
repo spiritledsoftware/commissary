@@ -1,5 +1,5 @@
 // Go source: internal/runtime/executor/helps/tool_call_ids.go (and its tests, issue 6478).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json, JsonObject } from "@commissary/json";
 import {
   decodeToolCallId,

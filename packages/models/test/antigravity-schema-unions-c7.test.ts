@@ -2,7 +2,7 @@
 // parameter schemas (ticket C7; upstream 5efe9758, antigravity_schema_sanitize_test.go). The Antigravity Claude
 // backend turns function declarations into Claude `custom.input_schema` and rejects nested multi-branch unions; the
 // request translator is model-unaware, so only the executor's `constrainRequestPayload` knows to flatten.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json } from "@commissary/json";
 import { builtinTranslators } from "@commissary/translation";
 import { constrainRequestPayload } from "../src/executor/antigravity/envelope.ts";

@@ -1,5 +1,5 @@
 // Interactions request -> Devin prompts/tools (parseInteractionsPayload and friends).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   checkDevinUserTurns,
   normalizeDevinUuid,

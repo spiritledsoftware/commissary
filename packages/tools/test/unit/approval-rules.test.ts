@@ -1,7 +1,7 @@
 // Approval rules (#201, ADR 0038): which calls wait for approval, who may decide them, and the hash a repeated call is
 // matched by. The toolkit-wide write rule follows each tool's class, a mark on one tool wins over it, and a caller never
 // approves their own call under a team or list rule, even as a member of that set.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ApprovalRules } from "@commissary/contract/approvals";
 import { argumentsHash, canonicalJson } from "../../src/approvals/hash.ts";
 import {

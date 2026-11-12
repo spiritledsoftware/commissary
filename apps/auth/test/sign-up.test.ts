@@ -2,7 +2,7 @@
 // starts (`ensureSignedUp`, `@commissary/auth`): a Personal org they own unless they were invited, and no session at
 // all while a platform admin has them suspended.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { resetStandingCaches } from "@commissary/auth";
 import { platformOf } from "@commissary/state";
 import {

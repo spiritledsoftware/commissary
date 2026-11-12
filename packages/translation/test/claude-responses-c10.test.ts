@@ -1,6 +1,6 @@
 // Responses -> Claude request and Claude -> Responses response (Go: internal/translator/claude/openai/responses/
 // claude_openai-responses_{request,stop_reasons}_test.go; upstream 59930ba3, df860eb9).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { convertOpenAIResponsesRequestToClaude } from "../src/translator/claude/openai/responses/request.ts";
 import {

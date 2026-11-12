@@ -4,7 +4,7 @@
 // (images, labels), SubQ's limits and Box are refused locally, and a 402 cools the key.
 import { env, exports } from "cloudflare:workers";
 import { image, noul, TypeSafeClient } from "@typesafe-ai/sdk";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { GLOBAL_ORG } from "@commissary/core";
 import { FULL_ACCESS, resetUsageDb } from "@commissary/models/testing";
 import { addMember, issueKey } from "./support/client.ts";

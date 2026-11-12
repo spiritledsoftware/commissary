@@ -5,7 +5,7 @@
 // deprecated method hidden, a sign-in through an OAuth app without scopes asking for the toolkit's; and the outbound
 // guard on the document's rootUrl, which refuses the save.
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import gmail from "./fixtures/discovery/gmail-v1.json?raw";

@@ -3,7 +3,7 @@
 import { it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import { fixedBackend, makeMemoryBackend } from "@commissary/state";
 import {
   ANTIGRAVITY_REPLAY_STORE,

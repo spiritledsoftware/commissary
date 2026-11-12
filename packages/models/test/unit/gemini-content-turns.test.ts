@@ -1,6 +1,6 @@
 // Go source: internal/runtime/executor/helps/gemini_content_turns.go and its tests (CLIProxyAPI a2718314, ceb4397f,
 // 15d2148b).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import {
   dropGeminiTrailingThoughtOnlyContent,

@@ -3,7 +3,7 @@
 // cookies scoped to the base domain and read under their name only, sign-out, and nothing else of Better Auth's API
 // reachable.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { stateAuthDirectory } from "@commissary/state";
 import { BASE_COOKIE_PREFIX } from "../../../infra/settings.ts";
 import { signedInPerson } from "../src/sign-in/sessions.ts";

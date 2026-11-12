@@ -1,5 +1,5 @@
 // Unit tests of the hosted image_generation helpers (CLIProxyAPI d1e5cc60 / 714f0526 fixtures).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Json, tryParseJson } from "@commissary/json";
 import {
   codexModelUsesResponsesLite,

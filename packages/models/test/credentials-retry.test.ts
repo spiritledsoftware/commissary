@@ -1,7 +1,7 @@
 // Retry planning and cooldown-aware selection in the credential pool (injected clock, no Durable Object):
 // conductor_retry_round_test.go, conductor_selection_cooldown_test.go, conductor_alias_cooldown_test.go,
 // conductor_subsecond_cooldown_test.go (retry storms), openai_compat_pool_test.go.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 import type { CredentialPool } from "../src/credentials/pool.ts";
 import { makePool, MemoryPoolStore, TestNow } from "./support/pool.ts";

@@ -5,7 +5,7 @@
 import { env } from "cloudflare:workers";
 import { Context, Schema } from "effect";
 import { HttpRouter } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AccessIdentity, Principal } from "@commissary/auth";
 import { AccessPrincipal } from "@commissary/auth";
 import { BillingView } from "@commissary/contract/billing";

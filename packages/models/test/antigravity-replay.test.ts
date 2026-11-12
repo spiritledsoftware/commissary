@@ -1,7 +1,7 @@
 // Antigravity reasoning replay (ledger, accumulator, request restore, repairs) and Interactions continuation sessions
 // over in-memory SessionState backends with injected clocks.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   interactionsCallKey,
   makeInMemoryContinuationStore,

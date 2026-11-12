@@ -1,4 +1,5 @@
-# The tools this repo pins, for mise. Bun's version is the one in package.json's `packageManager` (which CI's
-# setup-bun reads); keep the two equal. Node.js is .node-version's.
+# The tools this repo pins, for mise. pnpm's version is the one in package.json's `packageManager` (which CI's
+# setup-vp reads); keep the two equal. Node.js is .node-version's. Vite+ (`vp`) is a dependency of the repository:
+# `pnpm exec vp`, or a global `vp`, which hands over to the project's own.
 [tools]
-bun = "1.4.4"
+pnpm = "12.18.0"

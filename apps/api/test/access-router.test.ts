@@ -4,7 +4,7 @@
 import { env, exports } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { makeBehindGate, makeGateLayer } from "../src/http/gate.ts";
 import { AccessPrincipal } from "@commissary/auth";
 import { RootRoutes } from "../src/http/routes.ts";

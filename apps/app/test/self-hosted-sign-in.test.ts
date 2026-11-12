@@ -1,7 +1,7 @@
 // A self-hosted Commissary (COMMISSARY_MODE unset) has none of Commissary Cloud's sign-in routes (src/hosted/routes.ts): Better
 // Auth's API, the sign-in options and the sign-in page answer exactly like an unknown path.
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const fetchWorker = (path: string, init?: RequestInit) =>
   exports.default.fetch(

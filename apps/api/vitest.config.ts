@@ -1,5 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 import { workerdTestOptions } from "../../tools/vitest/workerd.ts";
 

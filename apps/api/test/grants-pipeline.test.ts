@@ -3,7 +3,7 @@
 // everyone only, so restricting those is what the requests here see. Only the Claude upstream is mocked.
 import { createExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { claudeFile, FULL_ACCESS, unknownModelBody } from "@commissary/models/testing";
 import { makeWebHandler } from "../src/http/app.ts";
 import { requestContext } from "../src/worker-env.ts";

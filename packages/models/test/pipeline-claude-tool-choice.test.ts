@@ -3,7 +3,7 @@
 // internal/runtime/executor/claude_issue7000_test.go and claude_issue7000_regression_test.go).
 import { Effect } from "effect";
 import type { Config } from "../src/config/schema.ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { prepareLocalCountBody } from "../src/executor/claude/pipeline.ts";
 import { makeSessionStateContinuityStore } from "../src/executor/claude/continuity.ts";
 import { makeSessionStateDatePinStore } from "../src/executor/claude/date-pin.ts";

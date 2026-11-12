@@ -1,7 +1,7 @@
 // xAI end-to-end (workerd) for the Codex `apply_patch` custom tool: the request declares it as the strict
 // `{"input": ...}` function, the function-call answer is bridged back to `custom_tool_call` events/items, and the
 // folded namespace dispatcher (>200 tools) is expanded before the bridge sees it.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import {
   loadConfig,

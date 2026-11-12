@@ -1,7 +1,7 @@
 // OAuth building blocks: session store rules (memory and Durable Object SQLite), names, encoding, Devin protobuf.
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   base64Url,
   encodeQuery,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, tryParseJson } from "@commissary/json";
 import type { ThinkingModelInfo } from "../src/thinking/index.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";

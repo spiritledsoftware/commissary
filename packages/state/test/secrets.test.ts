@@ -4,7 +4,7 @@
 // (packages/models/test/secrets.test.ts).
 import { env } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   deploymentSecretsKeys,
   DEV_SECRETS_KEY,

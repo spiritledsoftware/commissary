@@ -1,7 +1,7 @@
 // The panel on Commissary Cloud (src/management/web-panel.ts): its page names the auth host (ADR 0030) for the sign-in
 // page and the sign-out to call, and its policy lets it call that host and load the Turnstile widget.
 import { env } from "cloudflare:workers";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { makeWebHandler } from "../../src/http/app.ts";
 import { AUTH_ORIGIN_META } from "@commissary/contract/sign-in";
 import { hostedPanelCsp, PANEL_CSP } from "../../src/management/web-panel.ts";

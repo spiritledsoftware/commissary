@@ -1,5 +1,5 @@
 // Logging helpers: headers with credentials are redacted before they are logged.
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { redactHeaders } from "../src/index.ts";
 
 it("redactHeaders hides credentials", () => {

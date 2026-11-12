@@ -5,7 +5,7 @@
 // no room, and an open session is then closed. The part and the sessions' objects read one TestClock, set before a
 // session opens, so the browser time and its cost are exact.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Effect, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import type { NewSpendLimit } from "@commissary/state/spend";

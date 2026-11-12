@@ -1,7 +1,7 @@
 // Responses compaction capsules against the Go implementation: the helper functions of `executor/helps/compaction.ts`
 // and end-to-end scenarios (route -> conductor -> Claude/Antigravity executor -> mocked upstream) compared with the
 // real Go executors (`go run ./tools/fixturegen/compaction`, test/fixtures/compaction.json).
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { resetMemoryAntigravityState } from "../src/executor/antigravity/state.ts";
 import {

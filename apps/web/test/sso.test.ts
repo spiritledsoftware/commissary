@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SsoDomainView, SsoProviderView, SsoSettings } from "@commissary/contract/sso";
 import { needsWorkEmail, signInProblem } from "../src/lib/sign-in.ts";
 import { pageAllowed, pagesFor, callerOf } from "../src/lib/role.ts";

@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { withModelsPart } from "./support/models-part.ts";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeControlPlanePicker } from "../src/executor/control-plane-picker.ts";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";

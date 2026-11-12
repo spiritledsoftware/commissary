@@ -4,7 +4,7 @@
 // the part and the objects read from one `TestClock`; a fake second provider (no computer, nothing to wait for) where a
 // test needs sessions the provider cannot be asked about, or many.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SandboxSessionsList } from "@commissary/contract/sandbox-sessions";

@@ -1,6 +1,6 @@
 // Unit tests for the Gemini Responses translator pieces that golden fixtures cannot cover (process-wide replay cache,
 // carrier encoding, injected clocks).
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

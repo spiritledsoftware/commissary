@@ -3,7 +3,7 @@
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import type { ConfigReader } from "../src/config/reader.ts";
 import type { Config } from "../src/config/schema.ts";

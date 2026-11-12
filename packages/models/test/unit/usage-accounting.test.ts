@@ -1,6 +1,6 @@
 // Token accounting v2 and the usage parsers, ported from sdk/cliproxy/usage/accounting_test.go and
 // internal/runtime/executor/helps/usage_helpers_test.go (+ plugin_executor_usage.go merge rules).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parseCodexUsage } from "../../src/executor/codex/output.ts";
 import {
   ensureTokenBreakdown,

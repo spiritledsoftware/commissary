@@ -1,6 +1,6 @@
 // The Limits page's model (src/lib/spend.ts): amounts typed in dollars, how a limit reads, the order of the list and
 // what a refused write says.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SpendLimitView } from "@commissary/contract/spend";
 import type { ToolkitView } from "@commissary/contract/tools";
 import {

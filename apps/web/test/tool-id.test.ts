@@ -1,5 +1,5 @@
 // A tool's stable id (src/lib/tool-id.ts, #209): `<toolkit id>:<upstream name>`, taken apart.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { toolkitIdOf, upstreamNameOf } from "../src/lib/tool-id.ts";
 
 describe("a tool's stable id", () => {

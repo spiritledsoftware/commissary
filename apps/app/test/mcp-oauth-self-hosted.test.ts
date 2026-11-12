@@ -2,7 +2,7 @@
 // the consent page and the routes the page calls answer like paths the router does not know, even to an admin (the dev
 // bypass signs requests on localhost in). Commissary Cloud's are tested in test/hosted/mcp-oauth.test.ts.
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const LOCAL = "http://localhost";
 

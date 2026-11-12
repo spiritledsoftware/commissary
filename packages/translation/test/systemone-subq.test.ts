@@ -1,6 +1,6 @@
 // TypeSafe's System One request as SubQ's (ADR 0032): images in asset order, references replaced by labels, `assets`
 // dropped; media types from a format, a content type or the image's first bytes.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   base64DecodedSize,
   bytesToBase64,

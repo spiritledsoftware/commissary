@@ -9,7 +9,7 @@ import type {
   IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   atLimit,
   COMPUTER_ENV,

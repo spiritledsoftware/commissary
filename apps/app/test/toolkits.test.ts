@@ -2,7 +2,7 @@
 // ControlPlane with the Tools part, and fake remote MCP servers served in workerd. An org admin adds an org toolkit and
 // connects its shared credential, members keep their private toolkits and credentials to themselves, a source the
 // outbound guard refuses is refused on save, and private credentials follow the org's setting.
-import { describe, expect, it, afterAll } from "vitest";
+import { describe, expect, it, afterAll } from "vite-plus/test";
 import { Schema } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import { ToolkitsList, ToolkitView, ToolsList, ToolView } from "@commissary/contract/tools";

@@ -3,7 +3,7 @@
 // Through the management API with the real ControlPlanes and a Platform registry of its own.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import {
   ADMIN,

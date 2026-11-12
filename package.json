@@ -4,42 +4,25 @@
   "private": true,
   "description": "Commissary: one service on Cloudflare Workers through which an org reaches models, tools, and a browser, under its own credentials, grants and spend limits",
   "license": "FSL-1.1-ALv2",
-  "workspaces": {
-    "packages": [
-      "apps/*",
-      "packages/*"
-    ],
-    "catalog": {
-      "@effect/vitest": "4.1.2",
-      "@types/js-yaml": "4.0.9",
-      "@types/node": "^26.6.6",
-      "effect": "4.1.2",
-      "jose": "^6.2.15",
-      "js-yaml": "5.5.0",
-      "tsrs": "0.22.0-ts7.1.0-beta",
-      "vitest": "5.0.5"
-    }
-  },
   "type": "module",
   "scripts": {
-    "build": "turbo run build",
+    "build": "vp run -r --cache build",
     "catalog:sync": "node tools/sync-models-dev-catalog.ts",
     "toolkits:sync": "node tools/sync-integrations-sh-catalog.ts",
     "ci:setup": "alchemy deploy --config stacks/github.ts --stage ci --profile admin --adopt && alchemy state read commissary-github/ci/output --profile admin",
     "deploy": "alchemy deploy",
     "deploy:cloud": "alchemy deploy --stage cloud --env-file .env.cloud",
     "destroy": "alchemy destroy",
-    "dev": "turbo run build --filter=@commissary/web && alchemy dev",
-    "format": "oxfmt",
-    "lint": "turbo run lint:root",
-    "lint:root": "tools/oxlint.sh && oxfmt --check && tools/check-computerd.sh",
+    "dev": "vp run --filter @commissary/web --cache build && alchemy dev",
+    "format": "vp fmt",
+    "lint": "tools/oxlint.sh && vp fmt --check && tools/check-computerd.sh",
     "logs": "alchemy logs",
     "plan": "alchemy plan",
-    "prepare": "effect-tsgo patch --no-typescript --tsrs && husky && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
+    "prepare": "effect-tsgo patch --no-typescript --tsrs && vp config --no-agent && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
     "repos:sync": "tools/sync-reference-repos.sh",
     "smoke": "sh tools/dev-smoke.sh",
     "test": "sh tools/test.sh",
-    "typecheck": "turbo run typecheck typecheck:root",
+    "typecheck": "vp run -r --parallel --cache typecheck && vp run --cache typecheck:root",
     "typecheck:root": "tsrs -p tsconfig.infra.json"
   },
   "devDependencies": {
@@ -52,29 +35,14 @@
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
     "@distilled.cloud/cloudflare": "1.0.0-rc.18",
-    "@effect/platform-bun": "4.1.2",
     "@effect/platform-node": "4.1.2",
     "@effect/tsgo": "0.67.4",
     "@maschwenk/tsrslint": "0.1.6",
-    "@oxlint/plugins": "1.91.0",
     "@types/node": "catalog:",
     "alchemy": "2.0.0-beta.85",
     "effect": "catalog:",
-    "husky": "9.1.7",
-    "lint-staged": "17.6.0",
-    "oxfmt": "0.76.0",
-    "oxlint": "1.91.0",
     "tsrs": "catalog:",
-    "turbo": "2.11.10"
-  },
-  "overrides": {
-    "@effect/platform-node-shared": "4.1.2",
-    "just-bash": "3.2.0",
-    "xpath": "0.0.35"
-  },
-  "lint-staged": {
-    "*": "oxfmt --no-error-on-unmatched-pattern",
-    "*.{ts,mts,cts,js,mjs,cjs}": "tools/oxlint.sh --quiet --no-error-on-unmatched-pattern"
+    "vite-plus": "catalog:"
   },
   "commitlint": {
     "extends": [
@@ -82,15 +50,7 @@
     ]
   },
   "engines": {
-    "node": ">=22"
+    "node": "^22.22.3 || >=24.11.1"
   },
-  "packageManager": "bun@1.4.4",
-  "patchedDependencies": {
-    "@alchemy.run/cloudflare@2.0.0-beta.85": "patches/@alchemy.run%2Fcloudflare@2.0.0-beta.85.patch"
-  },
-  "trustedDependencies": [
-    "esbuild",
-    "tsrs",
-    "workerd"
-  ]
+  "packageManager": "pnpm@12.18.0"
 }

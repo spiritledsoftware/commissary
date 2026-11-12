@@ -2,7 +2,7 @@
 // sanitising, uuid v5, reasoning replay, the interactions terminal event and the executor-level replay round trip.
 import { Effect, Layer, Stream } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
 import {

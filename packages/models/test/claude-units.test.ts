@@ -1,6 +1,6 @@
 // Unit tests for the Claude executor building blocks: xxHash64, CCH signing, betas, cache control, MCP aliases,
 // rate-limit classification, sanitising and cloaking helpers.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { JsonObject, Json } from "@commissary/json";
 import {
   BETA,

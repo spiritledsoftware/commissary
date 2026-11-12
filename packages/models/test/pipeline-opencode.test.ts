@@ -2,7 +2,7 @@
 // conductor for OpenCode Zen and OpenCode Go against mocked gateways: protocol choice per model, request shapes,
 // gateway headers (auth, session, client identity), error classification and usage records.
 import { Effect, Layer, Logger } from "effect";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { OPENCODE_USER_AGENT } from "../src/executor/opencode/headers.ts";

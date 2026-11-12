@@ -1,6 +1,6 @@
 // `CredentialPool.hasAlternative` (read-only probe behind a pinned Responses WebSocket continuation's 429): is there a
 // credential other than the excluded one that could serve the request now? (injected clock, no Durable Object)
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 import type { Reach } from "../src/grants/reach.ts";
 import { makePool } from "./support/pool.ts";

@@ -1,6 +1,6 @@
 // Claude -> OpenAI Chat Completions compat request translation (Go: internal/translator/openai/claude/
 // openai_claude_compat_test.go; upstream 0e0cab0d).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import {
   convertClaudeRequestToOpenAI,

@@ -1,7 +1,7 @@
 // The Antigravity executor's use of the reasoning-replay ledger beyond what antigravity-replay.test.ts pins (Go cc95661c):
 // the ledger is committed before any client-visible terminal event, and token counting only peeks.
 import { Effect, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeAntigravityExecutor } from "../src/executor/antigravity/executor.ts";
 import {
   ANTIGRAVITY_REPLAY_STORE,
