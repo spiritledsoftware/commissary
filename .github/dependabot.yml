@@ -16,8 +16,8 @@ updates:
       # docs/ARCHITECTURE.md "Tools", Masking). A bump is by hand, after checking the snapshot against the golden
       # fixtures.
       - dependency-name: "@cloudflare/playwright"
-      # Held while the workerd tests fail on Vitest 5.1 (docs/DEVELOPMENT.md, "Dependency notes"): vite-plus 1.5 and later
-      # bundle it. Drop both entries when they pass, and move the catalog's `vite` alias with vite-plus by hand.
+      # Held while the workerd tests fail on Vitest 5.1 (docs/DEVELOPMENT.md, "Dependency notes"): vite-plus 1.5 and
+      # later bundle it. Drop both entries when they pass, and move the catalog's `vite` alias with vite-plus by hand.
       - dependency-name: "vite-plus"
         versions: [">=1.5.0"]
       - dependency-name: "vitest"
@@ -31,7 +31,8 @@ updates:
       # workerd tests hold Vitest at 5.0.x until they pass on 5.1 with @cloudflare/vitest-plugin (docs/DEVELOPMENT.md,
       # "Dependency notes"). effect-tsgo patches tsrs, and each release patches only the tsrs versions it lists (ADR
       # 0047). tsrs (the typechecker) is pinned exactly in pnpm-workspace.yaml's catalog: its version names the
-      # TypeScript release it ports. tsrslint is oxlint's type-aware backend until tsrs ships one (oxc-project/tsrs#378).
+      # TypeScript release it ports. tsrslint is oxlint's type-aware backend until tsrs ships one
+      # (oxc-project/tsrs#378).
       toolchain:
         patterns:
           [

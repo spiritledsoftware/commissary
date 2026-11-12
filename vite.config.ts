@@ -34,6 +34,8 @@ const restrictImports = (...patterns: ReadonlyArray<{ regex: string; message: st
   ["error", { patterns }] as const;
 
 export default defineConfig({
+  // `vp staged`, run by .vite-hooks/pre-commit: the staged files formatted, then linted (type-aware, through
+  // tools/oxlint.sh). The Effect diagnostics surface at pre-push (`pnpm run typecheck`) or in CI (ADR 0047).
   staged: {
     "*": "vp fmt --no-error-on-unmatched-pattern",
     "*.{ts,mts,cts,js,mjs,cjs}": "tools/oxlint.sh --quiet --no-error-on-unmatched-pattern",
@@ -131,7 +133,7 @@ export default defineConfig({
       "boundaries/billing-imports": "error",
       "boundaries/org-scoped-kv": "error",
       "boundaries/tools-imports": "error",
-      "no-restricted-imports": ["error", { patterns: [TESTING_ONLY] }],
+      "no-restricted-imports": restrictImports(TESTING_ONLY),
       // The test files import Vitest through Vite+ (`vite-plus/test`) and the lint plugins its Oxlint API
       // (`vite-plus/lint/plugins`), which match the versions Vite+ bundles (ADR 0049).
       "vite-plus/prefer-vite-plus-imports": "error",

@@ -613,7 +613,8 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   the version it bundles and `vite` as its core (`npm:@voidzero-dev/vite-plus-core@<version>`, which Dependabot does
   not move). It is held at 1.4.0, the last release that bundles Vitest 5.0.x (see `@cloudflare/vitest-plugin` below),
   so its Oxlint (1.89) and Oxfmt (0.74) are older than the standalone ones were; move all three together once the
-  workerd tests pass on Vitest 5.1. Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
+  workerd tests pass on Vitest 5.1, and drop Dependabot's `ignore` entries for `vite-plus` and `vitest` then
+  (`.github/dependabot.yml`). Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
   replaces `@oxlint/plugins` in the lint plugins (`vite-plus/prefer-vite-plus-imports` reports the old imports).
 - `@maschwenk/tsrslint` (oxlint's type-aware backend, "Lint and format") is pinned exactly and stands in until tsrs
   ships a backend of its own (oxc-project/tsrs#378). When it does, remove the package and `tools/oxlint.sh`, and let
