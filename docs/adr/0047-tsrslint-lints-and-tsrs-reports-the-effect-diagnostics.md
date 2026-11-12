@@ -38,3 +38,8 @@ ADR 0049 runs Oxlint through Vite+ (`vp lint`, settings in `vite.config.ts`). Vi
 oxlint-tsgolint it bundles only when the variable is unset, so `tools/oxlint.sh` sets it to tsrslint's binary and runs
 `vp lint`; tsrslint stays the type-aware backend. Its findings matched oxlint 1.91's but for two
 `no-unnecessary-type-assertion` warnings that Vite+'s Oxlint 1.89 does not report.
+
+## Amendment: tsrs-lint replaces tsrslint
+
+ADR 0050: tsrs now ships its own backend, `tsrs-lint` (oxc-project/tsrs#378), so `tools/oxlint.sh` points
+`OXLINT_TSGOLINT_PATH` at `node_modules/.bin/tsrs-lint` and `@maschwenk/tsrslint` is gone.

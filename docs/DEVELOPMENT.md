@@ -526,7 +526,7 @@ Its backend is tsrs's own, `tsrs-lint` (`tsrs --lint`, a bin of the `tsrs` packa
 `oxlint-tsgolint` Vite+ bundles (ADR 0047, ADR 0050), so the type-aware rules run on the same TypeScript as the typecheck.
 `tools/oxlint.sh` starts `vp lint` with `OXLINT_TSGOLINT_PATH` set to `node_modules/.bin/tsrs-lint` (Vite+ sets the
 variable only when it is unset), so run the linter through it (`pnpm run lint` and `vp staged` do), not as bare
-`vp lint`. In an editor, set `OXLINT_TSGOLINT_PATH` to `node_modules/.bin/tsrs-lint`. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
+`vp lint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the checkout's absolute `node_modules/.bin/tsrs-lint`. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
 (`lint.options.typeCheck: false`, so `vp check` is not this repository's check either: tsrs is the one TypeScript gate, ADR 0046). On top of its own rules it runs:
 
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
@@ -615,11 +615,11 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   workerd tests pass on Vitest 5.1, and drop Dependabot's `ignore` entries for `vite-plus` and `vitest` then
   (`.github/dependabot.yml`). Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
   replaces `@oxlint/plugins` in the lint plugins (`vite-plus/prefer-vite-plus-imports` reports the old imports).
-- `@effect/tsgo` patches only the tsrs versions it lists, so it moves with tsrs, in the same Dependabot group. tsrs
-  also provides oxlint's type-aware backend (`tsrs-lint`, "Lint and format"), so a tsrs upgrade moves the lint rules too.
 - TypeScript 7.1 through tsrs (`tsrs`, a Rust port of TypeScript 7 that takes `tsc`'s flags; ADR 0046), pinned exactly
-  in the catalog: its version names the TypeScript release it ports (`0.20.1-ts7.1.0-beta` ports 7.1.0-beta), so an
-  upgrade is a deliberate edit. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
+  in the catalog: its version names the TypeScript release it ports (`0.22.0-ts7.1.0-beta` ports 7.1.0-beta), so an
+  upgrade is a deliberate edit. It also provides oxlint's type-aware backend (`tsrs-lint`, "Lint and format", ADR 0050),
+  so an upgrade moves the lint rules too, and `@effect/tsgo`, which patches only the tsrs versions it lists, moves with
+  it in the same Dependabot group. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
   (app Worker, workerd types), `apps/api/tsconfig.json` (API Worker, workerd types), `apps/auth/tsconfig.json` (auth Worker, workerd types), `apps/state/tsconfig.json` (state Worker, workerd types), `apps/web/tsconfig.app.json` (panel, DOM types) and `tsconfig.node.json` (its Node.js side),
   `packages/contract/tsconfig.json` (no runtime types), `packages/auth`, `packages/core`, `packages/json` and `packages/translation` (Node.js types,
   no Workers types), `packages/state`, `packages/billing`, `packages/models` and `packages/tools` (workerd types, with the Node.js tests of `test/unit/`

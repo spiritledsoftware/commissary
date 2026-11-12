@@ -81,3 +81,8 @@ On an 8-core Apple Silicon laptop (2026-11-12), one run each:
   correctness rules that the `// SAFETY:` comments answer.
 - **Caching `test`** through a task in each package's `vite.config.ts`, which can name variables to keep. It would
   move each package's Vitest settings into a new config file, for a cache CI does not use.
+
+## Amendment: tsrs-lint replaces tsrslint
+
+ADR 0050: tsrs now ships its own backend, `tsrs-lint` (oxc-project/tsrs#378), so `tools/oxlint.sh` points
+`OXLINT_TSGOLINT_PATH` at `node_modules/.bin/tsrs-lint` and `@maschwenk/tsrslint` is gone.
