@@ -33,7 +33,7 @@ its output) instead of running. See "Workspace and tasks" below.
 | `pnpm run build`              | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
 | `pnpm --dir apps/web run dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `pnpm run dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                   |
 | `pnpm run typecheck`          | `tsrs`, with the Effect diagnostics, over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                          |
-| `pnpm run lint`               | `vp lint` over the whole repository (`tools/oxlint.sh`: type-aware rules through tsrslint, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                                  |
+| `pnpm run lint`               | `vp lint` over the whole repository (`tools/oxlint.sh`: type-aware rules through `tsrs-lint`, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                               |
 | `pnpm run format`             | `vp fmt`                                                                                                                                                                                                                                                                    |
 | `pnpm run test`               | Each package's `vp test run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`pnpm run test --shard=1/3`)                                                                      |
 | `pnpm run smoke`              | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
@@ -522,12 +522,11 @@ copies it into the Linear team SPI but into no project, and the workflow puts th
 `pnpm run lint` runs `vp lint` (Oxlint), `vp fmt --check` (Oxfmt) and `tools/check-computerd.sh` (the computer image's
 computerd and `@cloudflare/computer` name one version, ADR 0041). Both take their settings from the root
 `vite.config.ts` (`lint` and `fmt`, ADR 0049), over the whole repository. Oxlint is type-aware (`lint.options.typeAware`).
-Its backend is tsrslint (`@maschwenk/tsrslint`, tsgolint's rules ported to Rust on tsrs) instead of the
-`oxlint-tsgolint` Vite+ bundles, until tsrs ships a backend of its own (oxc-project/tsrs#378, ADR 0047).
-`tools/oxlint.sh` starts `vp lint` with `OXLINT_TSGOLINT_PATH` set to tsrslint's binary (Vite+ sets the variable only
-when it is unset), so run the linter through it (`pnpm run lint` and `vp staged` do), not as bare `vp lint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `pnpm exec tsrslint-path`. tsrslint ships binaries only
-for macOS arm64 and glibc Linux on x64 and arm64, so `pnpm run lint` and the `pre-commit` and `pre-push` hooks fail on
-Intel Macs, Windows and musl Linux. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
+Its backend is tsrs's own, `tsrs-lint` (`tsrs --lint`, a bin of the `tsrs` package), instead of the
+`oxlint-tsgolint` Vite+ bundles (ADR 0047, ADR 0050), so the type-aware rules run on the same TypeScript as the typecheck.
+`tools/oxlint.sh` starts `vp lint` with `OXLINT_TSGOLINT_PATH` set to `node_modules/.bin/tsrs-lint` (Vite+ sets the
+variable only when it is unset), so run the linter through it (`pnpm run lint` and `vp staged` do), not as bare
+`vp lint`. In an editor, set `OXLINT_TSGOLINT_PATH` to `node_modules/.bin/tsrs-lint`. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
 (`lint.options.typeCheck: false`, so `vp check` is not this repository's check either: tsrs is the one TypeScript gate, ADR 0046). On top of its own rules it runs:
 
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
@@ -616,10 +615,8 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   workerd tests pass on Vitest 5.1, and drop Dependabot's `ignore` entries for `vite-plus` and `vitest` then
   (`.github/dependabot.yml`). Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
   replaces `@oxlint/plugins` in the lint plugins (`vite-plus/prefer-vite-plus-imports` reports the old imports).
-- `@maschwenk/tsrslint` (oxlint's type-aware backend, "Lint and format") is pinned exactly and stands in until tsrs
-  ships a backend of its own (oxc-project/tsrs#378). When it does, remove the package and `tools/oxlint.sh`, and let
-  `vp lint` use the backend it finds (ADR 0047). `@effect/tsgo` patches only the tsrs versions it lists, so
-  it moves with tsrs, in the same Dependabot group.
+- `@effect/tsgo` patches only the tsrs versions it lists, so it moves with tsrs, in the same Dependabot group. tsrs
+  also provides oxlint's type-aware backend (`tsrs-lint`, "Lint and format"), so a tsrs upgrade moves the lint rules too.
 - TypeScript 7.1 through tsrs (`tsrs`, a Rust port of TypeScript 7 that takes `tsc`'s flags; ADR 0046), pinned exactly
   in the catalog: its version names the TypeScript release it ports (`0.20.1-ts7.1.0-beta` ports 7.1.0-beta), so an
   upgrade is a deliberate edit. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`

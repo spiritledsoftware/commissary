@@ -1,5 +1,5 @@
 ---
-status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047
+status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint)
 ---
 
 # pnpm installs, and Vite+ runs the toolchain

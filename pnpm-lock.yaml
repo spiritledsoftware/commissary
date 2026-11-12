@@ -241,9 +241,6 @@ importers:
       '@effect/tsgo':
         specifier: 0.67.4
         version: 0.67.4
-      '@maschwenk/tsrslint':
-        specifier: 0.1.6
-        version: 0.1.6
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -1660,28 +1657,6 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
-
-  '@maschwenk/tsrslint-darwin-arm64@0.1.6':
-    resolution: {integrity: sha512-4cd/YRhspvIUxfr6xx2oWv3+WTeKLxfOe4tW49zPdo80X6rp4mxkWQg3C9vkm+1ugeAakoQgtOHNP9SnH5raLA==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@maschwenk/tsrslint-linux-arm64@0.1.6':
-    resolution: {integrity: sha512-f2G8zGWoXHTHGegUdrqiX5EjyYDGFtk/vq0JeEAHlcjl3LtDD2cIl8kkuCypA69CohAqxm49yf2gtVyMSF/EMg==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  '@maschwenk/tsrslint-linux-x64@0.1.6':
-    resolution: {integrity: sha512-e1XeesEMB+m3LocBzjzUxZ+F0CpSZodC/Cp8EynPGA6Buz4l0rDx1bPHHZAgcq2bcKN2Mgk+ep3KY75P8UuRFA==}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  '@maschwenk/tsrslint@0.1.6':
-    resolution: {integrity: sha512-s/dMOF/F5gINLYMpcZpLAFVH5hWcSc4N/I8uaOkD8nMUWSFVSN/R+Jx7/rMbj5hX+ej4rthgfVhx0ZZb7/pNSg==}
-    engines: {node: '>=18'}
-    hasBin: true
 
   '@mixmark-io/domino@2.2.0':
     resolution: {integrity: sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw==}
@@ -4355,21 +4330,6 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
-
-  '@maschwenk/tsrslint-darwin-arm64@0.1.6':
-    optional: true
-
-  '@maschwenk/tsrslint-linux-arm64@0.1.6':
-    optional: true
-
-  '@maschwenk/tsrslint-linux-x64@0.1.6':
-    optional: true
-
-  '@maschwenk/tsrslint@0.1.6':
-    optionalDependencies:
-      '@maschwenk/tsrslint-darwin-arm64': 0.1.6
-      '@maschwenk/tsrslint-linux-arm64': 0.1.6
-      '@maschwenk/tsrslint-linux-x64': 0.1.6
 
   '@mixmark-io/domino@2.2.0': {}
 

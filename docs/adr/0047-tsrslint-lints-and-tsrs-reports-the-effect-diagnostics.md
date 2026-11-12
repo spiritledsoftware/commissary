@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`)
+status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`) and ADR-0050 (tsrs's own `tsrs-lint` replaces tsrslint)
 ---
 
 # tsrslint runs oxlint's type-aware rules, and the Effect diagnostics move into the typecheck
