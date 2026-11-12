@@ -14,7 +14,7 @@
 FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.10.0@sha256:6ec793fa80f109acf8b3cd4e295284cfed97f61c03030b780a612ec22c49b294 AS computerd
 
 # debian:trixie-slim
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # FUSE for computerd's mount (fuse3, and libfuse2t64 for its libfuse 2 binding); CA certificates and curl for mise's
 # downloads; the unpackers of the runtimes' archives: xz-utils for Node.js's (.tar.xz), gzip for Python's
