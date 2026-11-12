@@ -1,6 +1,6 @@
 # Issue tracker: Linear
 
-Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Commissary** (named `spiritledsoftware/commissary` in Linear). The team also holds other repos' projects (cloudpid, lspctl, Neopane, …), so create every issue for this repo in that project, and scope every read to it.
+Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Commissary** (id `3893adf0-19a5-4074-977d-432548a64480`). The team also holds other repos' projects (cloudpid, lspctl, Neopane, …), so create every issue for this repo in that project, and scope every read to it. Always name the project by its id, never by its name or slug, which a rename changes.
 
 **GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments in its synced thread sync both ways (**Comment on an issue**), and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `tools/linear-project.sh`) moves it into Commissary once it appears. Dispatch that workflow with an issue number to retry one whose run failed (an issue opened before the sync existed has no copy to move). Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create` (CI's `upstream-drift` workflow does, by design: its report is a GitHub issue). A GitHub number (`#451`) resolves to the Linear issue that carries its URL (**Read an issue** below).
 
@@ -35,14 +35,14 @@ Label ids are in `docs/agents/triage-labels.md`. For any other label: `tools.lin
 
 - **Create an issue**:
   - Executor: `tools.linear.mutation_issueCreate`, `arguments: { input: { teamId, projectId, title, description, labelIds?, parentId? } }`, `select: "identifier url"`.
-  - CLI: `linear issue create --team SPI --project spiritledsoftware/commissary --title "…" --description-file body.md [--label <name>] [--parent SPI-1] --no-input`.
+  - CLI: `linear issue create --team SPI --project 3893adf0-19a5-4074-977d-432548a64480 --title "…" --description-file body.md [--label <name>] [--parent SPI-1] --no-input`.
 - **Read an issue**:
   - Executor: `tools.linear.query_issue`, `arguments: { id: "SPI-123" }`, `select: "identifier title description url state { name type } labels { nodes { name } } assignee { name } parent { identifier } children { nodes { identifier title state { type } } } comments { nodes { body createdAt user { name } } } attachments { nodes { url } }"`.
   - CLI: `linear issue view SPI-123 --json`.
   - From a GitHub number: Executor `tools.linear.query_attachmentsForURL`, `arguments: { url: "https://github.com/spiritledsoftware/commissary/issues/<n>" }`, `select: "nodes { sourceType issue { identifier } }"`; take the node whose `sourceType` is `github` (the sync's; another issue may link the same URL by hand). The CLI uses the same query through `linear api`.
 - **List issues**:
-  - Executor: `tools.linear.query_issues`, `arguments: { first: 100, filter: { project: { id: { eq: "<Commissary>" } }, state: { type: { nin: ["completed", "canceled"] } }, labels: { name: { eq: "<label>" } } } }`, `select: "nodes { identifier title state { name } labels { nodes { name } } assignee { name } }"`.
-  - CLI: `linear issue query --team SPI --project spiritledsoftware/commissary [--label <name>] [--state backlog --state unstarted --state started] --json`.
+  - Executor: `tools.linear.query_issues`, `arguments: { first: 100, filter: { project: { id: { eq: "3893adf0-19a5-4074-977d-432548a64480" } }, state: { type: { nin: ["completed", "canceled"] } }, labels: { name: { eq: "<label>" } } } }`, `select: "nodes { identifier title state { name } labels { nodes { name } } assignee { name } }"`.
+  - CLI: `linear issue query --team SPI --project 3893adf0-19a5-4074-977d-432548a64480 [--label <name>] [--state backlog --state unstarted --state started] --json`.
 - **Make an issue a sub-issue of a parent**:
   - Executor: `parentId: "SPI-1"` at creation, or `tools.linear.mutation_issueUpdate` with `arguments: { id, input: { parentId } }`.
   - CLI: `--parent SPI-1` on `issue create` / `issue update`.
@@ -66,7 +66,7 @@ Code and PRs stay on GitHub (`gh`, the `code-host` skill). To close an issue fro
 
 ## When a skill says "publish to the issue tracker"
 
-Create a Linear issue in team SPI, project Commissary.
+Create a Linear issue in team SPI, project Commissary (`projectId` `3893adf0-19a5-4074-977d-432548a64480`; **Create an issue** above).
 
 ## When a skill says "fetch the relevant ticket"
 
@@ -76,7 +76,7 @@ Read it as in **Read an issue** above; a GitHub number resolves through its URL.
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: an issue labelled `wayfinder:map` in project Commissary, holding the Notes / Decisions-so-far / Fog body. Commissary v1's is `SPI-730` (GitHub #101).
+- **Map**: an issue labelled `wayfinder:map` in project Commissary (`3893adf0-19a5-4074-977d-432548a64480`), holding the Notes / Decisions-so-far / Fog body. Commissary v1's is `SPI-730` (GitHub #101).
 - **Child ticket**: a sub-issue of the map (**Make an issue a sub-issue of a parent**), labelled `wayfinder:<type>` (`research` / `prototype` / `grilling` / `task`). Once claimed, it is assigned to the driving dev.
 - **Blocking**: Linear's `blocks` relation, from the blocker to the blocked ticket.
   - Executor: `tools.linear.mutation_issueRelationCreate`, `arguments: { input: { type: "blocks", issueId: "<blocker>", relatedIssueId: "<child>" } }`.

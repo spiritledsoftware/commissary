@@ -69,7 +69,7 @@ until_deadline() {
 find_issue() {
   # shellcheck disable=SC2016 # GraphQL variables, not shell ones.
   issue="$(
-    graphql 'query($url: String!) { attachmentsForURL(url: $url) { nodes { sourceType issue { id identifier project { name } } } } }' \
+    graphql 'query($url: String!) { attachmentsForURL(url: $url) { nodes { sourceType issue { id identifier project { id name } } } } }' \
       "$(jq -n --arg url "$url" '{url: $url}')" |
       jq -c '.attachmentsForURL.nodes | map(select(.sourceType == "github") | .issue) | first // empty'
   )" || return
@@ -96,9 +96,9 @@ issue=""
 until_deadline find_issue
 
 identifier="$(jq -r '.identifier' <<<"$issue")"
-current="$(jq -r '.project.name // empty' <<<"$issue")"
+current="$(jq -r '.project.id // empty' <<<"$issue")"
 if [ -n "$current" ]; then
-  echo "$identifier is already in project $current; kept."
+  echo "$identifier is already in project $(jq -r '.project.name' <<<"$issue") ($current); kept."
   exit 0
 fi
 
