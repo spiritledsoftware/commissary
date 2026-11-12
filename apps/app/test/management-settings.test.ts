@@ -1,5 +1,5 @@
 // /v9/management/settings through the router, Access gate and real ControlPlane: the Settings page's view and writes.
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import type { SettingsView } from "@commissary/contract/settings";
 import {

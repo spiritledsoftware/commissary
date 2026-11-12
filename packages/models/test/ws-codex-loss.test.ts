@@ -1,7 +1,7 @@
 // The Responses WebSocket outlives its upstream socket (CLIProxyAPI f73e66ac), exposes terminal 429s (b5e6027c), fails
 // over on a bootstrap usage limit (86a1aabf) and rejects late interrupts (9717e325, d318bcc3): a client socket through
 // the Worker handler to a mocked upstream socket (Codex) or a mocked HTTP upstream.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { asString, type JsonObject } from "@commissary/json";

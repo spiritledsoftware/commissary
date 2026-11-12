@@ -1,6 +1,6 @@
 // `api-keys.opencode-zen` / `api-keys.opencode-go` through the management API: YAML import and key groups. The parser
 // and round trip are tested in Models (`packages/models/test/unit/opencode-config.test.ts`).
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { ProviderKeysList } from "@commissary/contract/provider-keys";
 import { jsonInit, makeHarness, resetControlPlane } from "./support/management.ts";
 

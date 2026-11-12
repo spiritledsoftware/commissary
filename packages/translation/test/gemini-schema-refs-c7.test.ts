@@ -1,7 +1,7 @@
 // Local $ref inlining in the Gemini / Antigravity schema cleaners (ticket C7; upstream c558d320 inlining for every
 // cleaner, bounded expansion and literal values, b2fda98e array placeholders after reference and allOf resolution).
 // Expected values are the Go tests' (internal/util/gemini_schema_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, type JsonObject } from "@commissary/json";
 import { inlineLocalRefs, inlineLocalRefsForClean } from "../src/translator/common/schema-refs.ts";
 import {

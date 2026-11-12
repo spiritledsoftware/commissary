@@ -1,6 +1,6 @@
 // The outbound guard on the client API (ADR 0044): a request through a provider key whose `base_url` the guard refuses
 // (stored before the guard existed) is answered with the guard's message, and never reaches the address.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import {
   jsonResponse,

@@ -4,7 +4,7 @@
 // on a chat model and on a Messages model (whose key travels as `x-api-key`).
 import { evictDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { FULL_ACCESS, withModelsPart } from "@commissary/models/testing";
 
 const LIMITED_KEY = "sk-go-limited-0001";

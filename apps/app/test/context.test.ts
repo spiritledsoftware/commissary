@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { it } from "@effect/vitest";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import { NotFoundLayer } from "../src/http/not-found.ts";
 import { WorkerExecutionContext } from "@commissary/core";
 import { AuthConfig } from "@commissary/auth";

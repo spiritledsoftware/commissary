@@ -1,7 +1,7 @@
 // End-to-end (workerd) through Access, model resolution, the credential picker, the executor registry and the
 // conductor for the Kimi, Meta and Devin providers against mocked upstreams.
 import { Effect, Layer } from "effect";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { sealCompaction, unsealCompaction } from "../src/executor/helps/compaction.ts";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";

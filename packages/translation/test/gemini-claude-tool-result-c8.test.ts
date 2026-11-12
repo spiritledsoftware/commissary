@@ -1,7 +1,7 @@
 // Claude tool_result -> Gemini functionResponse: error semantics (ticket C8; upstream 81de4b9c) and images nested in
 // functionResponse.parts (be864305). Expected values come from the Go tests of those commits
 // (gemini_claude_tool_result_error_test.go, gemini_claude_request_test.go, claude_tool_result_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import {
   convertClaudeRequestToGemini,

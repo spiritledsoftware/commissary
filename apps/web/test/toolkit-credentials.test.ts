@@ -1,6 +1,6 @@
 // Connecting a toolkit's credentials (src/lib/toolkit-credentials.ts, #208, ADR 0036, ADR 0038): which ways to sign in a
 // slot offers, the forms of every credential type, the bodies they send, and who may use a shared credential.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { GrantSubject, ToolGrant } from "@commissary/contract/grants";
 import type { ToolkitView } from "@commissary/contract/tools";
 import {

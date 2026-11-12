@@ -1,5 +1,5 @@
 // Pure tests of the Responses WebSocket request normalisation, per-socket planning and tool-call repair.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   mergeInput,
   normalizeCreateRequest,

@@ -2,7 +2,7 @@
 // router suffixes on GPT, Grok and Meta signatures, and family detection by the last model-name segment. Expected values
 // come from the Go tests of those commits (meta_validation_test.go, gpt_validation_test.go, grok_validation_test.go);
 // the signatures are synthetic, as in Go.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   inspectGptReasoningSignature,
   isValidGptReasoningSignature,

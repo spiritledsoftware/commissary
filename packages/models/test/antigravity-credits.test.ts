@@ -2,7 +2,7 @@
 // get one more pass over the Antigravity credentials (cooling ones included) with `enabledCreditTypes`.
 import { Effect, Layer, Result } from "effect";
 import type { HttpServerRequest } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AccessPrincipal } from "@commissary/auth";
 import {
   antigravityStateFor,

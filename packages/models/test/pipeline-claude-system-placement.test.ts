@@ -2,7 +2,7 @@
 // once per attempt whether the Responses translator keeps them in place as `role: "system"` turns (cloaked wire, a model
 // that accepts the turn) or at the top level, and tells the translator through its request options.
 import { Effect, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { builtinTranslators, TranslatorRegistry } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
 import type { JsonObject } from "@commissary/json";

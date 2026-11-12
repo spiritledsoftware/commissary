@@ -1,6 +1,6 @@
 // The month's bill (src/bill.ts) and the notices GET /billing gives the panel (src/notices.ts), from hand-built
 // BillingUsage values: pure functions, no ControlPlane.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { billMicros } from "../src/bill.ts";
 import { billingNotices } from "../src/notices.ts";
 import type { BillingUsage } from "../src/store.ts";

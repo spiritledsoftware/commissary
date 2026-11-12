@@ -4,7 +4,7 @@
 // then the ControlPlane is wiped and the org leaves the registry.
 import { env } from "cloudflare:workers";
 import { Effect } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { BillingEnv } from "@commissary/billing/api";
 import { orgDeletionStep } from "@commissary/billing/management";
 import {

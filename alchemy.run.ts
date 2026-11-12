@@ -1,5 +1,5 @@
 /**
- * Infrastructure of the Workers port, deployed with Alchemy (`bun run deploy`, `bun run dev`, `bun run destroy`): the
+ * Infrastructure of the Workers port, deployed with Alchemy (`pnpm run deploy`, `pnpm run dev`, `pnpm run destroy`): the
  * Workers of ADR 0030, the state Worker, which defines the Durable Objects, the app Worker (panel, management API) with
  * its static assets, and the API Worker (the client API) with its cron trigger, which both bind the objects by script
  * name; the
@@ -383,7 +383,7 @@ export default Alchemy.Stack(
         ...(access.application === undefined ? {} : { access: access.application }),
         limits: { cpuMs: settings.cpuMs },
         build: { input: { resolve: { alias: { ...BUNDLE_ALIASES } } } },
-        // The control panel (`bun run build`, apps/web). The Worker runs first so Access gates the panel
+        // The control panel (`pnpm run build`, apps/web). The Worker runs first so Access gates the panel
         // (apps/app/src/management/web-panel.ts serves it) and a client API path gets its 404, not an asset.
         assets: { directory: "./apps/web/dist", runWorkerFirst: true },
         env: {

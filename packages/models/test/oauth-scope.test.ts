@@ -1,6 +1,6 @@
 // `ForAPIKey` scoping (oauth_scope_executor.go) and the executor registry wiring of the Kimi/Meta/Devin providers.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeDevinExecutor } from "../src/executor/devin/executor.ts";
 import {
   configForProviderKey,

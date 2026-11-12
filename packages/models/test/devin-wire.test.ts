@@ -1,6 +1,6 @@
 // Devin Connect-RPC wire codec: protobuf round trips and parity with bytes produced by the Go code
 // (fixtures: `go run ./tools/fixturegen/devin`).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   ConnectFrameError,
   ConnectFrameParser,

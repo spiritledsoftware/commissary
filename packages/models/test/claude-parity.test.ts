@@ -1,7 +1,7 @@
 // Claude parity backlog (#29): device-profile stabiliser, `rebuild-mid-system-message`, Thread continuation alias
 // state, the post-payload Fable/Opus-5.5 and system-placement reconcilers, and the `experimental-cch-signing` key.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import {
   captureFableState,

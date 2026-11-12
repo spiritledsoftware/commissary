@@ -1,6 +1,6 @@
 // Gemini / Antigravity -> OpenAI Chat Completions responses (ticket C6; upstream 3f5d3a16, c5251b57, da21f1e5,
 // 80aa2b1d, dfe0a0ef). Expected values come from the Go tests of those commits.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

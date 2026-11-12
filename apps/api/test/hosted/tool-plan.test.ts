@@ -4,7 +4,7 @@
 // links to the billing page, without counting. (The test Worker allows a Free org 5 requests a minute,
 // vitest.config.ts: the test seeds the month's count instead of sending thousands of calls.)
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { FREE_USAGE, requestsUsed, seedRequestsUsed } from "@commissary/billing/testing";
 import { resetUsageDb } from "@commissary/models/testing";
 import { fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";

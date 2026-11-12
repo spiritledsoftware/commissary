@@ -3,7 +3,7 @@
 // 429 names its reset time (claude_executor_fable_ratelimit_test.go, claude_request_rate_test.go,
 // code_handlers_cooldown_test.go TestClaudeCooldownMessagesRoute).
 import { Effect, Layer } from "effect";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { modelCooldown } from "../src/credentials/selection/failures.ts";
 import { pickFailureError } from "../src/executor/control-plane-picker.ts";
 import { CredentialPicker } from "../src/executor/picker.ts";

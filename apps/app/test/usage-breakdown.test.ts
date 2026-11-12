@@ -1,7 +1,7 @@
 // Cost breakdowns by member, team and API key (issue #71, deferred from #70): GET /observability/usage/summary
 // grouped by `member`, `team` and `key`, with private-credential traffic left to its owner (ADR 0023).
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { ADMIN, isolatedPlatform, jsonInit, makeHarness, token } from "./support/management.ts";
 import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";

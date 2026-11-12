@@ -1,5 +1,5 @@
 // The System One error shape (ADR 0032): TypeSafe's `{"detail":{"error_type","message"}}` and the path that uses it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isSystemOnePath, systemOneErrorBody } from "../src/index.ts";
 
 describe("System One errors", () => {

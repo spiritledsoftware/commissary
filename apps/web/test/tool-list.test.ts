@@ -1,6 +1,6 @@
 // A toolkit's tool list (src/lib/tool-list.ts, #208, ADR 0037, ADR 0038): what each flag tells its managers, and the
 // whole override each edit sends (hide, rename, describe anew, reclassify), keeping what the edit does not touch.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ToolView } from "@commissary/contract/tools";
 import {
   draftOfTool,

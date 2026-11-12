@@ -1,5 +1,5 @@
 // Responses -> OpenAI Chat: developer messages keep their role and position (ticket C8; upstream 00b76771).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 

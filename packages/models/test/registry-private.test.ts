@@ -1,6 +1,6 @@
 // A private credential's models are listed to its owner alone (ADR 0023): `visibleTo` is the registry as one caller may
 // list it, while the snapshot itself still resolves the model for routing; `shared` is the shared credentials alone.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildSnapshot } from "../src/registry/service.ts";
 import type { ModelSource } from "../src/registry/source.ts";
 import { catalogs } from "./support/registry.ts";

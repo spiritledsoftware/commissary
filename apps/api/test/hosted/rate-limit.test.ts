@@ -3,7 +3,7 @@
 // you go (vitest.config.ts). That the management API on the app Worker is not limited is tested there
 // (apps/app/test/hosted/rate-limit.test.ts).
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { RATE_LIMITED } from "@commissary/billing/api";
 import { setPlan } from "@commissary/billing/testing";
 import { resetUsageDb } from "@commissary/models/testing";

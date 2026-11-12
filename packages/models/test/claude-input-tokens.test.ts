@@ -1,6 +1,6 @@
 // Claude stream input-token estimate (Go helps.TranslateStreamWithClaudeInputTokens) and the local Claude estimate,
 // compared with the Go fixtures (go run ./tools/fixturegen/tokens).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeOpenAICompatExecutor } from "../src/executor/openai-compat/executor.ts";
 import { tryParseJson } from "@commissary/json";
 import { applyClaudeInputTokens, countClaudeInputTokens } from "@commissary/translation/tokenizer";

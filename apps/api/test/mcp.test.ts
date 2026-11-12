@@ -9,7 +9,7 @@ import {
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ToolScope } from "@commissary/contract/api-keys";
 import { newOrgId, type OrgId } from "@commissary/core";
 import { controlPlaneOf, platformOf } from "@commissary/state";

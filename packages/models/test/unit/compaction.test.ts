@@ -1,6 +1,6 @@
 // The shared Responses compaction helpers (`executor/helps/compaction.ts`): the summary request built from a client
 // payload, capsule expansion, the summary status check and the synthetic response and stream.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Effect } from "effect";
 import { Formats } from "@commissary/translation/formats";
 import { asString, get, type Json, type JsonObject } from "@commissary/json";

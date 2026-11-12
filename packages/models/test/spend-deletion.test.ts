@@ -1,6 +1,6 @@
 // Zero data retention (ADR 0027) and Spend limits (issue #71): what a member's or an API key's Spend limits and counters
 // are is deleted with them, through the real ControlPlane. An org's go with the org: apps/app/test/spend-deletion.test.ts.
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { GONE, HELD, OWNER, spendingOrg, spendRows } from "./support/spending-org.ts";
 import { resetUsageDb } from "./support/usage.ts";
 

@@ -1,6 +1,6 @@
 import { builtinModules } from "node:module";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import { BUNDLE_ALIASES } from "../../infra/bundle.ts";
 import { BASE_COOKIE_PREFIX } from "../../infra/settings.ts";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";

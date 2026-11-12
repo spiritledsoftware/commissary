@@ -4,7 +4,7 @@
 // what the adapter takes from Playwright's internals: the installed client page still has `_snapshotForAI`. And the
 // fields a person filled (#216), asked of every frame of every tab, a page's odd answer refused.
 import type { Browser, Page } from "@cloudflare/playwright";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Effect, Predicate } from "effect";
 import {
   browserRunSessions,

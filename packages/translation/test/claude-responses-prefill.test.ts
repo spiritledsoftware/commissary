@@ -1,7 +1,7 @@
 // Assistant-prefill drop of the Responses -> Claude request translator (Go:
 // internal/translator/claude/openai/responses/claude_openai-responses_request_test.go,
 // TestConvertOpenAIResponsesRequestToClaude_{Unsupported,Supported}PrefillModels*).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import { get } from "@commissary/json";
 import { convertOpenAIResponsesRequestToClaude } from "../src/translator/claude/openai/responses/request.ts";

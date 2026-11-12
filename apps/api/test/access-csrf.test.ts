@@ -3,7 +3,7 @@
 // (dev bypass on localhost, see vitest.config.ts): client API writes and Responses WebSocket upgrades. The decision
 // table is tested with the app Worker (apps/app/test/access-csrf.test.ts).
 import { exports } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { resetControlPlane } from "@commissary/models/testing";
 
 const LOCAL = "http://localhost";

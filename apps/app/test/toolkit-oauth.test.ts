@@ -3,7 +3,7 @@
 // through, and the outbound guard on every URL an admin enters (an OAuth app's, a client credentials grant's token URL,
 // a toolkit's credential settings' URLs, #206), against a fake MCP server and a fake authorization
 // server served in workerd.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import {
   bearerOf,

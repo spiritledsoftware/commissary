@@ -1,7 +1,7 @@
 // A toolkit's prices (src/lib/tool-prices.ts, #209, ADR 0038): dollars typed and shown, micro-USD sent; a price per call
 // on an org toolkit, one per hour on the browser and sandbox toolkits, none on a private toolkit; and what a tool's row
 // says of its own price.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ToolkitView } from "@commissary/contract/tools";
 import {
   callPriceText,

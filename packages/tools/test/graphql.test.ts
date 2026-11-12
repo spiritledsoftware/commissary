@@ -7,7 +7,7 @@
 // introspection query Commissary sends.
 import { env, runInDurableObject } from "cloudflare:test";
 import { buildSchema, graphqlSync } from "graphql";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Schema } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";

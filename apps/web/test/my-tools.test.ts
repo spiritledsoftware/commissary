@@ -1,6 +1,6 @@
 // My tools (src/lib/my-tools.ts, #209, ADR 0038): the tools a member reaches, by toolkit, and why: their private
 // credential, which grants give them.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { UsableToolkit, UsableVia } from "@commissary/contract/tools";
 import {
   filterMyTools,

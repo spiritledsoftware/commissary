@@ -2,7 +2,7 @@
 // thinking resolution so suffixes and payload rules govern it (Go: internal/runtime/executor/
 // openai_compat_executor_reasoning_test.go; upstream 0e0cab0d).
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { makeOpenAICompatExecutor } from "../src/executor/openai-compat/executor.ts";
 import { Thinking } from "../src/executor/thinking.ts";

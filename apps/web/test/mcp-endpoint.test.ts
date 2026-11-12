@@ -1,7 +1,7 @@
 // The endpoint URL builder's model (src/lib/mcp-endpoint.ts, #208, ADR 0037, ADR 0045): the MCP endpoint's URLs on each
 // kind of deployment, `?toolkits=`, how many tools a URL gives the member, the narrowing suggestion and the setup
 // snippets of docs/CLIENTS.md.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { UsableTools } from "@commissary/contract/tools";
 import {
   accessTokenSnippets,

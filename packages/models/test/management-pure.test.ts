@@ -1,6 +1,6 @@
 // Pure helpers of the management API: config key ids, typed duplicate keys, credential entries, field patches, cooldown reset.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { decodeConfig } from "../src/config/codec.ts";
 import type { JsonObject } from "@commissary/json";
 import { resetCooldownState } from "../src/credentials/cooldown-reset.ts";

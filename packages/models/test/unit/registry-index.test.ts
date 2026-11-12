@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MODEL_QUOTA_EXCEEDED_WINDOW_MS } from "../../src/registry/availability.ts";
 import { sectionModels } from "../../src/registry/catalog.ts";
 import type { ModelInfo } from "../../src/registry/model-info.ts";

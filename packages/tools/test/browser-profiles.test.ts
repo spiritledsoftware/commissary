@@ -7,7 +7,7 @@
 // org; org admins see only that another member's private profile exists; private profiles follow the private-toolkits
 // setting.
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Schema } from "effect";
 import type { GrantSubject } from "@commissary/contract/grants";
 import { PROFILE_TABLES } from "../src/browser/profiles.ts";

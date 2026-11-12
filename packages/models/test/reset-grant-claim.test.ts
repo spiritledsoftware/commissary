@@ -7,7 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import { beforeEach, expect } from "vitest";
+import { beforeEach, expect } from "vite-plus/test";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
 import { FULL_ACCESS } from "../src/credentials/ownership.ts";
 import { CLAUDE_PROFILE_URL } from "../src/quota/claude.ts";

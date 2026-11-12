@@ -2,7 +2,7 @@
 // email domain with a DNS TXT record and sets one identity provider, which signs people in on the auth host (ADR 0030;
 // the sign-in itself is the auth Worker's, apps/auth/test/sso.test.ts); requiring single sign-on for a domain ends the
 // sessions of its people. The DNS resolver and the identity provider's discovery are fakes behind the global `fetch`.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { env } from "cloudflare:workers";
 import { resetStandingCaches } from "@commissary/auth";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";

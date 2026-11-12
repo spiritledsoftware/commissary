@@ -1,6 +1,6 @@
 // Gemini client -> Claude: tool results in user turns and Gemini-compatible thought signatures (ticket C8; upstream
 // 55c05f70, Go tests claude_gemini_issue7279_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

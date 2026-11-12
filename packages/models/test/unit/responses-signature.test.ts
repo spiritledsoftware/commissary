@@ -1,6 +1,6 @@
 // The reasoning-signature policy of the Responses executors (Go openai_responses_signature_test.go: 7a0b7563, 674dbe8f,
 // cc5682c5, be9fbd94, a68c7d8e): which `encrypted_content` replays to which upstream, by target family and base URL.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import {
   canonicalReasoningSignatureKey,

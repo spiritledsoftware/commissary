@@ -3,7 +3,7 @@
 import { FULL_ACCESS } from "../src/credentials/ownership.ts";
 import { env } from "cloudflare:test";
 import { runInDurableObject } from "cloudflare:test";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 const plane = (name: string = crypto.randomUUID()) => env.CONTROL_PLANE.getByName(name);
 

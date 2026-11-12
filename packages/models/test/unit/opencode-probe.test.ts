@@ -2,7 +2,7 @@
 // gateways' model listing is public.
 import { Effect, Layer, Predicate } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type ProviderKeyProbeTarget,
   OPENCODE_PROBE_MODEL,

@@ -1,5 +1,5 @@
 // /v9/management/observability/usage/*: queue, records and summary (D1).
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { makeHarness, resetControlPlane, token } from "./support/management.ts";
 import { GLOBAL_ORG } from "@commissary/core";
 import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";

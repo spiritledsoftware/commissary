@@ -1,6 +1,6 @@
 // Readable shortening of gateway MCP tool names (Go: internal/translator/codex/claude/codex_claude_tool_names_test.go;
 // upstream 08437a67).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   buildShortNameMap,
   shortenNameIfNeeded,

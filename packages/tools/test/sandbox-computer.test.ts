@@ -8,7 +8,7 @@
 // comes back through `WorkspaceProxy` to its session object and `@cloudflare/computer`'s container backend, which sends
 // it to `SandboxEgress`, with the session's network and the outbound guard.
 import { env, runInDurableObject } from "cloudflare:test";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Schema } from "effect";
 import type { SandboxNetwork } from "@commissary/contract/tools";
 import { NO_COMPUTER } from "../src/sandbox/toolkit.ts";

@@ -1,6 +1,6 @@
 // The Usage page's tool calls (src/lib/usage-tools.ts, #209, ADR 0038): outcomes, approvals, credentials and sizes in
 // words, a record's facts (never its content), and the figures of the totals.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { UsageRecord, UsageTotals } from "@commissary/contract/usage";
 import {
   approvalText,

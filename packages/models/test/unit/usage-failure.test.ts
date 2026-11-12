@@ -1,5 +1,5 @@
 // What a usage record keeps of a failed attempt (ADR 0027): status code, error type and error code; never the body.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { failureDetail } from "../../src/usage/failure.ts";
 import { GLOBAL_ORG } from "@commissary/core";
 import { UsageReporter } from "../../src/usage/reporter.ts";

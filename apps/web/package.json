@@ -6,9 +6,9 @@
   "license": "FSL-1.1-ALv2",
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "dev": "vite",
-    "test": "vitest run",
+    "build": "vp build",
+    "dev": "vp dev",
+    "test": "vp test run",
     "typecheck": "tsrs -p tsconfig.app.json && tsrs -p tsconfig.node.json"
   },
   "dependencies": {
@@ -29,7 +29,8 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.2.1",
     "tsrs": "catalog:",
-    "vite": "8.3.6",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:"
   }
 }

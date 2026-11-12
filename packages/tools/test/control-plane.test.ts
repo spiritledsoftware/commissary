@@ -2,7 +2,7 @@
 // lists with full names, classes and stable ids, the rules that keep full names unique (ADR 0037), overrides keyed by
 // stable id, the cron refresh and what goes when a member leaves, an upstream session ages or the org is deleted.
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import { SESSION_LIFETIME_MS, TOOLS_TABLES, ToolkitStore } from "../src/toolkits/store.ts";
 import { fakeMcpServer, serveFakeMcpServers } from "./support/mcp-server.ts";

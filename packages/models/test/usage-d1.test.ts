@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import { Effect, Layer, Logger, References } from "effect";
 import { TestClock } from "effect/testing";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { WorkerExecutionContext, GLOBAL_ORG, OrgId } from "@commissary/core";
 import { scheduledTasks } from "../src/scheduled-tasks.ts";
 import {

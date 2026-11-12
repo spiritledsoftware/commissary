@@ -1,7 +1,7 @@
 // Tools' cron task (`tool-list-refresh`, #196) through the API Worker's cron runner: every org's toolkits get their
 // tool lists built again from their MCP servers, so a tool that disappears upstream drops out and a new one appears.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { scheduledTasks as toolsTasks } from "@commissary/tools/api";
 import { fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";

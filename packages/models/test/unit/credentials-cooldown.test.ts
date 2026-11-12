@@ -3,7 +3,7 @@
 // conductor_subsecond_cooldown_test.go, conductor_cloudflare_520_test.go, conductor_cooling_precedence_test.go,
 // connection_lifecycle_cooldown_test.go, codex_model_not_found_cooldown_test.go, conductor_recent_requests_test.go,
 // quota_signals_test.go, conductor_availability_test.go.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type CooldownSettings,
   DEFAULT_COOLDOWN_SETTINGS,

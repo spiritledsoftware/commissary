@@ -3,7 +3,7 @@
 // had names (the ControlPlane's quota sweep lease, the Platform's catalog refresh lease) read back unchanged.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { assert, describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vite-plus/test";
 import { LEASE_TTL_MS, LeaseStore, mayTake } from "../src/index.ts";
 
 /** Runs `body` on the SQLite storage of a fresh ControlPlane (any Durable Object with SQLite storage would do). */

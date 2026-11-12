@@ -1,6 +1,6 @@
 // The `anthropic-beta` value of an OpenCode Messages request: the client's betas minus the Claude Code / Anthropic
 // account identity ones, plus the beta its body needs.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import {
   MID_CONVERSATION_OUTPUT_CONFIG_BETA as MID_CONVERSATION,

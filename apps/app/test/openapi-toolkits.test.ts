@@ -1,7 +1,7 @@
 // OpenAPI toolkits through the management API (#203): the app Worker's router, the Access gate and the real ControlPlane
 // with the Tools part. A document's URL or a base URL the outbound guard refuses is refused on save; a document is
 // uploaded, served back to an org admin only, replaced, and left out of the org's export; a base URL is set and cleared.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import { ToolkitsList, ToolkitView, ToolsList } from "@commissary/contract/tools";

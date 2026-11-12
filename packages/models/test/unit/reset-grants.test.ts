@@ -1,7 +1,7 @@
 // Claude reset grants, the pure parts (src/quota/reset-grants.ts): the status parsing, the grant choice, the claim answers
 // and the claim journal. The routes: apps/app/test/reset-grants.test.ts.
 import { describe, it } from "@effect/vitest";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import type { ResetGrantStatus } from "@commissary/contract/credentials";
 import type { Json } from "@commissary/json";
 import {

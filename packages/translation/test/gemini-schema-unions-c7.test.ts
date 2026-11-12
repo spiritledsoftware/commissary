@@ -2,7 +2,7 @@
 // on the Antigravity Claude tool cleaner, whose upstream rejects them (5efe9758). Expected values are the Go tests'
 // (internal/util/gemini_schema_test.go: TestCleanJSONSchema_PreservesMultiBranchAnyOfOneOf_Issue3662 and the
 // Antigravity cases whose expectation a0fd8448 changed).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json } from "@commissary/json";
 import {
   cleanJsonSchemaForAntigravity,

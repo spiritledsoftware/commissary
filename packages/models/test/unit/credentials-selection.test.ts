@@ -1,5 +1,5 @@
 // Selection tests ported from sdk/cliproxy/auth/selector_test.go (strategies, priorities, availability, affinity).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SessionCache } from "../../src/credentials/selection/affinity.ts";
 import { isBlockedForModel } from "../../src/credentials/selection/availability.ts";
 import {

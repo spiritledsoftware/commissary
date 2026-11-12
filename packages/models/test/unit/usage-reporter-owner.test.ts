@@ -1,5 +1,5 @@
 // The reporter stamps a record with the caller's member and with whether a private credential served it (ADR 0023).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GLOBAL_ORG } from "@commissary/core";
 import { emptyUsageDetail } from "../../src/usage/record.ts";
 import { UsageReporter, type UsageReporterInit } from "../../src/usage/reporter.ts";

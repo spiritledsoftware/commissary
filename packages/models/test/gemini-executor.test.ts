@@ -1,6 +1,6 @@
 // End-to-end tests (workerd) of the Gemini provider-key executor through the Access gate, the `/v1beta` routes, model
 // resolution and a mocked upstream: URLs, credentials, shaping, payload rules (final barrier), streaming and errors.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import {

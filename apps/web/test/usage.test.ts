@@ -1,6 +1,6 @@
 // The Usage page's model (src/lib/usage.ts): ranges and their bars, merged series, filters as query parameters,
 // and the page address read one parameter at a time.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { UsagePoint } from "@commissary/contract/usage";
 import { formatLatency } from "../src/lib/format.ts";
 import {

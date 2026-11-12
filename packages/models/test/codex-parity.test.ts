@@ -1,6 +1,6 @@
 // Parity backlog (#29 part 2) for Codex: `resolveCodexModelIsCompat` config fallback and models.json override headers.
 import { Effect, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { resolveCodexModelIsCompat } from "../src/executor/codex/compat.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
 import { modelOverrideHeaders } from "../src/executor/helps/model-headers.ts";

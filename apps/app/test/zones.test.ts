@@ -1,6 +1,6 @@
 // The path zones of the panel page and the client API aliases (`src/management/zones.ts`), which decide the Access
 // gate's treatment of a request.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   classifyPath,
   isPanelPagePath,

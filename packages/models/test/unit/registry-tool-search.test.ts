@@ -2,7 +2,7 @@
 // switch is on and every credential serving the model is a Claude one that takes native tool search for it (Go:
 // internal/client/codex/models/models_test.go, sdk/cliproxy/auth/native_tool_search_capability_test.go; upstream
 // 58c0f6a2, 11f04c20). The snapshot's wiring of the same bit runs in workerd (`registry-routes.test.ts`).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, type JsonObject } from "@commissary/json";
 import { buildCodexClientModels } from "../../src/registry/codex-client-models.ts";
 import { lookupStaticModelInfo } from "../../src/registry/catalog.ts";

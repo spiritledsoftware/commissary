@@ -1,0 +1,55 @@
+# pnpm's settings for this repository (docs/DEVELOPMENT.md, "Dependency notes").
+
+# The Workers and the control panel live in apps/, the libraries they share in packages/ (scope `@commissary/*`,
+# source-only: they export TypeScript and are compiled by whatever imports them). docs/DEVELOPMENT.md, "Layout".
+packages:
+  - apps/*
+  - packages/*
+
+# Versions several packages share, named `catalog:` in their package.json so they cannot drift apart (two copies of
+# `effect` in one bundle break its services).
+catalog:
+  "@effect/vitest": 4.1.2
+  "@types/js-yaml": 4.0.9
+  "@types/node": ^26.6.6
+  effect: 4.1.2
+  jose: ^6.2.15
+  js-yaml: 5.5.0
+  # Pinned exactly: its version names the TypeScript release it ports (ADR 0046).
+  tsrs: 0.22.0-ts7.1.0-beta
+  # Vite+ (ADR 0049) and the Vitest it bundles move together: vite-plus 1.4.0 bundles Vitest 5.0.5, and the workerd
+  # tests are held at Vitest 5.0.x (docs/DEVELOPMENT.md, "Dependency notes"). `vite` is Vite+'s core under Vite's name.
+  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite-plus: 1.4.0
+  vitest: 5.0.5
+
+# The packages whose install scripts run. esbuild and workerd fetch their platform binaries.
+allowBuilds:
+  esbuild: true
+  workerd: true
+  # Native compressors just-bash may use in Node.js (optional); the sandbox's shell runs in a Dynamic Worker without them.
+  "@mongodb-js/zstd": false
+  node-liblzma: false
+
+overrides:
+  # samlify (through Better Auth's SSO plugin) pulls three copies of xpath; one keeps the auth Worker's bundle smaller.
+  xpath: 0.0.35
+  # The sandbox toolkit's shell (@commissary/tools, #222): the version `@cloudflare/computer` bundled into the
+  # worker-shell modules a session's shell runs (docs/DEVELOPMENT.md, "Dependency notes").
+  just-bash: 3.2.0
+  # One Vite and one Vitest, Vite+'s, for every package that wants either.
+  vite@*: "catalog:"
+  vitest@*: "catalog:"
+
+patchedDependencies:
+  # A Container application attached to an existing Durable Object class (docs/DEVELOPMENT.md, "Dependency notes").
+  "@alchemy.run/cloudflare@2.0.0-beta.85": patches/@alchemy.run__cloudflare@2.0.0-beta.85.patch
+
+# Leave a release a day before installing it, against packages hijacked and republished.
+minimumReleaseAge: 1440
+
+# Packages that peer on Vite or Vitest take Vite+'s (its core stands in for Vite, at its own version).
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest

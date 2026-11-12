@@ -2,7 +2,7 @@
 // sibling keywords that collide are kept as two complete schemas (an allOf) instead of the sibling silently replacing the
 // target's constraint, and the parametersJsonSchema route does not rewrite shapes once a conjunction is present.
 // Expected values are the Go tests' (internal/util/gemini_schema_ref_test.go, test/gemini_ref_sibling_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import { inlineLocalRefs } from "../src/translator/common/schema-refs.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";

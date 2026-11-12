@@ -2,7 +2,7 @@
 // upstream ec06c3cb, issue 7149): Google's protobuf Schema carries minLength/maxLength/minItems/maxItems/minProperties/
 // maxProperties as int64 strings, while a standard JSON Schema carrier (parametersJsonSchema) and the other providers
 // need numbers. String literals and non-schema metadata stay untouched. Expected values are the Go tests'.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, isJsonObject, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../src/translator/common/schema.ts";

@@ -2,7 +2,7 @@
 // an API key each, a shared account, and Spend that every one used; and the Spend rows a subject holds.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import type { Viewer } from "@commissary/auth";
 import { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";

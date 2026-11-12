@@ -4,7 +4,7 @@
 // Worker's (apps/api/test/api-keys.test.ts); the key text is tested in packages/auth (keys.test.ts).
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { parseApiKey } from "@commissary/auth";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { controlPlaneOf, type ControlPlaneStub, MAX_KEYS_PER_MEMBER } from "@commissary/state";

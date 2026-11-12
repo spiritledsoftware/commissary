@@ -12,7 +12,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { SandboxNetwork } from "@commissary/contract/tools";
 import { Effect, Layer, ManagedRuntime, Result, type Schema } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   AuthDirectory,
   forgetStanding,

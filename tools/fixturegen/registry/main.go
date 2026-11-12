@@ -2,7 +2,7 @@
 // (packages/models/test/fixtures/registry.json): it registers clients in the real registry.ModelRegistry and records what the
 // real /v1/models, /v1beta/models handlers answer, so the TypeScript tests can verify listing parity. The model
 // catalogs themselves are not generated from Go any more: they come from models.dev plus the catalog additions
-// (`bun run catalog:sync`, ADR 0020); the fixture's sections stay Go parity data. Run from the repository root:
+// (`pnpm run catalog:sync`, ADR 0020); the fixture's sections stay Go parity data. Run from the repository root:
 //
 //	go run ./tools/fixturegen/registry
 package main

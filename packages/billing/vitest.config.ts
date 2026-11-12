@@ -6,7 +6,7 @@
 // (test values). The rate-limit bindings (FREE_RATE_LIMIT, PAYG_RATE_LIMIT) are not bound here: test/rate-limit.test.ts
 // injects its own per test, so a ceiling is under the test's control.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 import { workerdTestOptions } from "../../tools/vitest/workerd.ts";
 

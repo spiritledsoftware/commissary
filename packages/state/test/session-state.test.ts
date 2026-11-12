@@ -2,7 +2,7 @@
 // engine and the real Durable Object (SQLite storage, chunked values, alarm sweep). Time is the caller-supplied
 // `now`, so nothing sleeps.
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   MAX_TTL_MS,
   MemoryStateTable,

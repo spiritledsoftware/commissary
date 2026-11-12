@@ -1,6 +1,6 @@
 // X-CPA-TRACE-ID, structured request logs and per-attempt usage records through the full pipeline.
 import { Layer, Logger, References } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { authIndexOf, unkeyedAuthIndexOf } from "./support/auth-index.ts";
 import { TraceLayer } from "../src/observability/trace.ts";

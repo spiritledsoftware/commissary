@@ -2,7 +2,7 @@
 // ControlPlane with the Tools part. A Discovery document's URL, or a rootUrl in it, that the outbound guard refuses is
 // refused on save; a toolkit takes its document's URL or the document, and no base URL; an uploaded document builds the
 // toolkit, which reports the OAuth 2 scopes its methods name.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import { ToolkitsList, ToolkitView } from "@commissary/contract/tools";

@@ -2,7 +2,7 @@
 // live tokens stands for no API key (the gate refuses it with a `401`), while a store that cannot be read is a failure
 // of its own (the gate answers `503`), so a client retries instead of sending its member through a sign-in again.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { McpOAuthConfig } from "../src/oauth/config.ts";
 import { resolveAccessToken } from "../src/oauth/server.ts";
 

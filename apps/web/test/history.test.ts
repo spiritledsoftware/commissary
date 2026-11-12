@@ -1,5 +1,5 @@
 // The panel's window history (src/lib/history.ts): hourly usage points summed into past quota windows and days.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { UsagePoint } from "@commissary/contract/usage";
 import { dailyHistory, MAX_BARS, windowHistory } from "../src/lib/history.ts";
 

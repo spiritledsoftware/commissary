@@ -1,6 +1,6 @@
 // Bounded zstd request-body decoding (src/http/zstd.ts, src/http/body.ts): decompression bombs answer
 // 413 instead of exhausting the isolate's memory.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { decodeRequestBody, RequestBodyTooLargeError } from "../../src/http/body.ts";
 import { DecodedBodyTooLargeError, inflateZstd } from "../../src/http/zstd.ts";
 import {

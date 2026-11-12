@@ -1,5 +1,5 @@
 /**
- * The workspace's import boundaries, as Oxlint rules (`bun run lint`). `models-imports`, `billing-imports` and
+ * The workspace's import boundaries, as Oxlint rules (`pnpm run lint`). `models-imports`, `billing-imports` and
  * `tools-imports` keep an area package (`@commissary/models`, `@commissary/billing`, `@commissary/tools`:
  * `packages/<area>/`) one the Workers reach through its entry points only
  * (#134 "The area package convention", #151):
@@ -19,8 +19,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineRule, eslintCompatPlugin } from "@oxlint/plugins";
-import type { ESTree } from "@oxlint/plugins";
+import { defineRule, eslintCompatPlugin } from "vite-plus/lint/plugins";
+import type { ESTree } from "vite-plus/lint/plugins";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 

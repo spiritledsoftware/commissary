@@ -1,7 +1,7 @@
 // Adding a toolkit (src/lib/toolkit-add.ts, #208, ADR 0036, #207): from the toolkit catalog, from a URL looked up with
 // integrations.sh's detect (and discover, when asked), or from an uploaded document; the body each sends, and the name
 // and credentials it is added with.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CatalogService, DomainLookup } from "@commissary/contract/toolkit-catalog";
 import { addBody, documentProblem, domainOf, type AddDetails } from "../src/lib/toolkit-add.ts";
 

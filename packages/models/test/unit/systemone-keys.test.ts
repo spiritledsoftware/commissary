@@ -2,7 +2,7 @@
 // test and the write rule (`management/provider-keys-probe.ts`, `provider-keys-write.ts`).
 import { Effect, Layer, Predicate } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parseConfigYaml } from "../../src/config/codec.ts";
 import { synthesizeConfigCredentials } from "../../src/credentials/synthesize.ts";
 import { structuralDropReason } from "../../src/management/provider-keys-write.ts";

@@ -1,7 +1,7 @@
 // OpenCode-format session ids (`ses_` + 12 hex of the descending timestamp + 14 base62), which OpenCode Zen's free
 // tier requires (ADR 0033). The worked examples are OpenCode's own `Identifier.descending()` at a fixed time and
 // counter 1, ids Zen accepted on 2026-10-18.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   formatOpenCodeSessionId,
   isOpenCodeSessionId,

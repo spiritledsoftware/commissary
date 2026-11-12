@@ -5,7 +5,7 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
 import { env } from "cloudflare:workers";
-import { afterAll, afterEach, beforeAll, beforeEach } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach } from "vite-plus/test";
 import { ManagementApi, scopedApiUrl } from "@commissary/contract/api";
 import type { ProviderKeysList, GroupView } from "@commissary/contract/provider-keys";
 import { ManagementError } from "@commissary/contract/errors";

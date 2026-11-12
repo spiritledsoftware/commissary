@@ -1,7 +1,7 @@
 // Price overrides (ADR 0024): entries of an org's ControlPlane with revisions, kept across a config import, and
 // created for a ControlPlane that predates their table.
 import { runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { controlPlane, resetControlPlane } from "./support/control-plane.ts";
 import { ConfigStore, type PriceOverrideValue } from "../src/config/store.ts";

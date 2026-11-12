@@ -2,7 +2,7 @@
 // POST /v1/messages/count_tokens, per credential (Go: internal/runtime/executor/claude_executor_tool_search_test.go,
 // claude_executor_tool_search_disabled_test.go; upstream 52992659, 29bd0415, 8eed08ef, 97ba1e89).
 import { Effect, Layer, Stream } from "effect";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { asString, type JsonObject } from "@commissary/json";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";

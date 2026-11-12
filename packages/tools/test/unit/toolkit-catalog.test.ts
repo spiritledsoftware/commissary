@@ -1,7 +1,7 @@
 // The toolkit catalog (#207, ADR 0036): integrations.sh's index trimmed to the services Commissary can build toolkits
 // from, merged with the toolkit catalog additions (which fill gaps and, unlike model catalog additions, correct the
 // registry), listed and searched with featured services first, and how its auth methods become toolkit credentials.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Additions, additionsOf, bundledAdditions } from "../../src/catalog/additions.ts";
 import {
   buildCatalog,

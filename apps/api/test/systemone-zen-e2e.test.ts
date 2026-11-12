@@ -4,7 +4,7 @@
 // their own (`force-model-prefix`), so one case's cooldowns cannot reach another.
 import { env, exports } from "cloudflare:workers";
 import { noul, TypeSafeClient } from "@typesafe-ai/sdk";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { GLOBAL_ORG } from "@commissary/core";
 import { FULL_ACCESS, resetUsageDb, withModelsPart } from "@commissary/models/testing";
 import { addMember, issueKey } from "./support/client.ts";

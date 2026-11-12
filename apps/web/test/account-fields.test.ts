@@ -1,6 +1,6 @@
 // The Account page's Routing form (src/lib/account-fields.ts): applicability, the draft, the server's checks,
 // the change count and the request body (changed fields only, null deletes, masked headers kept).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CredentialEntry } from "@commissary/contract/credentials";
 import {
   appliesTo,

@@ -7,7 +7,7 @@
 // the object disposes of it first (`withPart`).
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { composeControlPlane } from "../src/index.ts";
 import { alarmOf, ORG_WIDE_TABLES, tablesOf, USD, withPart } from "./testing.ts";

@@ -2,7 +2,7 @@
 // the gate on the management API: a key works there with its role in its org only, never downloads a credential,
 // never gives a key or a service token a role, never reaches another org, and is refused once revoked. That the API
 // Worker's gate refuses it on the client API is tested in apps/api/test/api-keys.test.ts.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { parseApiKey, parseManagementKey } from "@commissary/auth";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import {

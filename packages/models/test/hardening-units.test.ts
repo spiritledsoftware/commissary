@@ -1,7 +1,7 @@
 // Small hardening helpers: config keys that do nothing on Workers, shared hashing.
 import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { notAppliedSettings } from "../src/config/not-applied.ts";
 import { sha256Hex } from "@commissary/core";
 import { sha256Hex as oauthSha256Hex } from "../src/oauth/encoding.ts";

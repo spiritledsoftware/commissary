@@ -1,5 +1,5 @@
 import { exports } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { CORS_EXPOSED_RESPONSE_HEADERS } from "../src/http/cors.ts";
 
 // The API Worker's own routes and its CORS (src/http/cors.ts). `localhost` gets the dev bypass (vitest.config.ts).

@@ -6,7 +6,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { Layer, Logger, References } from "effect";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { TraceLayer } from "@commissary/models/api";
 import { ControlPlane } from "./worker.ts";
 import { claudeFile, makeHarness } from "./support/management.ts";

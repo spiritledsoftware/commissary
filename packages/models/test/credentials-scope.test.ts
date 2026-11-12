@@ -1,7 +1,7 @@
 // Every ControlPlane method that filters by ownership takes who it runs for (ADR 0023): a viewer, or `FULL_ACCESS` for
 // the system. Leaving it out is a type error (the `@ts-expect-error` lines below stop compiling if a method gets its
 // default back), and a member's viewer never reaches what the org or another member owns.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Viewer } from "@commissary/auth";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { claudeFile, controlPlane } from "./support/control-plane.ts";

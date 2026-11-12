@@ -1,7 +1,7 @@
 // JSON Patch (RFC 6902) over an OpenAPI document: the fixes integrations.sh records for a spec (`specOverrides`,
 // #207). Each operation applies to a copy, a pointer's escapes are honoured, and an operation that does not apply
 // fails the whole patch with what went wrong.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Result } from "effect";
 import { applyJsonPatch } from "../../src/openapi/patch.ts";
 

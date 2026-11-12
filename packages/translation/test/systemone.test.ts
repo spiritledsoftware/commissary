@@ -1,5 +1,5 @@
 // TypeSafe's System One API (ADR 0032): reading requests and the upstream error shapes every provider answers.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   assetRefs,
   countImages,

@@ -4,7 +4,7 @@
 // here on the test Worker's real ControlPlane, with a bridge that replays in the same isolate and records each chain
 // it is sent.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import {
   type DevChainStep,

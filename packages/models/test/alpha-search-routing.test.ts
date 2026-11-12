@@ -1,7 +1,7 @@
 // `/v1/alpha/search` with provider-key credentials: the upstream model is the route the credential pool resolved for the
 // pick (prefix stripping, provider-key aliases), not a second, config-only resolution (Go `ResolveExecutionModel` +
 // `rewriteCodexAlphaSearchModel`).
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { jsonResponse, makePipeline, postJson } from "./support/pipeline.ts";
 import { makePool, poolPickerLayer } from "./support/pool.ts";
 import { codexModels } from "./support/codex.ts";

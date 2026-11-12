@@ -9,12 +9,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsrs": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

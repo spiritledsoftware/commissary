@@ -1,6 +1,6 @@
 // Error bodies per protocol (Go: handlers.go BuildErrorResponseBodyWithError, claude/code_handlers.go,
 // openai_responses_stream_error.go) and related HTTP helpers.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { claudeFramer } from "../src/handlers/framing.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import { enrichSelectionError } from "../src/handlers/execute.ts";

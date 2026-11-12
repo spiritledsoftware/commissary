@@ -2,7 +2,7 @@
 // Durable Object. Each test uses an object of its own (`getByName`), so none sees another's orgs.
 import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ORG_SLUG, GLOBAL_ORG, newOrgId } from "@commissary/core";
 import { DEFAULT_USAGE_RETENTION_DAYS, PLATFORM_NAME, platformOf } from "../src/index.ts";

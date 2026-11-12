@@ -4,7 +4,7 @@
 // refusals, the endpoint guard both ways and the model listing.
 import { env, exports } from "cloudflare:workers";
 import { image, noul, TypeSafeClient } from "@typesafe-ai/sdk";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { mintApiKey } from "@commissary/auth";
 import { GLOBAL_ORG } from "@commissary/core";
 import { resetUsageDb } from "@commissary/models/testing";

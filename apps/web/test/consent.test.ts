@@ -1,6 +1,6 @@
 // The consent page of an MCP client's sign-in on Commissary Cloud (src/lib/consent.ts, #200): what it says of the
 // client, whose name is its own claim unless it is identified by its domain, and where the member goes next.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   authorizeQuery,
   CLIENT_NAME_SHOWN,

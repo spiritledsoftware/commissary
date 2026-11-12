@@ -1,6 +1,6 @@
 // Empty part objects in systemInstruction.parts (ticket C8; upstream 4c46f0aa, f42f5871): Cloud Code Assist and Vertex 400
 // on a Part whose `data` oneof is unset, so `{}` parts are removed and an all-empty systemInstruction is dropped.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { sanitizeGeminiRequestThoughtSignatures } from "../src/signature/gemini.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";

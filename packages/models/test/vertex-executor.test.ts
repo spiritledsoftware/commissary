@@ -1,7 +1,7 @@
 // End-to-end tests (workerd) of the Vertex executor: service-account and provider-key endpoints, token handling through the
 // ControlPlane stub, Imagen conversion, native Interactions and the payload-rules-last ordering.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import {
   convertImagenToGeminiResponse,

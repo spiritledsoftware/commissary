@@ -3,7 +3,7 @@
 // credential names who may use it, a private credential needs no grant and wins, and the org's private toolkits setting
 // decides whether private toolkits are added and served.
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { GrantSubject, ToolGrantBody } from "@commissary/contract/grants";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import { fakeMcpServer, serveFakeMcpServers } from "./support/mcp-server.ts";

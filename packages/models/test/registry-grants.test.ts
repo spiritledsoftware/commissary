@@ -2,7 +2,7 @@
 // its upstream models is granted to them on some shared credential that serves it. The snapshot itself still knows
 // every model for routing; `visibleTo` is the per-member view, cached per snapshot (so per org, grants version and
 // member).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { GrantEntry, GrantTable } from "../src/grants/grant.ts";
 import { routingView } from "../src/registry/routing-view.ts";
 import { buildSnapshot } from "../src/registry/service.ts";

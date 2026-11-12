@@ -1,6 +1,6 @@
 // Org addressing (ADR 0021): `/v9/management/orgs/<slug>/...` and `/o/<slug>/...` name the org of a management request.
 // The pure parts: parsing the address, classifying the paths, and the cross-site rules for the scoped spellings.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { crossSiteRejection } from "../src/access/csrf.ts";
 import {
   classifyPath,

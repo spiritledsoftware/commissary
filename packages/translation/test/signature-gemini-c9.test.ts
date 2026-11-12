@@ -3,7 +3,7 @@
 // recognised (key id pinned) and rejected by the non-Vertex sanitiser. Expected values come from the Go tests of those
 // commits; the signatures are synthetic, like Go's `testGeminiBareTinkSignature` and `signaturetest.AntigravityCAQS`.
 import { get, type Json } from "@commissary/json";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   compatibleAntigravityClaudeThinkingSignature,
   isValidClaudeThinkingSignature,

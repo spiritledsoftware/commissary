@@ -2,7 +2,7 @@
 // auth indexes apart, and the org `global` keeps everything it had before orgs existed.
 import { env } from "cloudflare:workers";
 import { Effect, Layer, Schema } from "effect";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { SettingsView } from "@commissary/contract/settings";
 import { CurrentOrg, GLOBAL_ORG, OrgId } from "@commissary/core";
 import { controlPlaneOf, resolveBackend } from "@commissary/state";

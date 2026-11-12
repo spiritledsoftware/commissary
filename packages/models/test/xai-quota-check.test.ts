@@ -4,7 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { afterEach } from "vitest";
+import { afterEach } from "vite-plus/test";
 import {
   acceptableXaiClientVersion,
   resetXaiClientVersionCache,

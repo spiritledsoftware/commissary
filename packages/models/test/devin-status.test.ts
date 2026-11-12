@@ -1,7 +1,7 @@
 // Devin GetUserStatus quota/profile refresh against the real Go DevinExecutor.Refresh
 // (`go run ./tools/fixturegen/devinstatus`), the cron wiring and the catalog/EOF guards of the executor.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { applyDevinStatus, refreshDevinStatuses } from "../src/credentials/devin-status.ts";
 import type { Credential, CredentialState } from "../src/credentials/model.ts";
 import { emptyState } from "../src/credentials/model.ts";

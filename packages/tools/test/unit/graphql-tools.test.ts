@@ -4,7 +4,7 @@
 // defaults, `@oneOf`, a recursive input cut, a root connection's page size), what a call needs, a deprecated field
 // flagged, subscriptions left out, and the default selection's rule and bound, every tool's default valid against the
 // schema.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildSchema, graphqlSync, parse, validate } from "graphql";
 import { Result } from "effect";
 import {

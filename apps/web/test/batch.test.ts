@@ -1,6 +1,6 @@
 // The Accounts page's filtering (src/lib/accounts.ts), selection and the folding of batch and quota-sweep outcomes
 // (src/lib/batch.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CredentialEntry } from "@commissary/contract/credentials";
 import {
   accountActions,

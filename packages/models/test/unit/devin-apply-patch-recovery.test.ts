@@ -1,6 +1,6 @@
 // Bare Codex patches in Devin's invalid_json_str (CLIProxyAPI b4f59d70, helps/devin_apply_patch_diagnostic_test.go
 // `TestRecoverDevinBareApplyPatch`).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   canBeDevinBareApplyPatchPrefix,
   recoverDevinBareApplyPatch,

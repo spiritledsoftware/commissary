@@ -1,7 +1,7 @@
 // A sandbox session's computer time (#224): from the command that starts the computer to its last command and its ten
 // idle minutes, or to when the session stops it, answered call by call at the price per computer hour in force since
 // the call before.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type ComputerMetering,
   computerNotStarted,

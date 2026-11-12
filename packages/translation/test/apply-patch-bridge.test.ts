@@ -1,5 +1,5 @@
 // Codex apply_patch bridge details that the Go golden corpus cannot express (transport end of a Claude stream).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

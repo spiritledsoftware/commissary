@@ -1,6 +1,6 @@
 // Nested Chat Completions custom tools ({type:"custom", custom:{...}}) across the Codex round trip (Go:
 // internal/translator/codex/openai/chat-completions/codex_openai_{request,response}_test.go; upstream 2443e883).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, tryParseJson } from "@commissary/json";
 import { convertOpenAIRequestToCodex } from "../src/translator/codex/openai-chat/request.ts";
 import {

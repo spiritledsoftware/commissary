@@ -2,7 +2,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import type { JsonObject } from "@commissary/json";
 import {
   begin,

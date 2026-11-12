@@ -3,7 +3,7 @@
 // injected clock; the store's own behaviour (TTL, refresh cadence, scopes, orgs, concurrency) is in
 // session-state-stores.test.ts.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fixedBackend, type SessionStateBackend, SessionStateError } from "@commissary/state";
 import type { Json, JsonObject } from "@commissary/json";
 import { makeMemoryContinuityStore } from "../src/executor/claude/continuity.ts";

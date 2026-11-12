@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import { Effect, Fiber, Predicate, Stream } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import { withNonStreamKeepAlive } from "../../src/handlers/respond.ts";
 
 const answer = (status: number, delaySeconds: number) =>

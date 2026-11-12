@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0047 (tsrslint is oxlint's type-aware backend, and tsrs reports the Effect diagnostics) and ADR-0048 (two blocked packages are gone)
+status: accepted, amended by ADR-0047 (tsrslint is oxlint's type-aware backend, and tsrs reports the Effect diagnostics) and ADR-0048 (two blocked packages are gone); partly superseded by ADR-0049 (pnpm installs, and Vite+ runs the toolchain)
 ---
 
 # Bun installs and runs scripts, tsrs typechecks, Vitest stays on Node.js
@@ -39,3 +39,9 @@ On an 8-core Apple Silicon laptop (2026-10-31), one run each:
 ## Amendment: two blocked packages are gone
 
 ADR 0048 removes the hosted agents, whose runtime pulled in `@google/genai` and `protobufjs`. Neither is in the lockfile any more, so `trustedDependencies` has nothing to block for them; `@mongodb-js/zstd` and `node-liblzma` stay blocked.
+
+## Amendment: pnpm and Vite+ replace Bun
+
+ADR 0049 moves the installs back to pnpm (`pnpm-workspace.yaml`, `pnpm-lock.yaml` imported from `bun.lock`) and the
+scripts' tools to Vite+ (`vp run` in place of Turborepo); Alchemy's CLI runs on Node.js. tsrs stays the typechecker and
+the one TypeScript gate, as this record has it.

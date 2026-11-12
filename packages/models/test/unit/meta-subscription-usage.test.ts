@@ -1,5 +1,5 @@
 // The Meta `response.subscription_usage` line filter (Go meta_executor_stream.go / translateMetaCompleted).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeSubscriptionUsageFilter } from "../../src/executor/meta/subscription-usage.ts";
 
 const usage = 'data: {"type":"response.subscription_usage","subscription":{"tier":"t"}}';

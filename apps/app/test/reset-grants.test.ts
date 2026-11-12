@@ -8,7 +8,7 @@ import { env, exports } from "cloudflare:workers";
 import { Effect, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { afterAll, beforeEach, expect } from "vitest";
+import { afterAll, beforeEach, expect } from "vite-plus/test";
 import { ManagementApi } from "@commissary/contract/api";
 import { CredentialEntry, type ResetGrantStatus } from "@commissary/contract/credentials";
 import { ManagementError } from "@commissary/contract/errors";

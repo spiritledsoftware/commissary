@@ -1,45 +1,20 @@
 name: setup
 description: >-
-  Bun (version from package.json's `packageManager`), Node.js (.node-version: Vitest, Vite and the sync scripts run on
-  Node.js), Bun's packages from the Actions cache, and `bun install --frozen-lockfile`.
+  Vite+ (`vp`, the version pnpm-workspace.yaml's catalog names), Node.js (.node-version) and pnpm (package.json's
+  `packageManager`), pnpm's packages from the Actions cache, and `vp install --frozen-lockfile` (ADR 0049).
 inputs:
   cache:
     description: >-
-      Restore and save Bun's packages ("false" in jobs that hold deploy credentials: they neither read nor write the
+      Restore and save pnpm's packages ("false" in jobs that hold deploy credentials: they neither read nor write the
       cache).
     default: "true"
 runs:
   using: composite
   steps:
-    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      with:
-        bun-version-file: package.json
-    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+    # Keyed by pnpm-lock.yaml. pnpm checks each package it takes from the store against the lockfile's integrity hash.
+    - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
       with:
         node-version-file: .node-version
-        package-manager-cache: false
-    # One file of the cache entries this lockfile needs (`bun pm cache pack`), not Bun's cache directory: it holds
-    # exactly the lockfile's packages, so a save never carries forward the ones an older lockfile dropped. Keyed by the
-    # lockfile, falling back to the newest pack of any lockfile, so a lockfile change downloads only what changed.
-    - id: pack
-      shell: bash
-      run: echo "path=$RUNNER_TEMP/bun-cache.pack" >> "$GITHUB_OUTPUT"
-    - id: cache
-      if: inputs.cache == 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.pack.outputs.path }}
-        key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-        restore-keys: bun-cache-${{ runner.os }}-
-    - shell: bash
-      run: |
-        [ ! -f "$PACK" ] || bun pm cache unpack "$PACK"
-        bun install --frozen-lockfile
-      env:
-        PACK: ${{ steps.pack.outputs.path }}
-    # A pack restored from another lockfile's key lacks what changed: write this lockfile's before the job saves it.
-    - if: inputs.cache == 'true' && steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: bun pm cache pack "$PACK"
-      env:
-        PACK: ${{ steps.pack.outputs.path }}
+        cache: ${{ inputs.cache }}
+        run-install: |
+          args: ["--frozen-lockfile"]

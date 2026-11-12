@@ -1,7 +1,7 @@
 // Model routing per credential: prefixes (force-model-prefix), exclusions, OAuth aliases, provider-key model aliases,
 // force-mapping and alias pools. Semantics from sdk/cliproxy/auth/{oauth_model_alias,conductor_models}.go and
 // sdk/cliproxy/service_models.go.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   isModelExcluded,
   matchWildcard,

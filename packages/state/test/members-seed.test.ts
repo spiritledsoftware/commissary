@@ -3,7 +3,7 @@
 // whose members are cleared and whose seeding has not run.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { controlPlaneOf, MemberStore } from "../src/index.ts";
 

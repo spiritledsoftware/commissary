@@ -1,7 +1,7 @@
 // The export an org offers before it is deleted (ADR 0027): the org's settings, shared config and who belongs, with every
 // secret as a preview, so what the org had can be rebuilt by hand but never leaks. Usage records come from the usage
 // routes that already page and export them. Through the management API with the real ControlPlane.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import {
   ADMIN,
   claudeFile,

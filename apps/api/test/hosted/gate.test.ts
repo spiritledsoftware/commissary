@@ -4,7 +4,7 @@
 // those routes forget the standing their own isolate cached, so the API Worker's isolates learn it within
 // `STANDING_TTL_MS` (packages/auth/src/standing.ts), which the tests skip by emptying the cache.
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { resetStandingCaches } from "@commissary/auth";
 import { platformOf } from "@commissary/state";
 import { resetUsageDb } from "@commissary/models/testing";

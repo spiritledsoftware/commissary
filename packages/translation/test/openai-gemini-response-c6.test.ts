@@ -1,6 +1,6 @@
 // OpenAI chat -> Gemini streaming (ticket C6; upstream bdde391d): a delta that carries content or reasoning together with
 // a finish_reason still ends the candidate.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

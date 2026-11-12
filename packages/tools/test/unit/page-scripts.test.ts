@@ -3,7 +3,7 @@
 // its default); the filled-field script names them and the changed ones, and only those, but every text field that is
 // not empty in a frame without the listener; and a page's answer is taken only as a short list of short strings.
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   FILLED_FIELDS,
   filledSelectorsOf,

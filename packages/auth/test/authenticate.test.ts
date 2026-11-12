@@ -6,7 +6,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { CurrentOrg, GLOBAL_ORG, OrgSlug } from "@commissary/core";
 import { Context, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { beforeEach } from "vitest";
+import { beforeEach } from "vite-plus/test";
 import {
   type AccessJwks,
   AuthConfig,

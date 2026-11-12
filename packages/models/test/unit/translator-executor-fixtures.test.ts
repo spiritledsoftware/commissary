@@ -7,7 +7,7 @@ import {
   itTranslatorFixture,
   type TranslatorFixtureCase,
 } from "@commissary/translation/testing";
-import { describe } from "vitest";
+import { describe } from "vite-plus/test";
 import { translateRequestForExecutor } from "../../src/executor/helps/translate.ts";
 import cases from "../fixtures/translator-executor.json";
 import { configOf } from "../support/registry-sources.ts";

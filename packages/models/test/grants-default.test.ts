@@ -1,6 +1,6 @@
 // The default grant (ADR 0023): a ControlPlane writes "everyone, every shared credential, every model" the first time
 // it is constructed, once, and does not make it again after an org admin removed it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { claudeFile, controlPlane } from "./support/control-plane.ts";
 import { DEFAULT_GRANT } from "../src/grants/grant.ts";

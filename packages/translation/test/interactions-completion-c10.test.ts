@@ -1,7 +1,7 @@
 // Interactions completion (Go: internal/translator/antigravity/interactions/interactions_antigravity_test.go,
 // internal/translator/gemini/interactions/interactions_gemini_{common,stream_lines}_test.go; upstream ede07caf,
 // be929f07, 37bd18b0).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, tryParseJson } from "@commissary/json";
 import { convertInteractionsRequestToAntigravity } from "../src/translator/antigravity/interactions/request.ts";
 import { convertAntigravityResponseToInteractions } from "../src/translator/antigravity/interactions/response.ts";

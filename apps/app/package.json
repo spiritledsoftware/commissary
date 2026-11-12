@@ -6,7 +6,7 @@
   "license": "FSL-1.1-ALv2",
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs"
   },
   "dependencies": {
@@ -30,6 +30,7 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "tsrs": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:"
   }
 }

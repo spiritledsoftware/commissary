@@ -2,7 +2,7 @@
 // Responses-shaped chat payloads, Gemini/Interactions through the executor, and the Images API.
 import { Effect, Layer, Predicate, Stream } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { makeOpenAICompatExecutor } from "../src/executor/openai-compat/executor.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";

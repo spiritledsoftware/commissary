@@ -5,7 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import {
   type AccessJwks,
   callerScope,

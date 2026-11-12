@@ -5,7 +5,7 @@
 import { FULL_ACCESS } from "../src/credentials/ownership.ts";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ControlPlane } from "./worker.ts";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 import { OrgId } from "@commissary/core";

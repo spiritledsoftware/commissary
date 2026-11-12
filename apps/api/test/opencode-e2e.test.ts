@@ -2,7 +2,7 @@
 // picker and `markResult`; only the gateway is mocked, through the global `fetch`.
 import { evictDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { FULL_ACCESS, withModelsPart } from "@commissary/models/testing";
 
 type Upstream = (request: Request) => Response | Promise<Response>;

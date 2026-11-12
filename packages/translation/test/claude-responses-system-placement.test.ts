@@ -1,7 +1,7 @@
 // Responses -> Claude: mid-session system/developer items stay in place as `role: "system"` turns when the executor
 // says so (Go: internal/translator/claude/openai/responses/claude_openai-responses_system_placement_test.go, upstream
 // 27762819). The executor's `topLevelSystemItems` request option picks the placement; absent means top level.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, type JsonObject } from "@commissary/json";
 import { Formats } from "../src/translator/formats.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";

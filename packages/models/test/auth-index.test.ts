@@ -2,7 +2,7 @@
 // keys a deployed stage refuses. That no response carries a raw config credential id or an unkeyed hash:
 // apps/app/test/auth-index-keyed.test.ts.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   AUTH_INDEX_LENGTH,
   AuthIndexKeyError,

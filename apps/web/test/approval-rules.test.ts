@@ -1,7 +1,7 @@
 // A toolkit's approval rules (src/lib/approval-rules.ts, #209, #201, ADR 0038): each shape of rule (the write switch, a
 // mark on one tool, and an approver that is the caller, a team or a list of members) as the editor holds it, what is
 // wrong with a draft, the whole rules a draft writes, and what each tool's row says of them.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ApprovalRulesView } from "@commissary/contract/approvals";
 import type { ToolView } from "@commissary/contract/tools";
 import {

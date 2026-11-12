@@ -1,6 +1,6 @@
 // Golden signature decisions generated from the Go internal/signature package by
 // `go run ./tools/fixturegen/signature`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   compatibleAntigravityClaudeThinkingSignature,
   isValidClaudeThinkingSignature,

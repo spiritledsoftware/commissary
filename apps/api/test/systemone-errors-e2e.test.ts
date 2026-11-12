@@ -6,7 +6,7 @@
 // without it, the first ControlPlane call (in `beforeAll`) loads it, and on a cold CI runner that exceeds the hook
 // timeout.
 import { env, exports } from "cloudflare:workers";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { FULL_ACCESS } from "@commissary/models/testing";
 
 type Upstream = (request: Request) => Response | Promise<Response>;

@@ -1,7 +1,7 @@
 // Local countTokens answers of the Codex, OpenAI-compatibility, xAI, Meta and Claude (gateway) executors compared with
 // the real Go executors (go run ./tools/fixturegen/tokens).
 import { Effect, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isJsonArray, isJsonObject, type Json } from "@commissary/json";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";

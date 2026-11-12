@@ -2,7 +2,7 @@
 // (`go run ./tools/fixturegen/devin`): the TypeScript executor must send the same request business fields and
 // produce the same Interactions events / aggregate / errors from the same response frames.
 import { Effect, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { resetSessionTurnIndex } from "../src/executor/devin/credentials.ts";
 import { makeDevinExecutor } from "../src/executor/devin/executor.ts";
 import { sealCompaction, unsealCompaction } from "../src/executor/helps/compaction.ts";

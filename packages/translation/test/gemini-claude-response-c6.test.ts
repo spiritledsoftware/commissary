@@ -1,6 +1,6 @@
 // Gemini -> Claude Messages responses (ticket C6; upstream 202b8b8c, e1fb2521, 58257007, 7f2f17d7, 3f5d3a16).
 // Expected values come from the Go tests of those commits (gemini_claude_response_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";

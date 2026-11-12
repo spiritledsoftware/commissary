@@ -1,7 +1,7 @@
 // End-to-end tests (workerd) of the Claude provider: POST /v1/messages and /v1/messages/count_tokens through Access,
 // model resolution, the credential picker, the Claude executor (request shaping, cloaking, CCH signing, aliases,
 // error classification) and a mocked upstream.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { normalizeCchInput } from "../src/executor/claude/signing.ts";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";

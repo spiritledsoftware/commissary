@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ApiKeyView } from "@commissary/contract/api-keys";
 import {
   canRevoke,

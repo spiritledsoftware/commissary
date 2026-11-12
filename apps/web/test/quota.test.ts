@@ -1,5 +1,5 @@
 // The panel's quota reading (src/lib/quota.ts) and figure formatting (src/lib/format.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CredentialEntry } from "@commissary/contract/credentials";
 import { formatCount, formatDuration, formatPercent, formatTokens } from "../src/lib/format.ts";
 import { accountName, assess } from "../src/lib/accounts.ts";

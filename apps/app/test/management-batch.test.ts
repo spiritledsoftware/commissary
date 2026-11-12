@@ -9,7 +9,7 @@ import { Duration, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { afterAll, beforeAll, beforeEach, expect } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect } from "vite-plus/test";
 import { ManagementApi } from "@commissary/contract/api";
 import { ManagementError } from "@commissary/contract/errors";
 import { WorkerExecutionContext, CurrentOrg, GLOBAL_ORG } from "@commissary/core";

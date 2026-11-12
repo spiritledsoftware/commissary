@@ -1,6 +1,6 @@
 // Grants in the real ControlPlane (ADR 0023): the writes (revisions, conflicts, what a grant may name), what a pick does
 // the moment a grant changes, team grants following the team, and grants leaving with their member or team.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OrgId } from "@commissary/core";
 import { claudeFile, controlPlane } from "./support/control-plane.ts";
 import { FULL_ACCESS } from "../src/credentials/ownership.ts";

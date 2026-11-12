@@ -6,7 +6,7 @@
 // deleted, and forgets a crawl 21 days after it started, when Browser Run no longer keeps its pages (`TestClock` drives
 // the time). Without the token there are no crawl tools (test/browser-toolkit.test.ts lists the toolkit without them).
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Duration, Effect, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { OrgId } from "@commissary/core";

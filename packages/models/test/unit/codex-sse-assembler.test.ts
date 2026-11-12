@@ -1,5 +1,5 @@
 // CLIProxyAPI 7795de19 (codex_sse_scanner_test.go): data lines of one event are joined only while its JSON is open.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { CodexSseAssembler } from "../../src/executor/codex/sse-assembler.ts";
 
 const feed = (lines: string[], maxBytes?: number): string[] => {

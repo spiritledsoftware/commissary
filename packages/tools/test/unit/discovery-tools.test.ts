@@ -3,7 +3,7 @@
 // included, named by the method's id; input schemas of the path and query parameters and the request body, `$ref`s to
 // the document's schemas resolved; what a call needs (method, path under rootUrl and servicePath, security, scopes);
 // `{+name}` paths; methods whose only input is an upload left out; and documents Commissary cannot build from.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Result, type Schema } from "effect";
 import { discoveryToolList } from "../../src/discovery/tools.ts";
 import gmail from "../fixtures/discovery/gmail-v1.json?raw";

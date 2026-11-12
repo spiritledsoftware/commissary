@@ -6,7 +6,7 @@
 // concurrent browser sessions and computers refuse opening one more. The part and the sessions' objects read one
 // TestClock.
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Effect, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { browserSessionStub } from "../src/browser/session-object.ts";

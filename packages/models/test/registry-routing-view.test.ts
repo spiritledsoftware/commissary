@@ -1,6 +1,6 @@
 // `routingView`: the admin view of the registry (which credentials serve each model, and why not), pure over a
 // snapshot built from model sources.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { emptyQuota, emptyState } from "../src/credentials/model.ts";
 import { routingView } from "../src/registry/routing-view.ts";
 import { buildSnapshot } from "../src/registry/service.ts";

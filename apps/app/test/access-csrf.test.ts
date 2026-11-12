@@ -3,7 +3,7 @@
 // vitest.config.ts) for the panel and management writes. The client API's are the API Worker's
 // (apps/api/test/access-csrf.test.ts).
 import { exports } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { crossSiteRejection } from "../src/access/csrf.ts";
 import { resetControlPlane } from "./support/management.ts";
 

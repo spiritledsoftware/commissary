@@ -4,7 +4,7 @@
 // members, keys, toolkits, prices and limits are set up straight through the state Worker's objects.
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { newOrgId, type OrgId } from "@commissary/core";
 import {
   authIndexOf,

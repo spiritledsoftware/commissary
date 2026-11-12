@@ -1,6 +1,6 @@
 // Responses -> Gemini parallel tool outputs across developer notices (ticket C8; upstream 3ac38498, Go tests
 // gemini_openai-responses_request_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { collectFunctionCallOutputs } from "../src/translator/gemini/openai/responses/request.ts";

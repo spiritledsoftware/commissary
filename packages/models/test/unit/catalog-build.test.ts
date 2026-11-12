@@ -2,7 +2,7 @@
 // built from it with the catalog additions, and the coverage of what the Go server serves
 // (test/fixtures/go-catalog-served.json: the ids and thinking of every Go catalog section at the time the catalog moved
 // to models.dev, pinned from the `sections` of test/fixtures/registry.json; it does not follow the reference checkout).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import goServed from "../fixtures/go-catalog-served.json";
 import { asString, get, type JsonObject, tryParseJson } from "@commissary/json";
 import { parseCatalogAdditions } from "../../src/registry/catalog-additions.ts";

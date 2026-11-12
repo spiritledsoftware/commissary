@@ -2,7 +2,7 @@
 // servers `http-server.ts`): the test replaces the isolate's `fetch` with one that hands each request to the fake of its
 // origin, `599` for an origin no fake serves. The ControlPlane runs in the test's isolate, so its builds and calls
 // reach the fakes. A unique origin per fake keeps tests apart.
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, beforeAll } from "vite-plus/test";
 
 const routes = new Map<string, (request: Request) => Promise<Response>>();
 

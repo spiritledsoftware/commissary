@@ -3,7 +3,7 @@ import { FULL_ACCESS } from "../src/credentials/ownership.ts";
 import { env } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { withModelsPart } from "./support/models-part.ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 
 const plane = (name: string = crypto.randomUUID()) => env.CONTROL_PLANE.getByName(name);

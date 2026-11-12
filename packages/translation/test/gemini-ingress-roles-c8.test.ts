@@ -1,6 +1,6 @@
 // Gemini ingress role normalisation (ticket C8; upstream c888ff72): omitted, unknown, `function` and `tool` roles, snake_case
 // function parts, and no empty trailing message after a functionResponse-only turn.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 

@@ -5,7 +5,7 @@ import { assert, describe as effectDescribe, it as effectIt } from "@effect/vite
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import type { Json } from "@commissary/json";
 import { ManagementApi } from "@commissary/contract/api";
 import { ManagementError } from "@commissary/contract/errors";

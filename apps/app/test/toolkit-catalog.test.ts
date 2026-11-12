@@ -6,7 +6,7 @@
 // name, document fixes and key placement and a working tool list: an MCP server's, an OpenAPI document's and a Google
 // Discovery document's. A source the outbound guard refuses is refused on save, from the catalog or a lookup.
 import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import {

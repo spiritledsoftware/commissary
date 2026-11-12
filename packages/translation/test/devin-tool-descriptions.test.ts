@@ -1,6 +1,6 @@
 // Devin tool description rewrites (CLIProxyAPI e25b7daf, `TestSanitizeDevinToolDescription`): embedded exec_command and
 // write_stdin phrases are rewritten whatever the tool is called.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get } from "@commissary/json";
 import { sanitizeDevinToolDescription } from "../src/translator/openai/common/devin-tools.ts";
 import { convertOpenAIResponsesRequestToInteractions } from "../src/translator/openai/interactions/responses/request-responses-to-interactions.ts";

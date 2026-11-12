@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`)
 ---
 
 # tsrslint runs oxlint's type-aware rules, and the Effect diagnostics move into the typecheck
@@ -31,3 +31,10 @@ On an 8-core Apple Silicon laptop (2026-11-02), one run each:
 - **Running `effect-tsgo diagnostics` over each program as a separate step.** It reproduces oxlint's Effect diagnostics, but it checks every program a second time with TypeScript-Go 7.0. That took about 18 s in parallel, which is more than the switch saves.
 - **Dropping the Effect diagnostics until tsrs#378 lands.** This would lose the error-level rules, such as `floatingEffect`, `missingReturnYieldStar` and `missingStarInYieldEffectGen`.
 - **`effect-tsgo tsrs` in each `typecheck` script instead of `patch --tsrs`.** It leaves `node_modules` untouched, but every package would need `@effect/tsgo`, and an editor running `tsrs --lsp` would get no Effect diagnostics.
+
+## Amendment: the backend under `vp lint`
+
+ADR 0049 runs Oxlint through Vite+ (`vp lint`, settings in `vite.config.ts`). Vite+ sets `OXLINT_TSGOLINT_PATH` to the
+oxlint-tsgolint it bundles only when the variable is unset, so `tools/oxlint.sh` sets it to tsrslint's binary and runs
+`vp lint`; tsrslint stays the type-aware backend. Its findings matched oxlint 1.91's but for two
+`no-unnecessary-type-assertion` warnings that Vite+'s Oxlint 1.89 does not report.

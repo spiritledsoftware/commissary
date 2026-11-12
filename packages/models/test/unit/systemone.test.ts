@@ -1,6 +1,6 @@
 // System One (ADR 0032) pieces that need no Worker: multipart bodies, upstream error classification, usage and its
 // price, the local refusals, the catalog records and their registration, the model listing.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { embeddedCatalogs, catalogAdditions } from "../../src/registry/catalog.ts";
 import { openaiEntry } from "../../src/registry/listings.ts";
 import { systemOneRefusal } from "../../src/executor/systemone/capabilities.ts";

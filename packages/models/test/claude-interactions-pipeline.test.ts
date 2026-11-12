@@ -1,7 +1,7 @@
 // End-to-end (workerd) tests of Claude Messages clients served by Interactions providers: POST /v1/messages on a
 // `gemini-interactions` credential through Access, model resolution, the credential picker and the Gemini executor,
 // and the Devin executor driven with a Claude source format.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { makeDevinExecutor } from "../src/executor/devin/executor.ts";
 import { devinPayloadView } from "../src/executor/devin/payload.ts";

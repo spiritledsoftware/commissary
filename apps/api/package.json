@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs"
   },
   "dependencies": {
@@ -29,6 +29,7 @@
     "@types/node": "catalog:",
     "@typesafe-ai/sdk": "0.7.0",
     "tsrs": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:"
   }
 }

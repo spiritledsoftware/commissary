@@ -1,6 +1,6 @@
 // End-to-end tests (workerd) of the Antigravity executor: Access gate -> routes -> conductor -> executor -> mocked
 // Cloud Code upstream. Covers the envelope, header whitelist, stream aggregation, 429 handling and token counting.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { resetMemoryAntigravityState } from "../src/executor/antigravity/state.ts";
 import type { Json, JsonObject } from "@commissary/json";

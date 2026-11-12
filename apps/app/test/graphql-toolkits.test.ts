@@ -3,7 +3,7 @@
 // endpoint, takes no base URL, no empty schema and none above the SDL limit; one built from an uploaded schema (SDL) is
 // named after its endpoint, lists its fields without introspection, and its schema is read back and replaced by an org
 // admin.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import { ToolkitsList, ToolkitView, ToolsList } from "@commissary/contract/tools";

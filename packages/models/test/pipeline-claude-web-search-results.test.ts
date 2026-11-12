@@ -3,7 +3,7 @@
 // 9acf81d3): a Responses client replays its history without the `web_search_tool_result` content, and the executor
 // restores what the session's earlier response delivered, per upstream credential.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import {

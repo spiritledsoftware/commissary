@@ -1,7 +1,7 @@
 // Per-credential model assembly (port of sdk/cliproxy/service_models.go); cases mirror the Go unit tests
 // service_oauth_model_alias_test.go, service_oauth_settings_test.go and the registration rules in
 // docs/research/config-management-oauth.md §4.2.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   applyExcludedModels,
   applyModelPrefixes,

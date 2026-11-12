@@ -3,7 +3,7 @@
 // sign in through the OAuth server; the whole flow is tested with the app Worker, apps/app/test/hosted/mcp-oauth.test.ts)
 // (there is no dev bypass here), and requests count against the org's request-rate ceiling (5 a minute on Free in the
 // test Worker, vitest.config.ts).
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { RATE_LIMITED } from "@commissary/billing/api";
 import { resetUsageDb } from "@commissary/models/testing";
 import { call, keyedOrg, roomInWindow } from "./support.ts";

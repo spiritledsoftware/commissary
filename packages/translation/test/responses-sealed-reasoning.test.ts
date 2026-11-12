@@ -1,6 +1,6 @@
 // Responses -> Interactions request: Devin-sealed reasoning items go back upstream as thought steps
 // (CLIProxyAPI b3442f65, `TestConvertOpenAIResponsesRequestKeepsDevinSealedReasoning`).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get } from "@commissary/json";
 import { convertOpenAIResponsesRequestToInteractions } from "../src/translator/openai/interactions/responses/request-responses-to-interactions.ts";
 

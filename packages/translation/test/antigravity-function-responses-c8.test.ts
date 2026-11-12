@@ -1,7 +1,7 @@
 // Antigravity function responses per turn (ticket C8; upstream 234217d0): excess functionResponse parts of a turn are
 // discarded instead of leaking into the next turn's group. Go test:
 // TestFixCLIToolResponse_MoreResponsesThanCallsDoesNotCorruptNextTurn (antigravity_gemini_request_test.go).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json } from "@commissary/json";
 import { validateGeminiFunctionCallPairing } from "../src/signature/gemini.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";

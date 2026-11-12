@@ -1,7 +1,7 @@
 // The Access configuration a deploy applies (infra/access-config.ts): the client API paths of a stage with one host,
 // which the zone routes send to the API Worker and Access lets through, and the Managed OAuth of the Access
 // application (ADR 0045).
-import { assert, describe, it } from "vitest";
+import { assert, describe, it } from "vite-plus/test";
 import {
   CLIENT_API_PATHS,
   clientApiBypassPaths,

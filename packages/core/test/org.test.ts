@@ -1,5 +1,5 @@
 // The pure org model (ADR 0021): org-scoped names keep global's names and name every other org back.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GLOBAL_ORG, OrgId, orgOfScopedName, orgScopedName } from "../src/index.ts";
 
 describe("org-scoped names", () => {

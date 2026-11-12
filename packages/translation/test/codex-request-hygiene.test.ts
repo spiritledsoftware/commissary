@@ -1,7 +1,7 @@
 // Codex request hygiene in the OpenAI -> Codex translators (Go: internal/translator/codex/openai/chat-completions/
 // codex_openai_request_test.go and internal/translator/codex/openai/responses/codex_openai-responses_request_test.go;
 // upstream 99d1698f, b0debb35, 05e668cf).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, tryParseJson } from "@commissary/json";
 import { convertOpenAIRequestToCodex } from "../src/translator/codex/openai-chat/request.ts";
 import { shortenCodexCallIdIfNeeded } from "../src/translator/codex/claude/request.ts";

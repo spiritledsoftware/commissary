@@ -1,7 +1,7 @@
 // Kimi executor: model naming, request normalisation (ported Go table tests), the Chat/Responses/Claude routing and the
 // thinking replay, against a mocked Kimi upstream.
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { makeKimiExecutor } from "../src/executor/kimi/executor.ts";
 import { sealCompaction } from "../src/executor/helps/compaction.ts";

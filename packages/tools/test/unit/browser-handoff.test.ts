@@ -2,7 +2,7 @@
 // elicitation is asked to open the session's page in the panel, any other gets the link in a tool result that is not
 // an error, and every client gets the words alone when the panel's URL is not known; the retry's answer to the
 // elicitation is read from its `inputResponses`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { handoffAnswerOf, handoffResult, SESSION_PAGE } from "../../src/mcp/handoff.ts";
 
 const ID = `bs_${"a".repeat(32)}`;

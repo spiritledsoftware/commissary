@@ -1,7 +1,7 @@
 // System One models (ADR 0032) as credentials register them: TypeSafe and SubQ key groups without `models` take their
 // catalog additions, configured models and aliases are typed `systemone`; OpenCode Zen adds its Jev models to the
 // models.dev ones, OpenCode Go none.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { embeddedModelsDev } from "../src/registry/catalog.ts";
 import { assembleCredentialModels } from "../src/registry/credential-models.ts";
 import { ids, options, source } from "./support/registry-sources.ts";

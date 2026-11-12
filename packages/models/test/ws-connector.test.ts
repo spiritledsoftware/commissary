@@ -1,5 +1,5 @@
 // The default upstream connector: `fetch` with `Upgrade: websocket`, URL scheme conversion, handshake rejections.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Frames } from "./support/upstream-message.ts";
 import { Effect, Queue } from "effect";
 import {

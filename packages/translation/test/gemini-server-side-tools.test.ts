@@ -1,6 +1,6 @@
 // Gemini requests that mix built-in tools with function declarations (CLIProxyAPI 45501610): Gemini 400s unless
 // toolConfig.includeServerSideToolInvocations is true; Antigravity does not support the parameter and never carries it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { withModelInfoLookup } from "../src/translator/model-info.ts";

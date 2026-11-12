@@ -2,7 +2,7 @@
 // shared credentials at their own limit skipped, private credentials outside member/team/org limits, the lease that
 // carries the scopes to charge, and the charge made by `report`. The pool runs with an injected clock and an in-memory
 // ledger book, so the reset at local midnight (with a DST change) is driven by `clock.advance`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PickResult, ReportResult } from "../src/credentials/selection/types.ts";
 import { SpendLedger } from "@commissary/state/spend";
 import { makePool, TestNow } from "./support/pool.ts";

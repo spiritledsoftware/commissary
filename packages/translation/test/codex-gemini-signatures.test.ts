@@ -4,7 +4,7 @@
 // only when its family matches the target. Expected values come from codex_gemini_request_test.go and
 // codex_gemini_response_test.go.
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
 import {
   fernetReasoningSignature,

@@ -1,5 +1,5 @@
 // The panel's wording of Claude reset grants (src/lib/reset-grants.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ResetGrant, ResetGrantStatus } from "@commissary/contract/credentials";
 import {
   attemptNotice,

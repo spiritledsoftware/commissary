@@ -1,7 +1,7 @@
 // Vertex service-account JWT minting: PEM repair, PKCS#1 -> PKCS#8, RS256 signing, token cache.
 import { Effect } from "effect";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   mintVertexToken,
   pkcs1ToPkcs8,

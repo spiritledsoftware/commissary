@@ -7,7 +7,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { type Duration, Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CredentialSettings } from "@commissary/contract/tools";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
 import { hmac, percentEncode, sha256Hex } from "../src/signing/encoding.ts";

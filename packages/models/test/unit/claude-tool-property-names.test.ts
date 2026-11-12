@@ -1,5 +1,5 @@
 // Go source: internal/runtime/executor/helps/claude_tool_property_names_test.go
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Json, JsonObject } from "@commissary/json";
 import {
   claudePropertyKeyAccepted,

@@ -1,7 +1,7 @@
 // A tool's own result never carries Commissary's `_meta` keys: the MCP endpoint strips `commissary/…` and
 // `commissary.dev/…` from an upstream's result before it adds its own, so a server cannot pass its words off as
 // Commissary's (a plan limit's refusal). Other keys pass on.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { withoutOwnMeta } from "../../src/mcp/protocol.ts";
 
 describe("an upstream's tool result", () => {

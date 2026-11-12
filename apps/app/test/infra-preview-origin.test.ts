@@ -1,5 +1,5 @@
 // A Commissary Cloud preview's app origin, derived before the app Worker exists (infra/preview-origin.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { previewAppName, previewOrigin } from "../../../infra/preview-origin.ts";
 
 describe("a Cloud preview's app origin", () => {

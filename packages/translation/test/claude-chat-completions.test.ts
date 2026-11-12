@@ -1,6 +1,6 @@
 // Claude -> Chat Completions translators (Go: internal/translator/claude/openai/chat-completions/
 // claude_openai_{request,response,stop_reasons}_test.go; upstream 0d18d3b3, df07b1e5, c2dfec28, aadb34f9, 43f5386b).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { attachMessageCacheControl } from "../src/translator/common/cache-control.ts";
 import { convertOpenAIRequestToClaude } from "../src/translator/claude/openai/chat-completions/request.ts";

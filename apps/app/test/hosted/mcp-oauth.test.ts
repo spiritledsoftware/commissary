@@ -6,7 +6,7 @@
 // created, scope included. Revoking that key ends the client's access, its refresh token included. `/mcp` requests go
 // to the API Worker's handler (test/worker.ts `API_WORKER_HEADER`), everything else to the app Worker's.
 import { env, exports } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { resetApiKeyCaches } from "@commissary/auth";
 import type { ToolScope } from "@commissary/contract/api-keys";
 import { fakeMcpServer, serveFakeMcpServers, signInGrants } from "@commissary/tools/testing";
