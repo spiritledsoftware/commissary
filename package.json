@@ -15,7 +15,7 @@
     "destroy": "alchemy destroy",
     "dev": "vp run --filter @commissary/web --cache build && alchemy dev",
     "format": "vp fmt",
-    "lint": "tools/oxlint.sh && vp fmt --check && tools/check-computerd.sh",
+    "lint": "vp lint && vp fmt --check && tools/check-computerd.sh",
     "logs": "alchemy logs",
     "plan": "alchemy plan",
     "prepare": "effect-tsgo patch --no-typescript --tsrs && vp config --no-agent && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
