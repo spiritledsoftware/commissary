@@ -497,7 +497,7 @@ It manages:
 - `commissary-ci-check`, the Access service token of the post-deploy check;
 - in both environments, the secrets `CLOUDFLARE_API_TOKEN`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and the
   variables `CLOUDFLARE_ACCOUNT_ID`, `ACCESS_*` (from `.env`) and `ACCESS_ALLOW_SERVICE_TOKEN_IDS` (the check token's
-  ID); in `production` also `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN`, `COMMISSARY_API_DOMAIN` and, when `.env`
+  ID, and in `production` also `.env`'s); in `production` also `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN`, `COMMISSARY_API_DOMAIN` and, when `.env`
   turns the computer on, `COMMISSARY_COMPUTER=on` and a `COMMISSARY_COMPUTER_INSTANCE` other than the default
   ([Optional pieces](#optional-pieces)); and Commissary Cloud's settings where `.env` sets them
   ([Commissary Cloud](#commissary-cloud));
