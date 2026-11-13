@@ -532,7 +532,10 @@ pnpm run ci:setup
 
 It runs `alchemy deploy --config stacks/github.ts --stage ci --profile admin` and prints the outputs. Copy
 `checkServiceTokenId` into `ACCESS_ALLOW_SERVICE_TOKEN_IDS` in your local `.env`: a local deploy of `prod` without it
-removes the CI token from the production policy and the next CI check fails.
+removes the CI token from the production policy and the next CI check fails. Any other IDs in `.env`'s
+`ACCESS_ALLOW_SERVICE_TOKEN_IDS` (service tokens managed outside the stack, such as a usage reporter's) go into the
+`production` environment's variable next to the check token's, so CI's `prod` deploys admit them too; previews admit
+the check token only.
 
 Re-run `pnpm run ci:setup` to apply changed permissions or `.env` values. To rotate the deploy token, destroy and redeploy
 the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --profile admin`, then `pnpm run ci:setup`).
