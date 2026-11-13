@@ -13,6 +13,7 @@
  * production, stage `cloud`) takes its settings from `.env.cloud` instead, and is left alone while that file does not
  * exist. Production and `cloud` get the sandbox's computer (#223) when `.env` (or `.env.cloud`) sets
  * `COMMISSARY_COMPUTER=on`, with its instance size; a preview gets it only with the `preview-computer` label (ci.yml).
+ * Production's ACCESS_ALLOW_SERVICE_TOKEN_IDS is the check token's ID plus `.env`'s.
  */
 import * as zones from "@distilled.cloud/cloudflare/zones";
 import * as Alchemy from "alchemy";
@@ -291,6 +292,11 @@ export default Alchemy.Stack(
               // its label.
               ...computerVariables(settings),
               ...managedOAuthVariables,
+              // The check token plus the tokens managed elsewhere that `.env` admits, so a re-run keeps both; previews
+              // admit the check token only.
+              ACCESS_ALLOW_SERVICE_TOKEN_IDS: checkToken.serviceTokenId.pipe(
+                Output.map((id) => [...new Set([id, ...settings.allowServiceTokenIds])].join(",")),
+              ),
             }
           : variables;
 

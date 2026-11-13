@@ -497,7 +497,7 @@ It manages:
 - `commissary-ci-check`, the Access service token of the post-deploy check;
 - in both environments, the secrets `CLOUDFLARE_API_TOKEN`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and the
   variables `CLOUDFLARE_ACCOUNT_ID`, `ACCESS_*` (from `.env`) and `ACCESS_ALLOW_SERVICE_TOKEN_IDS` (the check token's
-  ID); in `production` also `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN`, `COMMISSARY_API_DOMAIN` and, when `.env`
+  ID, and in `production` also `.env`'s); in `production` also `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN`, `COMMISSARY_API_DOMAIN` and, when `.env`
   turns the computer on, `COMMISSARY_COMPUTER=on` and a `COMMISSARY_COMPUTER_INSTANCE` other than the default
   ([Optional pieces](#optional-pieces)); and Commissary Cloud's settings where `.env` sets them
   ([Commissary Cloud](#commissary-cloud));
@@ -532,7 +532,10 @@ pnpm run ci:setup
 
 It runs `alchemy deploy --config stacks/github.ts --stage ci --profile admin` and prints the outputs. Copy
 `checkServiceTokenId` into `ACCESS_ALLOW_SERVICE_TOKEN_IDS` in your local `.env`: a local deploy of `prod` without it
-removes the CI token from the production policy and the next CI check fails.
+removes the CI token from the production policy and the next CI check fails. Any other IDs in `.env`'s
+`ACCESS_ALLOW_SERVICE_TOKEN_IDS` (service tokens managed outside the stack, such as a usage reporter's) go into the
+`production` environment's variable next to the check token's, so CI's `prod` deploys admit them too; previews admit
+the check token only.
 
 Re-run `pnpm run ci:setup` to apply changed permissions or `.env` values. To rotate the deploy token, destroy and redeploy
 the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --profile admin`, then `pnpm run ci:setup`).
