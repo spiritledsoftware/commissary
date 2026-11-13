@@ -1,5 +1,5 @@
 ---
-status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint)
+status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone)
 ---
 
 # pnpm installs, and Vite+ runs the toolchain
@@ -86,3 +86,9 @@ On an 8-core Apple Silicon laptop (2026-11-12), one run each:
 
 ADR 0050: tsrs now ships its own backend, `tsrs-lint` (oxc-project/tsrs#378), so `tools/oxlint.sh` points
 `OXLINT_TSGOLINT_PATH` at `node_modules/.bin/tsrs-lint` and `@maschwenk/tsrslint` is gone.
+
+## Amendment: `vite.config.ts` selects the backend
+
+ADR 0050 (amended): the root `vite.config.ts` assigns `OXLINT_TSGOLINT_PATH` to `node_modules/.bin/tsrs-lint` itself,
+so every Vite+ entry point that lints (`vp lint`, `vp staged`, `vp lint --lsp`) runs tsrs-lint, and `tools/oxlint.sh`
+is gone.
