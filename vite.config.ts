@@ -1,7 +1,19 @@
 // Vite+ (ADR 0049): the format (`fmt`, Oxfmt) and lint (`lint`, Oxlint) settings of the whole repository, and the
 // checks of staged files at commit (`staged`). The packages' Vitest settings stay in their own vitest.config.ts, and
 // the control panel's Vite settings in apps/web/vite.config.ts. docs/DEVELOPMENT.md, "Lint and format".
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
+
+// Oxlint's type-aware backend: tsrs's `tsrs-lint`, not the oxlint-tsgolint Vite+ bundles (ADR 0050). Oxlint runs the
+// executable OXLINT_TSGOLINT_PATH names, and Vite+ fills it in with its own only when unset. Assigned here, not in a
+// wrapper or the shell, so every Vite+ entry point that loads this config (`vp lint`, `vp staged`, `vp lint --lsp`)
+// gets it, agents and worktrees included, and an inherited (possibly stale) value is replaced.
+process.env.OXLINT_TSGOLINT_PATH = fileURLToPath(
+  new URL(
+    `node_modules/.bin/tsrs-lint${process.platform === "win32" ? ".cmd" : ""}`,
+    import.meta.url,
+  ),
+);
 
 /** The `@commissary/<package>/testing` helpers stay in test files. */
 const TESTING_ONLY = {
@@ -35,10 +47,10 @@ const restrictImports = (...patterns: ReadonlyArray<{ regex: string; message: st
 
 export default defineConfig({
   // `vp staged`, run by .vite-hooks/pre-commit: the staged files formatted, then linted (type-aware, through
-  // tools/oxlint.sh). The Effect diagnostics surface at pre-push (`pnpm run typecheck`) or in CI (ADR 0047).
+  // tsrs-lint). The Effect diagnostics surface at pre-push (`pnpm run typecheck`) or in CI (ADR 0047).
   staged: {
     "*": "vp fmt --no-error-on-unmatched-pattern",
-    "*.{ts,mts,cts,js,mjs,cjs}": "tools/oxlint.sh --quiet --no-error-on-unmatched-pattern",
+    "*.{ts,mts,cts,js,mjs,cjs}": "vp lint --quiet --no-error-on-unmatched-pattern",
   },
   fmt: {
     ignorePatterns: [
@@ -72,7 +84,7 @@ export default defineConfig({
   },
   lint: {
     options: {
-      // Rules that need type information, through tsrs-lint (tools/oxlint.sh, ADR 0050).
+      // Rules that need type information, through tsrs-lint (OXLINT_TSGOLINT_PATH above, ADR 0050).
       typeAware: true,
       // TypeScript's own errors are tsrs's (`pnpm run typecheck`, ADR 0046): one checker, one TypeScript version.
       typeCheck: false,
