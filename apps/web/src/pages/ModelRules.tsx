@@ -1,7 +1,9 @@
-// Aliases and exclusions (/models/rules): the channel rules of `oauth.model-alias` and `oauth.excluded-models`, one
-// section per channel (the provider key of its accounts), with a jump list above. Aliases rename an upstream model for
+// Model rules (/models/rules): the channel rules of `oauth.model-alias`, `oauth.excluded-models` and `models.write-ins`,
+// one section per channel (the provider key of its accounts), with a jump list above. Aliases rename an upstream model for
 // clients, optionally keeping the original; exclusions take models away, with a live count of the models a pattern
-// matches. Add forms stay closed until asked for and take the focus when they open. Each edit is
+// matches; write-ins add a model the catalog does not list yet, to the provider's accounts and to its provider keys
+// without a model list, and say when the catalog has caught up. Add forms stay closed until asked for and take the
+// focus when they open. Each edit is
 // a delta saved with the channel entry's revision and re-applied once to a fresh read on 409 (`saveRuleChange`); the
 // view refetches after a save, so the Models page shows the effect at once. Provider key and OpenAI-compatible rules live
 // on the provider keys page, an account's own rules in its file; this page only points there.
@@ -10,7 +12,11 @@ import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { ArrowLeft, Check, Pencil, Plus, X } from "lucide-react";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
-import type { OAuthModelAliasWire, RoutingModels } from "@commissary/contract/routing";
+import type {
+  ModelWriteIn,
+  OAuthModelAliasWire,
+  RoutingModels,
+} from "@commissary/contract/routing";
 import { routingModelsAtom, saveRuleAtom } from "../api/client.ts";
 import { kit, Problem } from "../components/Kit.tsx";
 import { failureMessage } from "../lib/failure.ts";
@@ -22,11 +28,16 @@ import {
   channelRules,
   exclusionMatches,
   hasAliasErrors,
+  hasWriteInErrors,
   type RuleChange,
   ruleProblem,
   validateAlias,
   validateChannel,
   validatePattern,
+  validateWriteIn,
+  type WriteInDraft,
+  writeInEntry,
+  writeInState,
 } from "../lib/models.ts";
 import { providerName } from "../lib/providers.ts";
 import { useAction } from "../lib/use-action.ts";
@@ -72,15 +83,17 @@ const useFocusOnOpen = () => {
   return ref;
 };
 
-/** One channel's saves: both rule lists, each through its own save atom, reporting into the channel's note. */
+/** One channel's saves: the three rule lists, each through its own save atom, reporting into the channel's note. */
 const useChannelSave = (channel: string, view: RoutingModels) => {
   const aliases = useAction(saveRuleAtom(`aliases:${channel}`));
   const excluded = useAction(saveRuleAtom(`excluded:${channel}`));
+  const writeIns = useAction(saveRuleAtom(`write-ins:${channel}`));
   const [note, setNote] = useState<Note | undefined>(undefined);
 
   const save = async (change: RuleChange, done: string): Promise<boolean> => {
     setNote(undefined);
-    const action = change.rule === "aliases" ? aliases : excluded;
+
+    const action = { aliases, excluded, "write-ins": writeIns }[change.rule];
     const outcome = await action.run({ change, base: view });
 
     if (outcome.ok) {
@@ -101,7 +114,11 @@ const useChannelSave = (channel: string, view: RoutingModels) => {
     return false;
   };
 
-  return { save, note, busy: { aliases: aliases.busy, excluded: excluded.busy } } as const;
+  return {
+    save,
+    note,
+    busy: { aliases: aliases.busy, excluded: excluded.busy, writeIns: writeIns.busy },
+  } as const;
 };
 
 type Save = (change: RuleChange, done: string) => Promise<boolean>;
@@ -533,6 +550,229 @@ const Exclusions = ({
 };
 
 // ---------------------------------------------------------------------------------------------------------------
+// Write-ins
+
+/** What the form's write-in will do once saved. */
+const writeInPreview = (draft: WriteInDraft, rules: ChannelRules): string | null => {
+  const name = draft.name.trim();
+  const like = draft.like.trim();
+
+  if (name === "") return null;
+
+  if (like === "")
+    return `Clients can call ${name}. Without a model it is like, thinking settings pass through unchecked and it has no price until a price override names it.`;
+
+  const known = rules.catalog.some((upstream) => upstream.toLowerCase() === like.toLowerCase());
+
+  return known
+    ? `Clients can call ${name}, with the limits, thinking settings and price of ${like} until the catalog lists it.`
+    : `Clients can call ${name}. ${like} is not a catalog model of this provider's accounts or keys; if the catalog does not know it either, thinking settings pass through unchecked.`;
+};
+
+const WriteInForm = ({
+  rules,
+  busy,
+  save,
+  onClose,
+}: {
+  readonly rules: ChannelRules;
+  readonly busy: boolean;
+  readonly save: Save;
+  readonly onClose: () => void;
+}) => {
+  const ids = useId();
+  const first = useFocusOnOpen();
+  const [draft, setDraft] = useState<WriteInDraft>({ name: "", like: "", displayName: "" });
+  const [tried, setTried] = useState(false);
+  const errors = validateWriteIn(draft, rules);
+  const shown = tried ? errors : {};
+
+  return (
+    <form
+      className={styles["writeInForm"]}
+      noValidate
+      aria-label="Write in a model"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setTried(true);
+
+        if (hasWriteInErrors(errors)) return focusFirstInvalid(event.currentTarget);
+        const entry = writeInEntry(draft);
+
+        const saved = await save(
+          { rule: "write-ins", channel: rules.channel, op: "add", entry },
+          `Wrote in ${entry.name}.`,
+        );
+
+        if (saved) onClose();
+      }}
+    >
+      <div className={kit["field"]}>
+        <label className={kit["fieldLabel"]} htmlFor={`${ids}-name`}>
+          Model id
+        </label>
+        <input
+          ref={first}
+          id={`${ids}-name`}
+          className={kit["input"]}
+          spellCheck={false}
+          autoComplete="off"
+          value={draft.name}
+          aria-invalid={shown.name !== undefined}
+          aria-describedby={shown.name === undefined ? undefined : `${ids}-name-error`}
+          onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+        />
+        {shown.name === undefined ? null : (
+          <span id={`${ids}-name-error`} className={kit["fieldError"]}>
+            {shown.name}
+          </span>
+        )}
+      </div>
+      <div className={kit["field"]}>
+        <label className={kit["fieldLabel"]} htmlFor={`${ids}-like`}>
+          Like (optional)
+        </label>
+        <input
+          id={`${ids}-like`}
+          className={kit["input"]}
+          list={`${ids}-catalog`}
+          spellCheck={false}
+          autoComplete="off"
+          value={draft.like}
+          aria-invalid={shown.like !== undefined}
+          aria-describedby={shown.like === undefined ? undefined : `${ids}-like-error`}
+          onChange={(event) => setDraft({ ...draft, like: event.target.value })}
+        />
+        <datalist id={`${ids}-catalog`}>
+          {rules.catalog.map((upstream) => (
+            <option key={upstream} value={upstream} />
+          ))}
+        </datalist>
+        {shown.like === undefined ? null : (
+          <span id={`${ids}-like-error`} className={kit["fieldError"]}>
+            {shown.like}
+          </span>
+        )}
+      </div>
+      <div className={kit["field"]}>
+        <label className={kit["fieldLabel"]} htmlFor={`${ids}-display`}>
+          Display name (optional)
+        </label>
+        <input
+          id={`${ids}-display`}
+          className={kit["input"]}
+          autoComplete="off"
+          value={draft.displayName}
+          onChange={(event) => setDraft({ ...draft, displayName: event.target.value })}
+        />
+      </div>
+      <div className={styles["formActions"]}>
+        <button type="submit" className={kit["secondary"]} disabled={busy} aria-busy={busy}>
+          <Plus aria-hidden="true" size={16} strokeWidth={2.25} />
+          {busy ? "Saving…" : "Write in"}
+        </button>
+        <button type="button" className={styles["quiet"]} onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+      <p className={styles["preview"]} aria-live="polite">
+        {hasWriteInErrors(errors) ? null : writeInPreview(draft, rules)}
+      </p>
+    </form>
+  );
+};
+
+/** The line under a write-in when it is not simply serving. */
+const writeInNote = (rules: ChannelRules, entry: ModelWriteIn) => {
+  const state = writeInState(rules, entry);
+
+  if (state === "listed") {
+    return (
+      <span className={styles["caughtUp"]}>
+        The catalog lists it now, so this write-in changes nothing. You can remove it.
+      </span>
+    );
+  }
+
+  return state === "idle" ? (
+    <span className={styles["secondary"]}>
+      No account or provider key of this provider takes its models from the catalog yet.
+    </span>
+  ) : null;
+};
+
+const WriteIns = ({
+  rules,
+  busy,
+  save,
+  adding,
+  onAdding,
+}: {
+  readonly rules: ChannelRules;
+  readonly busy: boolean;
+  readonly save: Save;
+  readonly adding: boolean;
+  readonly onAdding: (adding: boolean) => void;
+}) => {
+  const { channel } = rules;
+
+  return (
+    <div className={styles["rule"]}>
+      <h3 className={styles["ruleTitle"]}>Written-in models</h3>
+      {rules.writeIns.length === 0 ? null : (
+        <table className={`${styles["table"]} ${styles["writeIns"]}`}>
+          <thead>
+            <tr>
+              <th scope="col">Model id</th>
+              <th scope="col">Like</th>
+              <th scope="col">
+                <span className={kit["visuallyHidden"]}>Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.writeIns.map((entry) => (
+              <tr key={entry.name}>
+                <td className={styles["name"]}>
+                  {entry.name}
+                  {entry["display-name"] === undefined ? null : (
+                    <span className={styles["secondary"]}>Shown as {entry["display-name"]}</span>
+                  )}
+                  {writeInNote(rules, entry)}
+                </td>
+                <td className={styles["name"]}>
+                  {entry.like ?? <span className={kit["muted"]}>Nothing: unchecked</span>}
+                </td>
+                <td className={styles["actions"]}>
+                  <button
+                    type="button"
+                    className={styles["icon"]}
+                    aria-label={`Remove the write-in ${entry.name}`}
+                    title="Remove"
+                    disabled={busy}
+                    onClick={() =>
+                      save(
+                        { rule: "write-ins", channel, op: "remove", entry },
+                        `Removed the write-in ${entry.name}.`,
+                      )
+                    }
+                  >
+                    <X aria-hidden="true" size={18} strokeWidth={2.25} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {adding ? (
+        <WriteInForm rules={rules} busy={busy} save={save} onClose={() => onAdding(false)} />
+      ) : null}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------------------------------------------
 // A channel
 
 const Channel = ({
@@ -547,10 +787,12 @@ const Channel = ({
   const { save, note, busy } = useChannelSave(rules.channel, view);
   const [addingAlias, setAddingAlias] = useState(false);
   const [excluding, setExcluding] = useState(false);
+  const [writingIn, setWritingIn] = useState(false);
   const titleId = useId();
   const title = providerName(rules.channel);
   const showAliases = rules.aliases.length > 0 || addingAlias;
   const showExcluded = rules.excluded.length > 0 || excluding;
+  const showWriteIns = rules.writeIns.length > 0 || writingIn;
 
   return (
     <section
@@ -567,13 +809,19 @@ const Channel = ({
             <span>Channel {rules.channel}</span>
           )}
           <span>{rules.inert ? "No accounts" : plural(rules.accounts, "account")}</span>
+          {rules.keys === 0 ? null : <span>{plural(rules.keys, "provider key")}</span>}
         </p>
       </header>
-      {rules.inert ? (
+      {!rules.inert ? null : rules.keys === 0 ? (
         <p className={styles["inert"]}>
           No account uses this channel, so its rules have no effect until one is connected.
         </p>
-      ) : null}
+      ) : (
+        <p className={styles["inert"]}>
+          No account uses this channel, so its aliases and exclusions have no effect until one is
+          connected. Its write-ins reach the provider&rsquo;s keys.
+        </p>
+      )}
       {showAliases ? (
         <Aliases
           rules={rules}
@@ -592,16 +840,28 @@ const Channel = ({
           onAdding={setExcluding}
         />
       ) : null}
-      {addingAlias && excluding ? null : (
+      {showWriteIns ? (
+        <WriteIns
+          rules={rules}
+          busy={busy.writeIns}
+          save={save}
+          adding={writingIn}
+          onAdding={setWritingIn}
+        />
+      ) : null}
+      {addingAlias && excluding && writingIn ? null : (
         <div className={styles["foot"]}>
-          {showAliases || showExcluded ? null : (
-            <p className={styles["none"]}>No aliases or exclusions</p>
+          {showAliases || showExcluded || showWriteIns ? null : (
+            <p className={styles["none"]}>No aliases, exclusions or write-ins</p>
           )}
           {addingAlias ? null : (
             <OpenButton label="Add alias" onOpen={() => setAddingAlias(true)} />
           )}
           {excluding ? null : (
             <OpenButton label="Exclude a model" onOpen={() => setExcluding(true)} />
+          )}
+          {writingIn ? null : (
+            <OpenButton label="Write in a model" onOpen={() => setWritingIn(true)} />
           )}
         </div>
       )}
@@ -727,7 +987,7 @@ const Rules = ({
 };
 
 export const ModelRulesPage = () => {
-  usePageTitle("Aliases and exclusions · Models");
+  usePageTitle("Model rules · Models");
   const result = useAtomValue(routingModelsAtom);
   const retry = useAtomRefresh(routingModelsAtom);
 
@@ -738,13 +998,18 @@ export const ModelRulesPage = () => {
           <ArrowLeft aria-hidden="true" size={16} strokeWidth={2.25} />
           Models
         </Link>
-        <h1 className={styles["title"]}>Aliases and exclusions</h1>
+        <h1 className={styles["title"]}>Model rules</h1>
         <p className={styles["intro"]}>
           Each rule applies to every account of one provider, its channel, as soon as it is saved.
           An alias lets clients call a model by another name; with Keep original, they can use both.
           An exclusion hides every model whose provider&rsquo;s name matches, where * matches any
           characters. Provider keys keep their own rules on the{" "}
           <Link to="/keys">Provider keys</Link> page.
+        </p>
+        <p className={styles["intro"]}>
+          A write-in adds a model the catalog does not list yet, such as one released today. The
+          provider&rsquo;s accounts serve it, and so do its provider keys that have no model list of
+          their own. Once the catalog lists the model, the catalog&rsquo;s details take over.
         </p>
       </header>
       {AsyncResult.match(result, {

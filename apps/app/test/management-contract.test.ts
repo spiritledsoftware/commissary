@@ -817,7 +817,7 @@ describe("management contract", () => {
         const before = yield* api.routing.models();
         assert.isUndefined(before.models.find((model) => model.id === "s46"));
 
-        assert.deepStrictEqual(before.revisions, { aliases: {}, exclusions: {} });
+        assert.deepStrictEqual(before.revisions, { aliases: {}, exclusions: {}, write_ins: {} });
 
         const saved = yield* api.routing.putAliases({
           params: { channel: "claude" },

@@ -146,6 +146,7 @@ const MODELS_TABLES = [
   "config_provider_keys",
   "config_model_aliases",
   "config_model_exclusions",
+  "config_model_write_ins",
   "config_payload_rules",
   "config_price_overrides",
   "credentials",

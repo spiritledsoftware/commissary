@@ -482,7 +482,7 @@ export const ModelsPage = () => {
       <header className={styles["head"]}>
         <h1 className={styles["title"]}>Models</h1>
         <Link to="/models/rules" className={kit["secondary"]}>
-          Aliases and exclusions
+          Model rules
         </Link>
       </header>
       <ModelsCatalog />

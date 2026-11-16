@@ -419,6 +419,7 @@ export class PrivateKeyStore {
       keys: keyRows,
       aliases: [],
       exclusions: [],
+      writeIns: [],
       payload: [],
     });
 

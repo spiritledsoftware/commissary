@@ -1,6 +1,6 @@
 /**
  * `GET /v9/management/routing/models`: which credentials serve each model clients can call, and the channel rules
- * (aliases, exclusions) that shape it. No Go counterpart (the Go panel has no such view); see `routingView`.
+ * (aliases, exclusions, write-ins) that shape it. No Go counterpart (the Go panel has no such view); see `routingView`.
  *
  * Built from a fresh registry snapshot (`ModelRegistry.fresh`: config re-read, no 5 s cache), so a rule edit shows on
  * the next read. The cost is one config check, one `listModelSources` RPC and a pure pass over the credentials, plus
@@ -37,7 +37,11 @@ const routingModels = Effect.gen(function* () {
   return jsonReply(200, {
     // An org admin sees no model of another member's private credential (ADR 0023).
     ...routingView(snapshot.visibleTo(identity.memberId), now, yield* currentAuthIndexer),
-    revisions: { aliases: entries.revisions.aliases, exclusions: entries.revisions.exclusions },
+    revisions: {
+      aliases: entries.revisions.aliases,
+      exclusions: entries.revisions.exclusions,
+      write_ins: entries.revisions.writeIns,
+    },
   });
 });
 
