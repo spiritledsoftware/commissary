@@ -23,7 +23,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.6.0",
+    "@cloudflare/vitest-plugin": "1.6.1",
     "@commissary/state-worker": "workspace:*",
     "@types/node": "catalog:",
     "jose": "catalog:",
