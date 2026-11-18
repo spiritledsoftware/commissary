@@ -7,7 +7,7 @@ status: accepted, supersedes ADR-0050; amends ADR-0049 (Vite+ moves to 1.7 with 
 Vite+ 1.7 makes tsrs Oxlint's type-aware backend: `vite-plus` depends on `tsrs` itself and points
 `OXLINT_TSGOLINT_PATH` at that package's `tsrs-lint` whenever the caller has not set it (oxc.rs, "Faster type-aware
 linting with tsrs", 2026-11-17). The root `vite.config.ts` no longer assigns the variable: every Vite+ entry point that
-lints (`vp lint`, `vp staged`, `vp lint --lsp`) runs the tsrs Vite+ bundles.
+lints (`vp lint`, `vp staged`, `vp lint --lsp`) runs the tsrs bundled with Vite+.
 
 ## Versions
 

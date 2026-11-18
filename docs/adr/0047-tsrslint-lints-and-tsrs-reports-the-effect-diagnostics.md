@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`) and ADR-0050 (tsrs's own `tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone) and ADR-0051 (Vite+ 1.7 runs tsrs itself)
+status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`) and ADR-0050 (tsrs's own `tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone) and by ADR-0051 (Vite+ 1.7 runs tsrs itself)
 ---
 
 # tsrslint runs oxlint's type-aware rules, and the Effect diagnostics move into the typecheck

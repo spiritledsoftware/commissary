@@ -41,7 +41,8 @@ overrides:
   vite@*: "catalog:"
   vitest@*: "catalog:"
   # Vitest's own packages at the catalog's Vitest, under Vite+ too, which pins 5.1.0's (ADR 0051). Drop these once the
-  # workerd tests pass on the Vitest Vite+ depends on.
+  # workerd tests pass on the Vitest Vite+ depends on. A Vite+ upgrade that depends on another `@vitest/*` package adds
+  # it here, so no 5.1 package mixes in (`grep -E "^  '?@?vitest[a-z/-]*@5\.1" pnpm-lock.yaml` finds none).
   "@vitest/spy": 5.0.5
   "@vitest/utils": 5.0.5
   "@vitest/mocker": 5.0.5

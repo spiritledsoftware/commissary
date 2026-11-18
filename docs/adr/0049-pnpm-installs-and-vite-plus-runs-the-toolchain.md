@@ -1,5 +1,5 @@
 ---
-status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone) and ADR-0051 (Vite+ 1.7 runs tsrs; Vitest held at 5.0.x by overrides)
+status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone) and by ADR-0051 (Vite+ 1.7 runs tsrs; Vitest held at 5.0.x by overrides)
 ---
 
 # pnpm installs, and Vite+ runs the toolchain
@@ -24,7 +24,7 @@ to every package, pointed the catalog's `vite` at Vite+'s core and `vitest` at t
 test files' `vitest` imports to `vite-plus/test` and the lint plugins' `@oxlint/plugins` to `vite-plus/lint/plugins`.
 The packages keep their own `vitest.config.ts`. Vite+ is held at 1.4.0, the last release that bundles Vitest 5.0.x:
 three workerd tests still fail on Vitest 5.1 with `@cloudflare/vitest-plugin` 1.8.0 (docs/DEVELOPMENT.md, "Dependency
-notes"), the reason Vitest was already held at 5.0.x.
+notes"), the reason Vitest was already held at 5.0.x. (Amended below: Vite+ moves to 1.7, and overrides hold Vitest.)
 
 **Type-aware lint.** Vite+ sets `OXLINT_TSGOLINT_PATH` to the `oxlint-tsgolint` it bundles only when the caller has
 not set it, so `tools/oxlint.sh` sets it to tsrslint's binary and runs `vp lint`, as it ran `oxlint` before.

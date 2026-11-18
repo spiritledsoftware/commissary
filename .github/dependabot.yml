@@ -24,11 +24,11 @@ updates:
       prefix: chore
       include: scope
     groups:
-      # Vite+ bundles Oxlint, Oxfmt, Vite and Vitest (ADR 0049); the catalog's `vitest` and `vite` (an alias of Vite+'s
-      # core, which Dependabot does not move: edit it by hand) name the versions this vite-plus bundles, but the
-      # workerd tests hold Vitest at 5.0.x until they pass on 5.1 with @cloudflare/vitest-plugin (docs/DEVELOPMENT.md,
-      # "Dependency notes"). effect-tsgo patches tsrs, and each release patches only the tsrs versions it lists (ADR
-      # 0047). tsrs (the typechecker) is pinned exactly in pnpm-workspace.yaml's catalog: its version names the
+      # Vite+ bundles Oxlint, Oxfmt, Vite and Vitest (ADR 0049); the catalog's `vite` (an alias of Vite+'s core, which
+      # Dependabot does not move: edit it by hand) names the core this vite-plus bundles. The catalog's `vitest` and
+      # pnpm-workspace.yaml's `@vitest/*` overrides hold Vitest at 5.0.x until the workerd tests pass on 5.1 with
+      # @cloudflare/vitest-plugin (docs/DEVELOPMENT.md, "Dependency notes"). effect-tsgo patches tsrs, and each release
+      # patches only the tsrs versions it lists (ADR 0047). tsrs (the typechecker) is pinned exactly in pnpm-workspace.yaml's catalog: its version names the
       # TypeScript release it ports; keep it on the TypeScript release of the tsrs vite-plus lints with (ADR 0051).
       toolchain:
         patterns:

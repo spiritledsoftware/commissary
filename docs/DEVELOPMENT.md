@@ -33,7 +33,7 @@ its output) instead of running. See "Workspace and tasks" below.
 | `pnpm run build`              | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
 | `pnpm --dir apps/web run dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `pnpm run dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                   |
 | `pnpm run typecheck`          | `tsrs`, with the Effect diagnostics, over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                          |
-| `pnpm run lint`               | `vp lint` over the whole repository (type-aware rules through the tsrs Vite+ bundles, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                                       |
+| `pnpm run lint`               | `vp lint` over the whole repository (type-aware rules through the tsrs bundled with Vite+, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                                  |
 | `pnpm run format`             | `vp fmt`                                                                                                                                                                                                                                                                    |
 | `pnpm run test`               | Each package's `vp test run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`pnpm run test --shard=1/3`)                                                                      |
 | `pnpm run smoke`              | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
@@ -606,8 +606,8 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
     the copy in pnpm's store, which other checkouts link to, is never written.
   - `minimumReleaseAge`: a release is installed a day after it is published, against packages hijacked and
     republished.
-- Vite+ (`vite-plus`, ADR 0049) bundles Vite, Vitest, Oxlint and Oxfmt; the catalog pins it exactly, with `vitest` at
-  the version it bundles and `vite` as its core (`npm:@voidzero-dev/vite-plus-core@<version>`, which Dependabot does
+- Vite+ (`vite-plus`, ADR 0049) bundles Vite, Vitest, Oxlint and Oxfmt; the catalog pins it exactly, with `vite` as its
+  core (`npm:@voidzero-dev/vite-plus-core@<version>`, which Dependabot does
   not move). Vite+ 1.7 depends on Vitest 5.1.0, which the workerd tests do not pass yet (see
   `@cloudflare/vitest-plugin` below), so `pnpm-workspace.yaml`'s `overrides` hold `vitest` and the `@vitest/*` packages
   at 5.0.5 under it (ADR 0051). Drop those overrides, move the catalog's `vitest` to the one Vite+ depends on, and drop
