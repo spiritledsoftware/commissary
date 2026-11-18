@@ -26,14 +26,14 @@
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/state": "workspace:*",
-    "@scalar/openapi-upgrader": "0.4.7",
+    "@scalar/openapi-upgrader": "0.4.8",
     "effect": "catalog:",
     "graphql": "17.1.0",
     "js-yaml": "catalog:",
-    "just-bash": "3.2.0"
+    "just-bash": "3.6.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.6.0",
+    "@cloudflare/vitest-plugin": "1.7.0",
     "@effect/vitest": "catalog:",
     "@types/js-yaml": "catalog:",
     "@types/node": "catalog:",

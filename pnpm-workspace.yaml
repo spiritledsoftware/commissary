@@ -9,11 +9,11 @@ packages:
 # Versions several packages share, named `catalog:` in their package.json so they cannot drift apart (two copies of
 # `effect` in one bundle break its services).
 catalog:
-  "@effect/vitest": 4.1.2
+  "@effect/vitest": 4.1.3
   "@types/js-yaml": 4.0.9
   "@types/node": ^26.6.6
-  effect: 4.1.2
-  jose: ^6.2.15
+  effect: 4.1.3
+  jose: ^6.2.17
   js-yaml: 5.5.0
   # Pinned exactly: its version names the TypeScript release it ports (ADR 0046).
   tsrs: 0.25.0-ts7.1.0-beta
