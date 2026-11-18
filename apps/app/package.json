@@ -10,8 +10,8 @@
     "typecheck": "tsrs"
   },
   "dependencies": {
-    "@better-auth/core": "1.7.18",
-    "@better-auth/sso": "1.7.18",
+    "@better-auth/core": "1.7.20",
+    "@better-auth/sso": "1.7.20",
     "@commissary/auth": "workspace:*",
     "@commissary/billing": "workspace:*",
     "@commissary/contract": "workspace:*",
@@ -21,11 +21,11 @@
     "@commissary/state": "workspace:*",
     "@commissary/state-worker": "workspace:*",
     "@commissary/tools": "workspace:*",
-    "better-auth": "1.7.18",
+    "better-auth": "1.7.20",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.6.0",
+    "@cloudflare/vitest-plugin": "1.7.0",
     "@commissary/api": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
