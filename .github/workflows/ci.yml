@@ -275,7 +275,7 @@ jobs:
           API_URL: ${{ steps.deploy.outputs.api_url }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-        run: tools/check-deploy.sh "$URL" "$API_URL"
+        run: tools/probe-access.sh; tools/check-deploy.sh "$URL" "$API_URL"
       - name: Check the Commissary Cloud deploy
         if: env.COMMISSARY_MODE == 'cloud'
         env:
