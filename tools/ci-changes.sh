@@ -66,3 +66,4 @@ echo "previewed=$previewed" >>"$out"
 if [ "$code" = false ]; then
   echo "::notice::documentation only: skipping the checks and deploys"
 fi
+# probe
