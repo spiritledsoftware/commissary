@@ -3,7 +3,8 @@
 # writes the app Worker's URL to the step output `url` and the URL of the client API to `api_url` (ADR 0028, ADR 0030:
 # the API host, a preview's API Worker workers.dev URL, or the same URL, whose client API paths zone routes send to the
 # API Worker), and on Commissary Cloud the auth host's to `auth_url` (empty on a self-hosted stage). The control panel
-# must be built first (`pnpm run build`).
+# must be built first (`pnpm run build`). On a preview it then saves the stage's Access application again
+# (tools/resave-access-application.sh).
 # Usage: tools/deploy-stage.sh <stage>
 set -euo pipefail
 
