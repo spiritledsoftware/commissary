@@ -33,7 +33,7 @@ its output) instead of running. See "Workspace and tasks" below.
 | `pnpm run build`              | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
 | `pnpm --dir apps/web run dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `pnpm run dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                   |
 | `pnpm run typecheck`          | `tsrs`, with the Effect diagnostics, over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                          |
-| `pnpm run lint`               | `vp lint` over the whole repository (type-aware rules through `tsrs-lint`, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                                                  |
+| `pnpm run lint`               | `vp lint` over the whole repository (type-aware rules through the tsrs Vite+ bundles, anti-slop and boundaries rules) + `vp fmt --check` + `tools/check-computerd.sh`                                                                                                       |
 | `pnpm run format`             | `vp fmt`                                                                                                                                                                                                                                                                    |
 | `pnpm run test`               | Each package's `vp test run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`pnpm run test --shard=1/3`)                                                                      |
 | `pnpm run smoke`              | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
@@ -522,12 +522,9 @@ copies it into the Linear team SPI but into no project, and the workflow puts th
 `pnpm run lint` runs `vp lint` (Oxlint), `vp fmt --check` (Oxfmt) and `tools/check-computerd.sh` (the computer image's
 computerd and `@cloudflare/computer` name one version, ADR 0041). Both take their settings from the root
 `vite.config.ts` (`lint` and `fmt`, ADR 0049), over the whole repository. Oxlint is type-aware (`lint.options.typeAware`).
-Its backend is tsrs's own, `tsrs-lint` (`tsrs --lint`, a bin of the `tsrs` package), instead of the
-`oxlint-tsgolint` Vite+ bundles (ADR 0047, ADR 0050), so the type-aware rules run on the same TypeScript as the typecheck.
-Oxlint runs the executable `OXLINT_TSGOLINT_PATH` names, and Vite+ fills it in with its own only when unset, so the
-root `vite.config.ts` assigns it, to the checkout's `node_modules/.bin/tsrs-lint`, before exporting its settings. Every
-Vite+ entry point that loads that config runs tsrs-lint: `vp lint`, `vp staged` and the `vp lint --lsp` language server,
-in any shell, agents' and worktrees' included; an inherited value is replaced, not honoured. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
+Its backend is tsrs's `tsrs-lint`, from the `tsrs` Vite+ depends on (ADR 0051), so the type-aware rules run on the same
+TypeScript as the typecheck: `vp lint`, `vp staged` and the `vp lint --lsp` language server all run it. Vite+ sets
+`OXLINT_TSGOLINT_PATH` to it only when unset, so leave the variable unset. Oxlint leaves TypeScript's own errors to `pnpm run typecheck`
 (`lint.options.typeCheck: false`, so `vp check` is not this repository's check either: tsrs is the one TypeScript gate, ADR 0046). On top of its own rules it runs:
 
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
@@ -611,27 +608,27 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
     republished.
 - Vite+ (`vite-plus`, ADR 0049) bundles Vite, Vitest, Oxlint and Oxfmt; the catalog pins it exactly, with `vitest` at
   the version it bundles and `vite` as its core (`npm:@voidzero-dev/vite-plus-core@<version>`, which Dependabot does
-  not move). It is held at 1.4.0, the last release that bundles Vitest 5.0.x (see `@cloudflare/vitest-plugin` below),
-  so its Oxlint (1.89) and Oxfmt (0.74) are older than the standalone ones were; move all three together once the
-  workerd tests pass on Vitest 5.1, and drop Dependabot's `ignore` entries for `vite-plus` and `vitest` then
-  (`.github/dependabot.yml`). Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
+  not move). Vite+ 1.7 depends on Vitest 5.1.0, which the workerd tests do not pass yet (see
+  `@cloudflare/vitest-plugin` below), so `pnpm-workspace.yaml`'s `overrides` hold `vitest` and the `@vitest/*` packages
+  at 5.0.5 under it (ADR 0051). Drop those overrides, move the catalog's `vitest` to the one Vite+ depends on, and drop
+  Dependabot's `ignore` entry for `vitest` (`.github/dependabot.yml`) once the workerd tests pass on it. Test files import `vite-plus/test` (Vitest's API), and `vite-plus/lint/plugins`
   replaces `@oxlint/plugins` in the lint plugins (`vite-plus/prefer-vite-plus-imports` reports the old imports).
 - TypeScript 7.1 through tsrs (`tsrs`, a Rust port of TypeScript 7 that takes `tsc`'s flags; ADR 0046), pinned exactly
-  in the catalog: its version names the TypeScript release it ports (`0.22.0-ts7.1.0-beta` ports 7.1.0-beta), so an
-  upgrade is a deliberate edit. It also provides oxlint's type-aware backend (`tsrs-lint`, "Lint and format", ADR 0050),
-  so an upgrade moves the lint rules too, and `@effect/tsgo`, which patches only the tsrs versions it lists, moves with
-  it in the same Dependabot group. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
+  in the catalog: its version names the TypeScript release it ports (`0.25.0-ts7.1.0-beta` ports 7.1.0-beta), so an
+  upgrade is a deliberate edit. `@effect/tsgo`, which patches only the tsrs versions it lists, moves with it in the
+  same Dependabot group. Vite+ depends on a tsrs of its own (`7.1.0-beta.tsrs2` in 1.7) for oxlint's type-aware
+  backend ("Lint and format", ADR 0051): keep both on the same TypeScript release. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
   (app Worker, workerd types), `apps/api/tsconfig.json` (API Worker, workerd types), `apps/auth/tsconfig.json` (auth Worker, workerd types), `apps/state/tsconfig.json` (state Worker, workerd types), `apps/web/tsconfig.app.json` (panel, DOM types) and `tsconfig.node.json` (its Node.js side),
   `packages/contract/tsconfig.json` (no runtime types), `packages/auth`, `packages/core`, `packages/json` and `packages/translation` (Node.js types,
   no Workers types), `packages/state`, `packages/billing`, `packages/models` and `packages/tools` (workerd types, with the Node.js tests of `test/unit/`
   checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); `vp run` caches it. The installed tsrs is Effect-patched, so it also reports the Effect diagnostics ("Lint and format", ADR 0047). The `typescript` package is no longer a dependency of the
   repository; it is still installed for commitlint's config loader, which declares it as a peer.
 - `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`) is used because it supports vitest 5,
-  which `@effect/vitest@4` requires. Vitest is held at 5.0.x (the catalog's `vitest`): under 5.1 with the plugin, work a
+  which `@effect/vitest@4` requires. Vitest is held at 5.0.x (the catalog's `vitest` and the `@vitest/*` overrides): under 5.1 with the plugin, work a
   test schedules (a forked fiber's start, a timer) does not run while the test awaits RPC to the test Worker's own
   Durable Objects, which breaks tests that let a forked task go on meanwhile (`packages/billing/test/scheduled.test.ts`),
   and two more fail on 5.1 alone (`apps/app/test/management-batch.test.ts`: an alarm set past 2189;
-  `packages/tools/test/browser-handoff.test.ts`: an `AsyncLocalStorage`-bound call outside its request). Move it, and Vite+ with it (above), once those pass on the new version; they still failed on Vitest 5.1.0 with `@cloudflare/vitest-plugin` 1.8.0. The workerd projects
+  `packages/tools/test/browser-handoff.test.ts`: an `AsyncLocalStorage`-bound call outside its request). Move it (above) once those pass on the new version; they still failed on Vitest 5.1.0 with `@cloudflare/vitest-plugin` 1.8.4. The workerd projects
   also turn Vitest's file-system module cache off (`tools/vitest/workerd.ts`).
 - `alchemy` (2.0.0 beta, pinned) needs `@effect/platform-node` for its CLI, which runs on Node.js (it hands itself to
   Bun only when Bun launched it); `@distilled.cloud/cloudflare` is pinned to

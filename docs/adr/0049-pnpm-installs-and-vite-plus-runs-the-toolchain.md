@@ -1,5 +1,5 @@
 ---
-status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone)
+status: accepted, partly supersedes ADR-0046 (Bun and Turborepo), amends ADR-0047; amended by ADR-0050 (`tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone) and ADR-0051 (Vite+ 1.7 runs tsrs; Vitest held at 5.0.x by overrides)
 ---
 
 # pnpm installs, and Vite+ runs the toolchain
@@ -92,3 +92,8 @@ ADR 0050: tsrs now ships its own backend, `tsrs-lint` (oxc-project/tsrs#378), so
 ADR 0050 (amended): the root `vite.config.ts` assigns `OXLINT_TSGOLINT_PATH` to `node_modules/.bin/tsrs-lint` itself,
 so every Vite+ entry point that lints (`vp lint`, `vp staged`, `vp lint --lsp`) runs tsrs-lint, and `tools/oxlint.sh`
 is gone.
+
+## Amendment: Vite+ 1.7 runs tsrs
+
+ADR 0051: Vite+ 1.7 bundles tsrs as Oxlint's type-aware backend, so `vite.config.ts` no longer selects it. Vite+ moves
+to 1.7.0, and Vitest stays at 5.0.5 through `pnpm-workspace.yaml`'s `overrides` instead of through Vite+'s version.

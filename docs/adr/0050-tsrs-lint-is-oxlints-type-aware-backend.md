@@ -1,5 +1,5 @@
 ---
-status: accepted, amends ADR-0047 and ADR-0049 (the type-aware backend); amended below (`vite.config.ts` selects the backend)
+status: superseded by ADR-0051 (Vite+ 1.7 runs tsrs itself); amended ADR-0047 and ADR-0049 (the type-aware backend); amended below (`vite.config.ts` selects the backend)
 ---
 
 # tsrs-lint is Oxlint's type-aware backend

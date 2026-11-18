@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`) and ADR-0050 (tsrs's own `tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone)
+status: accepted, amended by ADR-0049 (`tools/oxlint.sh` sets the backend for `vp lint`) and ADR-0050 (tsrs's own `tsrs-lint` replaces tsrslint; amended so `vite.config.ts` selects it and `tools/oxlint.sh` is gone) and ADR-0051 (Vite+ 1.7 runs tsrs itself)
 ---
 
 # tsrslint runs oxlint's type-aware rules, and the Effect diagnostics move into the typecheck
@@ -49,3 +49,9 @@ ADR 0050: tsrs now ships its own backend, `tsrs-lint` (oxc-project/tsrs#378), so
 ADR 0050 (amended): the root `vite.config.ts` assigns `OXLINT_TSGOLINT_PATH` to `node_modules/.bin/tsrs-lint` itself,
 so every Vite+ entry point that lints (`vp lint`, `vp staged`, `vp lint --lsp`) runs tsrs-lint, and `tools/oxlint.sh`
 is gone.
+
+## Amendment: Vite+ runs tsrs
+
+ADR 0051: Vite+ 1.7 depends on tsrs and runs its `tsrs-lint` as Oxlint's backend, so `vite.config.ts` no longer sets
+`OXLINT_TSGOLINT_PATH`. The lint run uses Vite+'s tsrs, not the root's Effect-patched one; the Effect diagnostics stay
+in `pnpm run typecheck`.
