@@ -17,10 +17,16 @@ pnpm run deploy --stage "$stage" --no-input --yes | tee "$log"
 url="$(sed -nE "s/^.*[{ ]url: '(https:[^']+)'.*$/\1/p" "$log" | tail -n 1)"
 api_url="$(sed -nE "s/^.*[{ ]apiUrl: '(https:[^']+)'.*$/\1/p" "$log" | tail -n 1)"
 auth_url="$(sed -nE "s/^.*[{ ]authUrl: '(https:[^']+)'.*$/\1/p" "$log" | tail -n 1)"
+access_application="$(sed -nE "s/^.*[{ ]accessApplicationId: '([^']+)'.*$/\1/p" "$log" | tail -n 1)"
 
 if [ -z "$url" ]; then
   echo "::error::the deploy printed no url output" >&2
   exit 1
+fi
+
+# A preview's Access application, saved again now that its app Worker is deployed (tools/resave-access-application.sh).
+if [ -n "$access_application" ]; then
+  tools/resave-access-application.sh "$access_application"
 fi
 
 echo "url=$url" >>"${GITHUB_OUTPUT:-/dev/stdout}"
