@@ -48,7 +48,9 @@ A stage named `pr-<number>` is a preview (`infra/settings.ts`):
   `workers.dev` URL, outside Access (clients send API keys there), and its own state Worker, which has no URL
   ([The Workers](#the-workers)). The app Worker enrolls into the Access application (Alchemy's Worker `access` prop),
   so Access covers its `workers.dev` URL; no custom hostname is needed, and no bypass application either: the client
-  API is on the API Worker's URL, which the panel names (`GET /me` `api_url`).
+  API is on the API Worker's URL, which the panel names (`GET /me` `api_url`). After the deploy, `tools/deploy-stage.sh`
+  saves the application again (`tools/resave-access-application.sh`): Cloudflare did not always enforce it on the Worker
+  until it was saved again after the Worker had deployed.
 - Same policies as production: `ACCESS_ALLOW_*` for people, `ACCESS_ALLOW_SERVICE_TOKEN_IDS` for the CI token. Same
   platform admins (`PLATFORM_ADMIN_EMAILS`).
 - Empty KV, D1 and Durable Objects, and no cron trigger. A preview has no provider credentials, so it serves the panel,

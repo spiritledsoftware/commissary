@@ -535,6 +535,10 @@ export default Alchemy.Stack(
       // Commissary Cloud's auth host (tools/deploy-stage.sh, tools/check-cloud-deploy.sh); none on a self-hosted one.
       ...(auth === undefined ? {} : { authUrl: auth.url }),
       accessAud: access.aud,
+      // A preview's Access application, which tools/deploy-stage.sh saves again after the deploy.
+      ...(access.application === undefined
+        ? {}
+        : { accessApplicationId: access.application.applicationId }),
       serviceTokens: access.serviceTokenClientIds,
     };
   }),
