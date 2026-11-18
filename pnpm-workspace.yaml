@@ -57,6 +57,26 @@ patchedDependencies:
 
 # Leave a release a day before installing it, against packages hijacked and republished.
 minimumReleaseAge: 1440
+# Exact releases let in early by hand (ADR 0051, published 2026-11-17); each is past the day once it has aged, and can go.
+minimumReleaseAgeExclude:
+  - "vite-plus@1.7.0"
+  - "@voidzero-dev/vite-plus-core@8.3.8000"
+  - "@voidzero-dev/vite-plus-darwin-arm64@1.7.0"
+  - "@voidzero-dev/vite-plus-darwin-x64@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@1.7.0"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.7.0"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.7.0"
+  - "@effect/tsgo@0.70.0"
+  - "@effect/tsgo-darwin-arm64@0.70.0"
+  - "@effect/tsgo-darwin-x64@0.70.0"
+  - "@effect/tsgo-linux-arm@0.70.0"
+  - "@effect/tsgo-linux-arm64@0.70.0"
+  - "@effect/tsgo-linux-x64@0.70.0"
+  - "@effect/tsgo-win32-arm64@0.70.0"
+  - "@effect/tsgo-win32-x64@0.70.0"
 
 # Packages that peer on Vite or Vitest take Vite+'s (its core stands in for Vite, at its own version).
 peerDependencyRules:
