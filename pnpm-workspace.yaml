@@ -16,11 +16,11 @@ catalog:
   jose: ^6.2.15
   js-yaml: 5.5.0
   # Pinned exactly: its version names the TypeScript release it ports (ADR 0046).
-  tsrs: 0.22.0-ts7.1.0-beta
-  # Vite+ (ADR 0049) and the Vitest it bundles move together: vite-plus 1.4.0 bundles Vitest 5.0.5, and the workerd
-  # tests are held at Vitest 5.0.x (docs/DEVELOPMENT.md, "Dependency notes"). `vite` is Vite+'s core under Vite's name.
-  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
-  vite-plus: 1.4.0
+  tsrs: 0.25.0-ts7.1.0-beta
+  # Vite+ (ADR 0049, ADR 0051). vite-plus 1.7.0 depends on Vitest 5.1.0, but the workerd tests are held at Vitest 5.0.x
+  # (docs/DEVELOPMENT.md, "Dependency notes"; the overrides below). `vite` is Vite+'s core under Vite's name.
+  vite: npm:@voidzero-dev/vite-plus-core@8.3.8000
+  vite-plus: 1.7.0
   vitest: 5.0.5
 
 # The packages whose install scripts run. esbuild and workerd fetch their platform binaries.
@@ -37,9 +37,19 @@ overrides:
   # The sandbox toolkit's shell (@commissary/tools, #222): the version `@cloudflare/computer` bundled into the
   # worker-shell modules a session's shell runs (docs/DEVELOPMENT.md, "Dependency notes").
   just-bash: 3.2.0
-  # One Vite and one Vitest, Vite+'s, for every package that wants either.
+  # One Vite and one Vitest for every package that wants either: Vite+'s core, and the catalog's Vitest.
   vite@*: "catalog:"
   vitest@*: "catalog:"
+  # Vitest's own packages at the catalog's Vitest, under Vite+ too, which pins 5.1.0's (ADR 0051). Drop these once the
+  # workerd tests pass on the Vitest Vite+ depends on. A Vite+ upgrade that depends on another `@vitest/*` package adds
+  # it here, so no 5.1 package mixes in (`grep -E "^  '?@?vitest[a-z/-]*@5\.1" pnpm-lock.yaml` finds none).
+  "@vitest/spy": 5.0.5
+  "@vitest/utils": 5.0.5
+  "@vitest/mocker": 5.0.5
+  "@vitest/browser": 5.0.5
+  "@vitest/snapshot": 5.0.5
+  "@vitest/pretty-format": 5.0.5
+  "@vitest/browser-preview": 5.0.5
 
 patchedDependencies:
   # A Container application attached to an existing Durable Object class (docs/DEVELOPMENT.md, "Dependency notes").
@@ -47,6 +57,26 @@ patchedDependencies:
 
 # Leave a release a day before installing it, against packages hijacked and republished.
 minimumReleaseAge: 1440
+# Exact releases let in early by hand (ADR 0051, published 2026-11-17); each is past the day once it has aged, and can go.
+minimumReleaseAgeExclude:
+  - "vite-plus@1.7.0"
+  - "@voidzero-dev/vite-plus-core@8.3.8000"
+  - "@voidzero-dev/vite-plus-darwin-arm64@1.7.0"
+  - "@voidzero-dev/vite-plus-darwin-x64@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@1.7.0"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.7.0"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.7.0"
+  - "@effect/tsgo@0.70.0"
+  - "@effect/tsgo-darwin-arm64@0.70.0"
+  - "@effect/tsgo-darwin-x64@0.70.0"
+  - "@effect/tsgo-linux-arm@0.70.0"
+  - "@effect/tsgo-linux-arm64@0.70.0"
+  - "@effect/tsgo-linux-x64@0.70.0"
+  - "@effect/tsgo-win32-arm64@0.70.0"
+  - "@effect/tsgo-win32-x64@0.70.0"
 
 # Packages that peer on Vite or Vitest take Vite+'s (its core stands in for Vite, at its own version).
 peerDependencyRules:
