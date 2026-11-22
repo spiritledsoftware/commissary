@@ -1,7 +1,8 @@
 /**
- * Which paths are the client API (ADR 0030): the API Worker serves them, the app Worker serves everything else, and on
- * a stage with one host zone routes send them to the API Worker (alchemy.run.ts). Mirrors the Go route groups in
- * internal/api/server_routes.go that use AuthMiddleware, without the management API.
+ * Which paths are the client API (ADR 0030) and the hub API (ADR 0052): the API Worker serves them, the app Worker
+ * serves everything else, and on a stage with one host zone routes send them to the API Worker (alchemy.run.ts). The
+ * client API mirrors the Go route groups in internal/api/server_routes.go that use AuthMiddleware, without the
+ * management API.
  */
 
 /** Commissary's MCP endpoint (Tools, #197): a client API path like the model routes. */
@@ -66,6 +67,19 @@ export const normalizedPath = (requestUrl: string): string | undefined => {
  */
 export const isClientApiPath = (path: string): boolean =>
   CLIENT_API_PREFIXES.some((prefix) => path.startsWith(prefix));
+
+/**
+ * The hub API (ADR 0052): the few routes of Go's management API that allowance readers such as T3 Code poll, with a
+ * management key. Served by the API Worker beside the client API, but not part of it: neither the client gate nor the
+ * client API's CORS applies to it.
+ */
+export const HUB_API_PREFIX = "/v0/management";
+
+/** Whether a normalised path ({@link normalizedPath}) is on the hub API: any path under {@link HUB_API_PREFIX}. */
+export const isHubApiPath = (path: string): boolean => path.startsWith(HUB_API_PREFIX);
+
+/** Every path prefix the API Worker serves: the client API's, then the hub API's. */
+export const API_WORKER_PREFIXES = [...CLIENT_API_PREFIXES, HUB_API_PREFIX] as const;
 
 /** Whether a request URL is for the MCP endpoint ({@link MCP_PATH}, with or without a trailing slash). */
 export const isMcpPath = (requestUrl: string): boolean => {

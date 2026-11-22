@@ -4,25 +4,27 @@
  * so that tests can import it (apps/app/test/infra-access.test.ts).
  */
 import type { Settings } from "./settings.ts";
-import { CLIENT_API_PREFIXES, MCP_PATH } from "../packages/core/src/http/client-api.ts";
+import { API_WORKER_PREFIXES, MCP_PATH } from "../packages/core/src/http/client-api.ts";
 
 /**
- * The client API paths the zone routes of a stage with one host send to the API Worker (`CLIENT_API_PREFIXES`,
- * packages/core/src/http/client-api.ts). On a self-hosted Commissary every one but the MCP endpoint: its `/mcp` on the
- * app host is the app Worker's, behind Access (ADR 0045), so the API-key endpoint needs an API host there. On
- * Commissary Cloud (`hosted`) the app host serves no `/mcp`, so all of them.
+ * The paths the zone routes of a stage with one host send to the API Worker (`API_WORKER_PREFIXES`,
+ * packages/core/src/http/client-api.ts): the client API, then the hub API (ADR 0052). On a self-hosted Commissary
+ * every one but the MCP endpoint: its `/mcp` on the app host is the app Worker's, behind Access (ADR 0045), so the
+ * API-key endpoint needs an API host there. On Commissary Cloud (`hosted`) the app host serves no `/mcp`, so all of
+ * them.
  */
 export const zoneRoutedPrefixes = (options: { readonly hosted: boolean }): ReadonlyArray<string> =>
   options.hosted
-    ? CLIENT_API_PREFIXES
-    : CLIENT_API_PREFIXES.filter((prefix) => prefix !== MCP_PATH);
+    ? API_WORKER_PREFIXES
+    : API_WORKER_PREFIXES.filter((prefix) => prefix !== MCP_PATH);
 
 /**
- * The paths Access lets through on a self-hosted stage with one host: the client API ({@link zoneRoutedPrefixes}),
- * where clients authenticate with API keys the Worker checks itself (ADR 0022). Not `/mcp`, which stays behind Access
- * for the app Worker (ADR 0045). Access matches a path and its sub-paths (`/v1` covers `/v1/models`), not other paths
- * that start with the same letters, so `/v1beta` and `/v1internal`, which the `/v1*` zone route covers, are listed on
- * their own (the order is the one the deployed applications were created with).
+ * The paths Access lets through on a self-hosted stage with one host: the client API and the hub API
+ * ({@link zoneRoutedPrefixes}), where clients authenticate with API keys or management keys the Worker checks itself
+ * (ADR 0022, ADR 0052). Not `/mcp`, which stays behind Access for the app Worker (ADR 0045). Access matches a path and
+ * its sub-paths (`/v1` covers `/v1/models`), not other paths that start with the same letters, so `/v1beta` and
+ * `/v1internal`, which the `/v1*` zone route covers, are listed on their own (the order is the one the deployed
+ * applications were created with; the hub API's `/v0/management`, added last, comes last).
  */
 export const clientApiBypassPaths = (): readonly [string, ...string[]] => [
   "/v1",

@@ -121,7 +121,7 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         // server (ADR 0036), not here (ADR 0045).
         if (zone === "protected" || (zone === "mcp" && hosted))
           return HttpServerResponse.setHeader(
-            errorResponse(404, clientApiElsewhere(yield* AppEnv)),
+            errorResponse(404, clientApiElsewhere(yield* AppEnv, request.originalUrl)),
             "cache-control",
             "no-store",
           );
