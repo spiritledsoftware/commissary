@@ -4,7 +4,7 @@ status: accepted, amends ADR-0015 and ADR-0028
 
 # The API Worker serves a hub API for allowance readers
 
-Applications such as T3 Code show each account's allowances by polling a Go server. They list its auth files, ask it to call a provider's usage endpoint with the account's token (`POST /v0/management/api-call`), and clear cooldowns after redeeming a Codex reset credit. They send a management key and nothing else, and they cannot be changed. ADR 0015 left the v0 management API out, and the port dropped `api-call` because it sends a token to any host the caller names.
+Applications such as T3 Code show each account's allowances by polling a Go server. They list its auth files, ask it to call a provider's usage endpoint with the account's token (`POST /v0/management/api-call`), and clear cooldowns after redeeming a Codex reset credit. They send a management key and nothing else, and they cannot be changed. ADR 0015 left the Go server's `/v0/management` routes out, and the port dropped `api-call` because it sends a token to any host the caller names.
 
 Commissary serves three of those routes as the **hub API**, on the API Worker: `GET /v0/management/auth-files`, `POST /v0/management/api-call` and `POST /v0/management/reset-quota`.
 

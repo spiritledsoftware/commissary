@@ -2375,13 +2375,14 @@ API Worker serves those three routes of Go's management API as the hub API, besi
   fetch, and so is a call for an account of another provider (checked before any refresh). The caller's `header` is
   never read; the quota check's headers (`quota/probe.ts` `probeHeaders`) are sent. `data` is refused on a `GET`, must be
   exactly `{ redeem_request_id: <uuid>, credit_id: <string of at most 200> }` for the consume call, which is rebuilt
-  from those two fields, and is ignored for the quota summary, whose body is `{ project }` from the stored account. The
+  from those two fields, and is ignored for the quota summary, whose body is `{ project }` from the stored account (an account with no stored
+  project is `503 token unavailable` there, but still gets its token for Google's userinfo call). The
   ControlPlane resolves the account and refreshes its token (`hubCallTarget`: `ensureFresh`, then `quota/target.ts`, as
   the quota check's `quotaProbeTarget`), and the Worker makes the call (`sendRaw`, 15 s, `redirect: "manual"` so a 3xx
   is relayed as its status and the token never follows it, at most 1 MiB). Errors: `404 auth not found`, `400` (a call
   off the list or a bad body), `503 token unavailable` (no token, a failed refresh), `502` (transport failure, timeout,
   too large an answer). A provider's non-2xx is still a `200` carrying its `status_code`. Every copy of the token in the
-  body is replaced by `[redacted]`; the provider's headers are dropped. Nothing clears a cooldown after a consume.
+  body is replaced by `[redacted]`, as written, JSON-escaped or URL-encoded; the provider's headers are dropped. Nothing clears a cooldown after a consume.
 - **Authentication** (`@commissary/auth` `authenticateManagementKey`): a management key and nothing else (no Access JWT,
   session cookie, API key or dev bypass): `401 Missing API key` without `Authorization`, `Invalid API key` otherwise. On
   Commissary Cloud the org and the issuer must be in good standing (the key branch every gate shares,
@@ -2402,8 +2403,9 @@ API Worker serves those three routes of Go's management API as the hub API, besi
   share one resolver; `auth_index` matched case-insensitively as `findCredential` does).
 - **Recording**: one info log line per relayed call (`principal` `mkey:<id>`, `auth_index`, the entry's id, the
   provider's status), never a body or a token. Quota reports are untouched.
-- **Differences from Go** (`internal/api/handlers/management`): no generic proxy (Go's `api-call` sends a token to any
-  URL); the reply carries no `header`; disabled accounts are hidden; no route aliases (only the three paths above);
+- **Differences from Go** (`internal/api/handlers/management`): no generic proxy (Go's `api-call` is an open proxy: it
+  substitutes the account's token into any URL, method, header and body the caller sends; Commissary's is the fixed list
+  of seven calls above, with its own headers and bodies); the reply carries no `header`; disabled accounts are hidden; no route aliases (only the three paths above);
   every other `/v0/management` route answers `404`.
 
 ## Claude reset grants (`models/quota/reset-grant*.ts`, `models/management/reset-grant-routes.ts`)
