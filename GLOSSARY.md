@@ -46,7 +46,8 @@ gives them an org of their own.
 _Avoid_: hosted proxy, SaaS, cloud (on its own), multi-tenant mode
 
 **API host**:
-The hostname a deployment may give its client API alone (ADR 0028), where clients send API keys.
+The hostname a deployment may give its client API and hub API (ADR 0028, ADR 0052), where clients send API keys and
+allowance readers send management keys.
 _Avoid_: proxy domain, endpoint
 
 **Auth host**:
@@ -139,6 +140,12 @@ Everything clients call with an API key: the model endpoints, the MCP endpoint a
 self-hosted Commissary an MCP client may also reach the MCP endpoint through Access instead.
 _Avoid_: proxy routes, public API, model routes (a model route is a credential's)
 
+**Hub API**:
+The few routes of the Go server's management API that Commissary serves to allowance readers, such as T3 Code: the list
+of accounts, relayed calls and cooldown reset (ADR 0052). Called with a management key only; part of neither the client
+API nor the management API.
+_Avoid_: v0 management API, legacy management API, usage hub
+
 **API key**:
 A secret Commissary issues to a member for their clients, which reaches every area through the client API. It names its
 org and member, and it can have a spend limit and a tool scope of its own. A member creates one in the control panel, or,
@@ -152,8 +159,8 @@ the MCP endpoint behind Access) of a self-hosted Commissary.
 _Avoid_: API key, client key
 
 **Management key**:
-A secret an org admin issues for scripts that use the management API, carrying a role in that org. Unlike a service
-token it never grants the sensitive powers, such as downloading a stored credential.
+A secret an org admin issues for scripts that use the management API and applications that use the hub API, carrying
+a role in that org. Unlike a service token it never grants the sensitive powers, such as downloading a stored credential.
 _Avoid_: API key, admin key
 
 **Suspended**:
@@ -481,7 +488,7 @@ What a failed attempt is blamed on. The model is cooled down by default. The who
 provider limits the account. Nothing is cooled down when the request itself was at fault.
 
 **Cooldown reset**:
-An org admin clearing a credential's cooldowns.
+Clearing a credential's cooldowns.
 _Avoid_: quota reset, reset (on its own)
 
 **Allowance**:
@@ -498,6 +505,11 @@ _Avoid_: burn rate, velocity, utilization rate
 **Quota check**:
 Asking a provider for an account's current allowances.
 _Avoid_: probe, quota (on its own)
+
+**Relayed call**:
+A request to one of a fixed list of provider endpoints that Commissary sends with an account's token for a hub API
+caller, returning the provider's answer as it is. Unlike a quota check it stores nothing.
+_Avoid_: api-call, proxy call
 
 **Quota signals**:
 The rate-limit figures Commissary observes on live answers, as opposed to those from a quota check.
