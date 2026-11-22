@@ -26,7 +26,7 @@ export const apiOrigin = (env: HostEnv): string | undefined => {
  * Why a path of the API Worker is not served here: the message of the 404 this Worker answers it with, naming the hub
  * API (ADR 0052) for one of its paths (`requestUrl`), the client API otherwise.
  */
-export const clientApiElsewhere = (env: HostEnv, requestUrl = ""): string => {
+export const clientApiElsewhere = (env: HostEnv, requestUrl: string): string => {
   const api = apiOrigin(env);
   const path = normalizedPath(requestUrl);
   const surface = path !== undefined && isHubApiPath(path) ? "hub API" : "client API";
