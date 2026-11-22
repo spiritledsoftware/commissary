@@ -4,11 +4,9 @@
  * management API's entry (`buildCredentialEntry`): no runtime state, no owner, and never a token or the raw id token.
  * Pure; the ControlPlane decides which accounts are listed (`listHubAccounts`).
  */
-import type { Json } from "@commissary/json";
 import { type Credential, executorKey } from "../credentials/model.ts";
 import { codexClaims } from "../management/credential-entry.ts";
-import { antigravityProject, codexAccountId } from "../quota/account-ids.ts";
-import type { QuotaProbeTarget } from "../quota/target.ts";
+import { antigravityProject, codexAccountId, text } from "../quota/account-ids.ts";
 
 export interface HubAccount {
   /** The auth file name, as the management API names it. */
@@ -20,8 +18,6 @@ export interface HubAccount {
   readonly project_id?: string;
   readonly id_token?: { readonly chatgpt_account_id?: string; readonly plan_type?: string };
 }
-
-const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
 
 /** The listed form of `credential`, whose `auth_index` is `authIndex`; absent fields are left out. */
 export const hubAccount = (
@@ -48,14 +44,3 @@ export const hubAccount = (
     ...(Object.keys(idToken).length === 0 ? {} : { id_token: idToken }),
   };
 };
-
-/**
- * Answer of the ControlPlane's `hubCallTarget`: the token target of a relayed call (token material: it only crosses
- * the RPC boundary to the Worker, which never returns or logs it), an account the viewer does not reach on the hub,
- * one of another provider than the call's, or a token that could not be had (a failed refresh, a credential without
- * one).
- */
-export type HubTargetResult =
-  | { readonly ok: true; readonly target: QuotaProbeTarget }
-  | { readonly ok: false; readonly error: "not_found" | "wrong_provider" }
-  | { readonly ok: false; readonly error: "unavailable"; readonly message: string };

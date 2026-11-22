@@ -12,9 +12,8 @@
 import type { Credential } from "../credentials/model.ts";
 import { devinCredentials } from "../executor/devin/credentials.ts";
 import { OPENCODE_GO, OPENCODE_SPECS } from "../executor/opencode/providers.ts";
-import type { Json } from "@commissary/json";
 import { apiCallToken } from "../management/credential-ops.ts";
-import { antigravityProject, codexAccountId } from "./account-ids.ts";
+import { antigravityProject, codexAccountId, text } from "./account-ids.ts";
 import { kimiUsageUrl } from "./kimi.ts";
 import { isDcaToken } from "./meta.ts";
 import { openCodeGoUsageUrl } from "./opencode-go.ts";
@@ -63,8 +62,6 @@ export type QuotaTargetResult =
       readonly message: string;
       readonly credentialVersion?: number;
     };
-
-const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
 
 const unavailable = (id: string, message: string): QuotaTargetResult => ({
   ok: false,

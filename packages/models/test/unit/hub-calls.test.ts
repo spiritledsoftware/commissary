@@ -63,12 +63,33 @@ describe("the relayed calls", () => {
       ["GET", "http://chatgpt.com/backend-api/wham/usage"],
       ["GET", `${usage}#frag`],
       ["GET", `${usage}#`],
+      ["GET", "https://chatgpt.com/backend-api/wham/usage#frag"],
+      ["GET", "https://chatgpt.com./backend-api/wham/usage"],
+      ["GET", "https://CHATGPT.COM.:443/backend-api/wham/usage"],
       ["GET", "not a url"],
       ["GET", ""],
     ] as const) {
       const matched = matchHubCall(method, url, undefined);
 
       expect(matched, `${method} ${url}`).toEqual({ ok: false, error: "call not allowed" });
+    }
+  });
+
+  it("send a spelling that normalises onto an entry to that entry's own URL", () => {
+    // `URL` turns a backslash into a slash and resolves dot segments, so these name the entry: the relay sends to the
+    // entry's constant URL, never to the caller's spelling.
+    for (const url of [
+      "https://chatgpt.com\\backend-api\\wham\\usage",
+      "https://chatgpt.com/backend-api/../backend-api/wham/usage",
+      "https://chatgpt.com/backend-api/wham/./usage",
+      "https://CHATGPT.COM/backend-api/wham/usage",
+    ]) {
+      const matched = matchHubCall("GET", url, undefined);
+
+      expect(matched.ok, url).toBe(true);
+      expect(matched.ok && matched.call.entry.url, url).toBe(
+        "https://chatgpt.com/backend-api/wham/usage",
+      );
     }
   });
 

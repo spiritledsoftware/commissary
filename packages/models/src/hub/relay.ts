@@ -38,9 +38,19 @@ const withBody = (
   }
 };
 
-/** `text` with every copy of `token` replaced by {@link REDACTED}. */
-export const redactToken = (text: string, token: string): string =>
-  token === "" ? text : text.replaceAll(token, REDACTED);
+/**
+ * `text` with every copy of `token` replaced by {@link REDACTED}: as it is, as a JSON string would escape it and as a
+ * URL component would encode it (a provider may echo it in a JSON body or a link).
+ */
+export const redactToken = (text: string, token: string): string => {
+  if (token === "") return text;
+  const spellings = new Set([token, JSON.stringify(token).slice(1, -1), encodeURIComponent(token)]);
+
+  return [...spellings].reduce(
+    (redacted, spelling) => redacted.replaceAll(spelling, REDACTED),
+    text,
+  );
+};
 
 /** Sends `call` for `target`; fails (a 502) when the provider cannot be reached in time or answers too much. */
 export const relayHubCall = (

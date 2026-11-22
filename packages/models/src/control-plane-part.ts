@@ -132,8 +132,13 @@ import {
   settleClaim,
 } from "./quota/reset-grants.ts";
 import { buildQuotaTarget, type QuotaTargetResult } from "./quota/target.ts";
-import { type HubAccount, hubAccount, type HubTargetResult } from "./hub/accounts.ts";
-import { type HubProvider, isHubProvider } from "./hub/calls.ts";
+import { type HubAccount, hubAccount } from "./hub/accounts.ts";
+import {
+  type HubProvider,
+  type HubResetResult,
+  type HubTargetResult,
+  isHubProvider,
+} from "./hub/calls.ts";
 
 const decodePickRequest = Schema.decodeUnknownSync(PickRequest);
 
@@ -1347,13 +1352,15 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   /**
    * The token target of a relayed call (`POST /v0/management/api-call`, ADR 0052) to an endpoint of `provider` for
    * the account `authIndex` names: refreshed first when needed, as {@link quotaProbeTarget} does. An account of
-   * another provider is `wrong_provider`, answered before any refresh. Carries token material: the Worker uses it for
-   * the upstream call only.
+   * another provider is `wrong_provider`, answered before any refresh. `needsProject` is whether the call sends the
+   * account's Cloud project (Antigravity's quota summary): without it (the userinfo call) an account with no stored
+   * project still gets its token. Carries token material: the Worker uses it for the upstream call only.
    */
   async hubCallTarget(
     authIndex: string,
     provider: HubProvider,
     viewer: Viewer,
+    needsProject = true,
   ): Promise<HubTargetResult> {
     const target = this.#hubAccount(authIndex, viewer);
 
@@ -1363,6 +1370,15 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     const fresh = await this.#refresh.ensureFresh(target.credential.id);
 
     if (!fresh.ok) return { ok: false, error: "unavailable", message: "token refresh failed" };
+
+    if (provider === "antigravity" && !needsProject) {
+      const token = apiCallToken(fresh.credential);
+
+      return token === ""
+        ? { ok: false, error: "unavailable", message: "credential has no access token" }
+        : { ok: true, target: { id: fresh.credential.id, provider, token } };
+    }
+
     const built = buildQuotaTarget(fresh.credential, provider);
 
     if (built.ok) return { ok: true, target: built.target };
@@ -1375,12 +1391,7 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /** Clears the cooldowns of the account `authIndex` names on the hub (`POST /v0/management/reset-quota`, ADR 0052). */
-  resetHubCooldown(
-    authIndex: string,
-    viewer: Viewer,
-  ):
-    | { readonly ok: true; readonly authIndex: string; readonly models: ReadonlyArray<string> }
-    | { readonly ok: false } {
+  resetHubCooldown(authIndex: string, viewer: Viewer): HubResetResult {
     const target = this.#hubAccount(authIndex, viewer);
     const reset = target === undefined ? undefined : this.#pool.resetCooldown(target.credential.id);
 

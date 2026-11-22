@@ -216,6 +216,41 @@ describe("the hub API's accounts", () => {
     });
   });
 
+  it("give an Antigravity account without a project its token for the userinfo call only", async () => {
+    const org = OrgId.make(`hub-${crypto.randomUUID().slice(0, 8)}`);
+    const models = controlPlane(org).models();
+
+    await models.importAuthFile(
+      "ag.json",
+      JSON.stringify({
+        type: "antigravity",
+        email: "ag@x.com",
+        access_token: "ag-secret-access",
+        refresh_token: "ag-secret-refresh",
+        expired: "2999-01-01T00:00:00Z",
+      }),
+      {},
+      admin,
+    );
+
+    const [account] = await models.listHubAccounts(admin);
+    const authIndex = account?.auth_index ?? "";
+
+    expect(account).toMatchObject({ provider: "antigravity" });
+    expect(account?.project_id).toBeUndefined();
+
+    expect(await models.hubCallTarget(authIndex, "antigravity", admin, false)).toMatchObject({
+      ok: true,
+      target: { provider: "antigravity", token: "ag-secret-access" },
+    });
+
+    expect(await models.hubCallTarget(authIndex, "antigravity", admin, true)).toEqual({
+      ok: false,
+      error: "unavailable",
+      message: "credential has no project_id",
+    });
+  });
+
   it("have their cooldowns reset", async () => {
     const org = OrgId.make(`hub-${crypto.randomUUID().slice(0, 8)}`);
     const models = controlPlane(org).models();

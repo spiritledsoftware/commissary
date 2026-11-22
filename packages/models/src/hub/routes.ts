@@ -12,27 +12,29 @@
  * token; nothing is stored. Every answer is JSON.
  */
 import { Effect, Layer } from "effect";
-import { HttpRouter, type HttpServerRequest, type HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpRouter,
+  type HttpServerRequest,
+  type HttpServerResponse,
+} from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
 import {
   type CurrentOrg,
   handled,
+  HUB_API_PREFIX,
   jsonReply,
   OutboundHttpClientLive,
   replyError,
 } from "@commissary/core";
-import { HttpClient } from "effect/http";
 import { type Json } from "@commissary/json";
 import { bodyObject } from "@commissary/state";
+import { text } from "../quota/account-ids.ts";
 import { type ModelsEnv, modelsControlPlane } from "../env.ts";
 import { CALL_NOT_ALLOWED, matchHubCall } from "./calls.ts";
 import { relayHubCall } from "./relay.ts";
 
-const BASE = "/v0/management";
-
 const AUTH_NOT_FOUND = "auth not found";
-
-const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
 
 /** The `auth_index` of a JSON body; 400 without one. */
 const authIndexOf = (body: Readonly<Record<string, Json>>) => {
@@ -64,7 +66,9 @@ const apiCall = Effect.gen(function* () {
   const viewer = yield* currentViewer;
 
   const target = yield* modelsControlPlane("hubCallTarget", (stub) =>
-    stub.models().hubCallTarget(authIndex, call.entry.provider, viewer),
+    stub
+      .models()
+      .hubCallTarget(authIndex, call.entry.provider, viewer, call.entry.body === "project"),
   );
 
   if (!target.ok)
@@ -81,7 +85,7 @@ const apiCall = Effect.gen(function* () {
 
   const answer = yield* relayHubCall(call, target.target).pipe(
     Effect.tapError((failure) =>
-      Effect.logWarning("hub call failed").pipe(
+      Effect.logWarning("relayed call failed").pipe(
         Effect.annotateLogs({
           principal: identity.principalId,
           auth_index: authIndex,
@@ -95,7 +99,7 @@ const apiCall = Effect.gen(function* () {
     ),
   );
 
-  yield* Effect.logInfo("hub call relayed").pipe(
+  yield* Effect.logInfo("relayed call sent").pipe(
     Effect.annotateLogs({
       principal: identity.principalId,
       auth_index: authIndex,
@@ -138,9 +142,9 @@ export const HubRoutes = HttpRouter.addAll(
     ) => Effect.provideService(handler, HttpClient.HttpClient, client);
 
     return [
-      HttpRouter.route("GET", `${BASE}/auth-files`, handled(listAuthFiles)),
-      HttpRouter.route("POST", `${BASE}/api-call`, bound(handled(apiCall))),
-      HttpRouter.route("POST", `${BASE}/reset-quota`, handled(resetQuota)),
+      HttpRouter.route("GET", `${HUB_API_PREFIX}/auth-files`, handled(listAuthFiles)),
+      HttpRouter.route("POST", `${HUB_API_PREFIX}/api-call`, bound(handled(apiCall))),
+      HttpRouter.route("POST", `${HUB_API_PREFIX}/reset-quota`, handled(resetQuota)),
     ];
   }),
 );

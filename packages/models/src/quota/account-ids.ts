@@ -7,7 +7,9 @@ import { decodeJwtClaims } from "../credentials/expiry.ts";
 import type { Credential } from "../credentials/model.ts";
 import { isJsonObject, type Json } from "@commissary/json";
 
-const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
+/** `value` trimmed when it is a string, else the empty string. */
+export const text = (value: Json | undefined): string =>
+  typeof value === "string" ? value.trim() : "";
 
 /** `chatgpt_account_id` of the Codex id token, else the stored `account_id`. */
 export const codexAccountId = (credential: Pick<Credential, "metadata">): string => {

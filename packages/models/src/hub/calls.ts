@@ -1,7 +1,7 @@
 /**
  * The hub API's relayed calls (ADR 0052): the seven provider endpoints an allowance reader such as T3 Code may have
  * Commissary call with an account's token (`POST /v0/management/api-call`), and nothing else. Go's `api-call`
- * (internal/api/handlers/management/api_tools.go) sends a token to any URL; here a call must match an entry's method
+ * sends a token to any URL; here a call must match an entry's method
  * and URL exactly, and Commissary builds the headers (`probeHeaders`, the quota check's) and the bodies itself: the
  * caller's `header` is never read, and its `data` only for a Codex reset-credit redemption, rebuilt from its two
  * fields. Pure: matching runs before any RPC or fetch.
@@ -11,6 +11,7 @@ import { type Json, tryParseJson } from "@commissary/json";
 import { ANTIGRAVITY_QUOTA_URLS } from "../quota/antigravity.ts";
 import { CLAUDE_USAGE_URL } from "../quota/claude.ts";
 import { CODEX_USAGE_URL } from "../quota/codex.ts";
+import type { QuotaProbeTarget } from "../quota/target.ts";
 import { XAI_BILLING_WEEKLY_URL } from "../quota/xai.ts";
 
 /** The providers whose accounts the hub API lists (Commissary's executor keys). */
@@ -162,3 +163,19 @@ export const matchHubCall = (method: string, url: string, data: Json | undefined
     }
   }
 };
+
+/**
+ * Answer of the ControlPlane's `hubCallTarget`: the token target of a relayed call (token material: it only crosses
+ * the RPC boundary to the Worker, which never returns or logs it), an account the viewer does not reach on the hub,
+ * one of another provider than the call's, or a token that could not be had (a failed refresh, a credential without
+ * one).
+ */
+export type HubTargetResult =
+  | { readonly ok: true; readonly target: QuotaProbeTarget }
+  | { readonly ok: false; readonly error: "not_found" | "wrong_provider" }
+  | { readonly ok: false; readonly error: "unavailable"; readonly message: string };
+
+/** Answer of the ControlPlane's `resetHubCooldown`: the account's `auth_index` and the models whose cooldown ended. */
+export type HubResetResult =
+  | { readonly ok: true; readonly authIndex: string; readonly models: ReadonlyArray<string> }
+  | { readonly ok: false };
