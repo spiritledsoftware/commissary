@@ -47,6 +47,9 @@ const RANK: Readonly<Record<OrgRole, number>> = { member: 0, admin: 1, owner: 2 
 export const roleAtLeast = (role: OrgRole | undefined, minimum: OrgRole): boolean =>
   role !== undefined && RANK[role] >= RANK[minimum];
 
+/** The lower of two roles (a management key acting as its issuer holds no more than either, ADR 0052). */
+export const lowerRole = (a: OrgRole, b: OrgRole): OrgRole => (RANK[a] <= RANK[b] ? a : b);
+
 /** Who acts, as the rules below need it. */
 export interface Actor {
   /** The actor's role in the org: `owner` for a platform admin. */

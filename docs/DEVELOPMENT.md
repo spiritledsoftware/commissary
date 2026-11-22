@@ -135,6 +135,9 @@ a part's methods) is made in steps, one release apart:
 2. **Switch** the callers to it.
 3. **Contract**: remove the old method or field a release later, once no deployed caller uses it.
 
+A method that is only added, with no change to an existing method's arguments or results, may ship in the same release as
+its first caller: the state Worker deploys first, so no caller meets a ControlPlane without it.
+
 A new kind of result goes the same way: an old caller that meets a value it does not know may fail on it. So the new
 caller asks for the new values with a flag, and the state Worker answers a call without it in the old values: the
 Tools part's `callTool` returns the approval outcomes only to a call with `approvalOutcomes: true` (#201), and an API

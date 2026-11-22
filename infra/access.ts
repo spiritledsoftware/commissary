@@ -135,9 +135,9 @@ const ApplicationSettings = Alchemy.Action(
 );
 
 /**
- * A bypass application for the client API of `host` (the domain of a stage with one host): a hostname-and-path
- * application takes precedence over the application of the whole domain, so the client API leaves Access while the
- * panel and the management API stay behind it. Only with a stack-managed Access application: a deployment that brings
+ * A bypass application for the client API and the hub API (ADR 0052) of `host` (the domain of a stage with one host):
+ * a hostname-and-path application takes precedence over the application of the whole domain, so those leave Access
+ * while the panel and the management API stay behind it. Only with a stack-managed Access application: a deployment that brings
  * its own (`ACCESS_AUD`) adds the bypass itself (docs/DEPLOY.md).
  */
 export const provisionClientApiBypass = (

@@ -53,7 +53,7 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     test/                     vitest suites in workerd: what goes through the Worker's router or fetch; worker.ts,
                               the test Worker, re-exports the handler and the state Worker's Durable Objects and binds
                               a fake auth Worker (FakeSignIn) on Cloud
-  apps/api/                   @commissary/api: the API Worker (client API of every area, cron jobs; ADR 0030)
+  apps/api/                   @commissary/api: the API Worker (client API of every area, hub API, cron jobs; ADR 0030)
     src/
       index.ts                Worker entry: fetch, scheduled; state calls retried once on a code-update reset
       dev.ts                  its `alchemy dev` entry: index.ts with the state namespaces over the state Worker's
@@ -88,7 +88,7 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
                               ./spend), tested in workerd
   packages/models/            @commissary/models: the Models area (#151); no root export, the Workers import it only
                               through ./api, ./management and ./state (lint rule boundaries/models-imports)
-    src/api.ts                for the API Worker: client API routes, the request trace, cron tasks, ModelsEnv
+    src/api.ts                for the API Worker: client API routes, the hub API, the request trace, cron tasks, ModelsEnv
     src/management.ts         for the app Worker: management routes, OAuth callbacks, role-table entries, org-deletion
                               step, its section of the org export
     src/state.ts              for the state Worker: ModelsPart, its part of the ControlPlane
@@ -193,8 +193,8 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
 
 - **Workers** (stateless; ADR 0030): the **app Worker** (`Commissary`, `apps/app`): the panel and the management API,
   behind Access on a self-hosted stage; the **API Worker** (`Api`, `apps/api`): the client API of every area (routing,
-  the client gate, request handling, translation, upstream `fetch`, streaming) and the cron jobs, never behind Access
-  (clients send API keys); on Commissary Cloud only, the **auth Worker** (`Auth`, `apps/auth`): Better Auth on the auth
+  the client gate, request handling, translation, upstream `fetch`, streaming), the hub API (ADR 0052) and the cron
+  jobs, never behind Access (clients send API keys, allowance readers management keys); on Commissary Cloud only, the **auth Worker** (`Auth`, `apps/auth`): Better Auth on the auth
   host and its `SignIn` database (see "Commissary Cloud").
 - **State Worker** (`State`, `apps/state`, ADR 0030): defines the three Durable Objects below and nothing else: no
   routes, no domain, no `workers.dev` URL, and only the bindings their classes read. The app and the API Worker bind
@@ -220,10 +220,10 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
   which run in front of the app Worker's custom domain (on a self-hosted stage every prefix but `/mcp`, whose app-host
   path is the app Worker's MCP endpoint behind Access, ADR 0045). The
   app Worker answers a client API path that reaches it (but a self-hosted Commissary's `/mcp` itself) `404 {"error": "Not found: the client API is served at
-  https://<API_DOMAIN>"}` (or "… by the API Worker" without an API host), checked before authentication; the API Worker
-  answers every path but the client API and `/healthz` `404 {"error": "Not found: … serves the client API only; the
-  control panel and the management API are at https://<APP_DOMAIN>"}`. Only the API Worker sends CORS headers (the
-  panel calls the management API same-origin). `GET /me` reports the API host (or a preview's API Worker host) as
+  https://<API_DOMAIN>"}` (or "… by the API Worker" without an API host; "the hub API is served …" for `/v0/management*`),
+  checked before authentication; the API Worker answers every path but the client API, the hub API and `/healthz` `404 {"error": "Not found: … serves the client API only; the
+  control panel and the management API are at https://<APP_DOMAIN>"}`. Only the API Worker sends CORS headers, and
+  only on the client API (the panel calls the management API same-origin; the hub API sends none). `GET /me` reports the API host (or a preview's API Worker host) as
   `api_url` for the panel. Revoking a key, removing a member, deleting an org or suspending a person or org on the app
   Worker reaches the API Worker's per-isolate caches within their windows (`VERIFIED_KEY_TTL_MS`, `STANDING_TTL_MS`:
   30 s each), as it always reached the app Worker's other isolates.
@@ -1951,7 +1951,9 @@ Port of `internal/api/handlers/management` for the `/v9/management` routes that 
 control panel at `/` (`apps/web`, through `@commissary/contract`) and may change incompatibly: routes keep Go's response shapes where
 that is cheap, but scripts written for the Go server are not guaranteed to keep working. The upstream panel (`Cli-Proxy-API-Management-Center`) is not served:
 its address redirects to `/` (_Legacy panel address_ below), and the routes only it needed are gone (`requests/api-call`,
-the operational and log routes listed under _Also not ported_) or replaced by the config entry routes (_Config entries_). Auth is the Access admin gate only (`management/zones.ts` classifies `/v9/management*`, the
+the operational and log routes listed under _Also not ported_) or replaced by the config entry routes (_Config entries_).
+Three routes of Go's `/v0/management` tree are served, to allowance readers only, by the API Worker as the hub API
+(ADR 0052, "Hub API" below), not here. Auth is the Access admin gate only (`management/zones.ts` classifies `/v9/management*`, the
 panel paths and `/management.html` as `management`), or Commissary Cloud's sign-in (_Commissary Cloud_ below); Go's single
 management key is not ported, and the port's per-org management keys (_Management keys_ below) are its own design.
 
@@ -2159,10 +2161,12 @@ management key is not ported, and the port's per-org management keys (_Managemen
   `GET /provider-keys` carries them) and `GET /oauth/callback` (the local callback forwarder's target; `POST` is the panel's).
   The upstream panel's `X-CPA-Version` and `X-CPA-Support-Plugin` response headers are not sent either (deviation from Go).
 - **Not here**: `/oauth/*` (`oauth-routes.ts`, see _Provider OAuth logins_), `/observability/usage/*` (`usage-routes.ts`, see
-  "Usage accounting and observability"), plugins, Home, `/v0/management`, and (deviation from Go) `POST /requests/api-call`:
-  Go substitutes a credential's token into a request to any host the caller names, for the upstream panel's browser-side
-  quota and key probes; here those probes run server-side (`credentials/quota`, `provider-keys/probe`), so the route is not
-  ported and answers `404` (still behind the admin gate).
+  "Usage accounting and observability"), plugins, Home, `/v0/management` (three of its routes are the API Worker's hub
+  API, "Hub API" below; the app Worker answers the prefix `404` naming the API host), and (deviation from Go)
+  `POST /requests/api-call`: Go substitutes a credential's token into a request to any host the caller names, for the
+  upstream panel's browser-side quota and key probes; here those probes run server-side (`credentials/quota`,
+  `provider-keys/probe`), so the generic route is not ported and answers `404` (still behind the admin gate). The hub
+  API's narrow `api-call` relays a fixed list of calls only.
 - **Control panel** (`web-panel.ts`, `apps/web`): `GET /`, the panel's page paths (`/accounts`, `/keys`, `/models`, `/usage`,
   `/settings` and their sub-paths; `management/zones.ts` `PANEL_SECTIONS`) and `/assets/*` (hashed bundle files) are in the
   management zone, so only Access admins get them. Every page path answers the build's `index.html` (the browser router picks
@@ -2269,7 +2273,8 @@ management key is not ported, and the port's per-org management keys (_Managemen
 
 Workers addition with no Go counterpart: the upstream panel asks the provider usage endpoints itself, from the browser,
 through Go's `POST /requests/api-call` (not ported). Here the server does it, so tokens never reach the browser and the
-result is stored.
+result is stored. The hub API's relayed calls (below) reuse its token path and headers (`probeHeaders`) but store
+nothing.
 
 - **Flow** (`check.ts`): the ControlPlane resolves the account and its token (`quotaProbeTarget`: `ensureFresh`, then
   `target.ts`; the token Go's api-call substitutes for `$TOKEN$`, the Meta `dca_token`, the Devin session token; for a
@@ -2346,6 +2351,62 @@ result is stored.
   - The Codex subscription and reset-credit calls and the Antigravity tier call are skipped.
   - Windows without a percentage are dropped (`used_percent` is required).
   - Labels are English and fixed.
+
+## Hub API (`models/hub/`, `auth/authenticate.ts`, `apps/api/src/http/gate.ts`)
+
+ADR 0052. Allowance readers such as T3 Code poll a CLIProxyAPI hub: they list its auth files, ask it to call a
+provider's usage endpoint with an account's token, and clear cooldowns after redeeming a Codex reset credit. They send
+only `Authorization: Bearer <key>` (15 s timeout; a non-2xx or non-JSON answer is a failure) and cannot be changed. The
+API Worker serves those three routes of Go's management API as the hub API, beside the client API but not part of it:
+
+- **Routes** (`models/hub/routes.ts`, `HubApiLayer` from `@commissary/models/api`): `GET /v0/management/auth-files`
+  answers `{ files }`, each `{ id, auth_index, provider, email?, project_id?, id_token?: { chatgpt_account_id?,
+  plan_type? } }` (`hub/accounts.ts`: the file name as the management API names it, the executor key, the Antigravity
+  project, the Codex account id and plan; never a token or the raw id token). `POST /v0/management/api-call`
+  (`{ auth_index, method, url, header, data? }`) answers `{ status_code, body }`. `POST /v0/management/reset-quota`
+  (`{ auth_index }`) answers `{ status: "ok", auth_index, models }`, as Go and `POST /v9/management/routing/cooldown/reset`
+  do. Every answer is JSON, including the gate's refusals and an unknown route's `404 {"error":"Not found"}`. The schemas
+  are not in `@commissary/contract`: the panel never calls them.
+- **Relayed calls** (`hub/calls.ts`, `hub/relay.ts`): seven method and URL pairs: Codex `GET wham/usage`, `GET
+  wham/rate-limit-reset-credits` and `POST wham/rate-limit-reset-credits/consume`; Claude `GET api/oauth/usage`; xAI
+  `GET v1/billing?format=credits`; Antigravity `POST v1internal:retrieveUserQuotaSummary` (the daily host) and Google's
+  `GET oauth2/v2/userinfo`. A call matches when the URL is `https`, has no user info, port or fragment, and its
+  `URL.href` equals the entry's, and the method matches; anything else is `400 call not allowed` before any RPC or
+  fetch, and so is a call for an account of another provider (checked before any refresh). The caller's `header` is
+  never read; the quota check's headers (`quota/probe.ts` `probeHeaders`) are sent. `data` is refused on a `GET`, must be
+  exactly `{ redeem_request_id: <uuid>, credit_id: <string of at most 200> }` for the consume call, which is rebuilt
+  from those two fields, and is ignored for the quota summary, whose body is `{ project }` from the stored account (an account with no stored
+  project is `503 token unavailable` there, but still gets its token for Google's userinfo call). The
+  ControlPlane resolves the account and refreshes its token (`hubCallTarget`: `ensureFresh`, then `quota/target.ts`, as
+  the quota check's `quotaProbeTarget`), and the Worker makes the call (`sendRaw`, 15 s, `redirect: "manual"` so a 3xx
+  is relayed as its status and the token never follows it, at most 1 MiB). Errors: `404 auth not found`, `400` (a call
+  off the list or a bad body), `503 token unavailable` (no token, a failed refresh), `502` (transport failure, timeout,
+  too large an answer). A provider's non-2xx is still a `200` carrying its `status_code`. Every copy of the token in the
+  body is replaced by `[redacted]`, as written, JSON-escaped or URL-encoded; the provider's headers are dropped. Nothing clears a cooldown after a consume.
+- **Authentication** (`@commissary/auth` `authenticateManagementKey`): a management key and nothing else (no Access JWT,
+  session cookie, API key or dev bypass): `401 Missing API key` without `Authorization`, `Invalid API key` otherwise. On
+  Commissary Cloud the org and the issuer must be in good standing (the key branch every gate shares,
+  `managementKeyInStanding`). Every route needs `member`. The API Worker's gate is global: it classifies a request as
+  client API, hub API or public, and on the hub runs the cross-site checks of a management route (any foreign `Origin`
+  refused, JSON bodies only), the key, then on Commissary Cloud the plan's request-rate ceiling (`limitClientRate`), and
+  provides `AccessPrincipal` and `CurrentOrg`. Neither the client gate nor the client API's CORS applies: no
+  `Access-Control-*` header, no `204` preflight (`cors.ts`). The zone routes and the Access bypass of a stage with one
+  host include `/v0/management` (`API_WORKER_PREFIXES`, `infra/access-config.ts`); the app Worker answers the prefix with
+  a `404` naming the API host.
+- **Visibility**: on the hub, unlike the management API, a key acts as the member who issued it (its `ownerEmail`,
+  looked up as an Access sign-in is, without joining): viewer `{ member: <issuer>, admin: min(key role, issuer's
+  current role) >= admin }`. A key nobody issued is `{ member: undefined, admin: key role >= admin }`; a key whose issuer
+  has left the org is refused (`403`). Every route reaches only an enabled auth file of `codex`, `claude`, `xai` or
+  `antigravity` the viewer has `full` access to (`ownership.ts`): the issuer's own private accounts, and the shared ones
+  for an admin. Disabled accounts, `limited` ones, provider keys and other providers are absent from the list and `404`
+  on lookup, like an unknown or another org's `auth_index` (`listHubAccounts`, `hubCallTarget`, `resetHubCooldown`
+  share one resolver; `auth_index` matched case-insensitively as `findCredential` does).
+- **Recording**: one info log line per relayed call (`principal` `mkey:<id>`, `auth_index`, the entry's id, the
+  provider's status), never a body or a token. Quota reports are untouched.
+- **Differences from Go** (`internal/api/handlers/management`): no generic proxy (Go's `api-call` is an open proxy: it
+  substitutes the account's token into any URL, method, header and body the caller sends; Commissary's is the fixed list
+  of seven calls above, with its own headers and bodies); the reply carries no `header`; disabled accounts are hidden; no route aliases (only the three paths above);
+  every other `/v0/management` route answers `404`.
 
 ## Claude reset grants (`models/quota/reset-grant*.ts`, `models/management/reset-grant-routes.ts`)
 

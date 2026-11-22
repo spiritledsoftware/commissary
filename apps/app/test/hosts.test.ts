@@ -66,6 +66,27 @@ describe("the app Worker and the client API", () => {
         });
   });
 
+  it("refuses the hub API (ADR 0052) on any host, naming where it is served", async () => {
+    for (const path of [
+      "/v0/management/auth-files",
+      "/V0//management/api-call",
+      "/v0/management",
+    ]) {
+      expect(await answer(`http://localhost${path}`, {}), path).toEqual({
+        status: 404,
+        body: { error: "Not found: the hub API is served by the API Worker" },
+      });
+
+      expect(
+        await answer(`http://localhost${path}`, { API_DOMAIN: "api.example.com" }),
+        path,
+      ).toEqual({
+        status: 404,
+        body: { error: "Not found: the hub API is served at https://api.example.com" },
+      });
+    }
+  });
+
   it("names the API host as an https origin", () => {
     expect(apiOrigin({})).toBeUndefined();
     expect(apiOrigin({ API_DOMAIN: " " })).toBeUndefined();

@@ -26,7 +26,7 @@ import {
   type ManagementRoute,
   targetOrg,
 } from "./gate.ts";
-import { managementKeyIdentity, presentedManagementKey } from "./management-key.ts";
+import { managementKeyInStanding, presentedManagementKey } from "./management-key.ts";
 import type { AccessIdentity, Principal } from "./principal.ts";
 import { requireActivePerson, requireStanding } from "./standing.ts";
 
@@ -91,13 +91,7 @@ export const hostedManagementGate = (
     const managementKey = presentedManagementKey(headers);
 
     if (managementKey !== undefined) {
-      const { identity, key } = yield* managementKeyIdentity(
-        managementKey,
-        route.slug,
-        route.needs,
-      );
-
-      yield* requireStanding(key.org, key.ownerEmail);
+      const { identity } = yield* managementKeyInStanding(managementKey, route.slug, route.needs);
 
       return identity;
     }

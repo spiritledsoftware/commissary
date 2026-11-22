@@ -18,6 +18,11 @@ describe("client API paths of a stage with one host", () => {
     assert.include(zoneRoutedPrefixes({ hosted: true }), "/oauth/toolkits/client.json");
   });
 
+  it("route the hub API (ADR 0052) to the API Worker on both kinds of deployment", () => {
+    for (const hosted of [true, false])
+      assert.strictEqual(zoneRoutedPrefixes({ hosted }).at(-1), "/v0/management");
+  });
+
   it("let the self-hosted client API through Access, but not /mcp, which stays behind it", () => {
     assert.deepStrictEqual(CLIENT_API_PATHS, clientApiBypassPaths());
     assert.notInclude(CLIENT_API_PATHS, "/mcp");
@@ -33,6 +38,8 @@ describe("client API paths of a stage with one host", () => {
       "/responses",
       // Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which authorization servers fetch unsigned.
       "/oauth/toolkits/client.json",
+      // The hub API of allowance readers (ADR 0052), which send a management key and cannot pass Access.
+      "/v0/management",
     ]);
   });
 });

@@ -55,7 +55,7 @@ interface Answer {
 }
 
 /** A failed check: a message safe to store and show (no body, no token) and the upstream status when there was one. */
-interface ProbeFailure {
+export interface ProbeFailure {
   readonly message: string;
   readonly status?: number;
 }
@@ -67,27 +67,91 @@ const ok = (answer: Answer): boolean => answer.status >= 200 && answer.status < 
 
 const bearer = (token: string): string => `Bearer ${token}`;
 
-/** One upstream call with the 15 s bound; transport errors and timeouts fail with a fixed message. */
-const send = (
+/**
+ * A transport failure as a fixed message. A usage URL may come from a provider's `base_url`: the outbound guard's
+ * refusal (ADR 0044) is shown as it is.
+ */
+const transportFailure = (error: Error): ProbeFailure =>
+  failure(outboundRefusalOf(error)?.message ?? "usage request failed");
+
+/** An answered upstream call as it came: status and body text. */
+export interface RawAnswer {
+  readonly status: number;
+  readonly text: string;
+}
+
+/**
+ * One upstream call with the 15 s bound, answered as status and body text (the hub API's relayed calls,
+ * `hub/relay.ts`, and {@link send}); transport errors and timeouts fail with a fixed message. `maxBytes` refuses a
+ * longer body (declared or read) as a failure.
+ */
+export const sendRaw = (
   request: HttpClientRequest.HttpClientRequest,
-): Effect.Effect<Answer, ProbeFailure, HttpClient.HttpClient> =>
+  options: { readonly maxBytes?: number } = {},
+): Effect.Effect<RawAnswer, ProbeFailure, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    const response = yield* client.execute(request);
-    const text = yield* response.text;
+    const response = yield* Effect.mapError(client.execute(request), transportFailure);
+    const limit = options.maxBytes;
+    const declared = Number(response.headers["content-length"] ?? "");
 
-    return { status: response.status, body: tryParseJson(text) };
+    if (limit !== undefined && Number.isFinite(declared) && declared > limit)
+      return yield* Effect.fail(failure("usage response too large"));
+    const body = yield* Effect.mapError(response.arrayBuffer, transportFailure);
+
+    if (limit !== undefined && body.byteLength > limit)
+      return yield* Effect.fail(failure("usage response too large"));
+
+    return { status: response.status, text: new TextDecoder().decode(body) };
   }).pipe(
-    // A usage URL may come from a provider's `base_url`: the outbound guard's refusal (ADR 0044) is shown as it is.
-    Effect.mapError((error) =>
-      failure(outboundRefusalOf(error)?.message ?? "usage request failed"),
-    ),
     Effect.timeoutOrElse({
       duration: TIMEOUT,
       orElse: () => Effect.fail(failure("usage request timed out")),
     }),
     Effect.provideService(HttpClient.TracerPropagationEnabled, false),
   );
+
+/** One upstream call with the 15 s bound, its body parsed as JSON ({@link sendRaw}). */
+const send = (
+  request: HttpClientRequest.HttpClientRequest,
+): Effect.Effect<Answer, ProbeFailure, HttpClient.HttpClient> =>
+  Effect.map(sendRaw(request), (answer) => ({
+    status: answer.status,
+    body: tryParseJson(answer.text),
+  }));
+
+/**
+ * The headers of an upstream call for `target`, as Commissary builds them (never the caller's): the provider's fixed
+ * headers and the bearer token, plus Codex's account and xAI's subject. Shared by the quota probes and the hub API's
+ * relayed calls (`hub/relay.ts`).
+ */
+export const probeHeaders = (
+  target: Pick<QuotaProbeTarget, "provider" | "token" | "accountId" | "userId">,
+): Effect.Effect<Record<string, string>> =>
+  Effect.gen(function* () {
+    const authorization = bearer(target.token);
+
+    switch (target.provider) {
+      case "claude":
+        return { ...CLAUDE_HEADERS, authorization };
+      case "codex":
+        return {
+          ...CODEX_HEADERS,
+          authorization,
+          ...(target.accountId === undefined ? {} : { "chatgpt-account-id": target.accountId }),
+        };
+      case "antigravity":
+        return { ...ANTIGRAVITY_HEADERS, authorization };
+      case "xai":
+        return {
+          ...xaiBillingHeaders(yield* currentXaiClientVersion),
+          authorization,
+          ...(target.userId === undefined ? {} : { "x-userid": target.userId }),
+        };
+      default:
+        return { authorization };
+    }
+  });
 
 /** A 2xx answer's body, else the status as the failure. */
 const expectOk = (answer: Answer): Effect.Effect<Json | undefined, ProbeFailure> =>
@@ -107,7 +171,7 @@ interface Usage {
 }
 
 const claude = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
-  const headers = { ...CLAUDE_HEADERS, authorization: bearer(target.token) };
+  const headers = yield* probeHeaders(target);
   // The grant status is dated by when its read started (a claim answered meanwhile is newer than it).
   const startedAt = yield* Clock.currentTimeMillis;
 
@@ -149,11 +213,7 @@ const claude = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
 });
 
 const codex = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
-  const headers = {
-    ...CODEX_HEADERS,
-    authorization: bearer(target.token),
-    ...(target.accountId === undefined ? {} : { "chatgpt-account-id": target.accountId }),
-  };
+  const headers = yield* probeHeaders(target);
 
   const body = yield* expectOk(yield* get(CODEX_USAGE_URL, headers));
 
@@ -164,7 +224,7 @@ const codex = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
 
 /** Hosts in order; the first 2xx with a `groups` array wins, a 403/404 is the reported failure before others. */
 const antigravity = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
-  const headers = { ...ANTIGRAVITY_HEADERS, authorization: bearer(target.token) };
+  const headers = yield* probeHeaders(target);
   let priority: ProbeFailure | undefined;
   let last: ProbeFailure = failure("usage request failed");
   let answered = false;
@@ -214,11 +274,7 @@ const kimi = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
 
 /** Weekly credits and the monthly allowance; either endpoint may carry either figure (panel `mergeXaiBillingSummaries`). */
 const xai = Effect.fnUntraced(function* (target: QuotaProbeTarget) {
-  const headers = {
-    ...xaiBillingHeaders(yield* currentXaiClientVersion),
-    authorization: bearer(target.token),
-    ...(target.userId === undefined ? {} : { "x-userid": target.userId }),
-  };
+  const headers = yield* probeHeaders(target);
 
   const [weekly, monthly] = yield* Effect.all(
     [

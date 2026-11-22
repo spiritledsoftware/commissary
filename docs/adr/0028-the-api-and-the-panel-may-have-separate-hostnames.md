@@ -1,5 +1,5 @@
 ---
-status: partly superseded by ADR-0030
+status: partly superseded by ADR-0030, amended by ADR-0052
 ---
 
 # The API and the panel may have separate hostnames

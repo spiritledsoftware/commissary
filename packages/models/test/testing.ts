@@ -91,6 +91,8 @@ export { LEASE_RENEW_INTERVAL_MS, runQuotaSweep, sweepQuotas } from "../src/quot
 
 export { CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL } from "../src/quota/claude.ts";
 
+export { probeHeaders } from "../src/quota/probe.ts";
+
 export { claimResetGrant } from "../src/quota/reset-grant-flow.ts";
 
 export {

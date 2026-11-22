@@ -132,6 +132,13 @@ import {
   settleClaim,
 } from "./quota/reset-grants.ts";
 import { buildQuotaTarget, type QuotaTargetResult } from "./quota/target.ts";
+import { type HubAccount, hubAccount } from "./hub/accounts.ts";
+import {
+  type HubProvider,
+  type HubResetResult,
+  type HubTargetResult,
+  isHubProvider,
+} from "./hub/calls.ts";
 
 const decodePickRequest = Schema.decodeUnknownSync(PickRequest);
 
@@ -1308,6 +1315,84 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     | { readonly ok: true; readonly authIndex: string; readonly models: ReadonlyArray<string> }
     | { readonly ok: false } {
     const target = findCredential(this.#scope(viewer, "full"), ref, this.#authIndex);
+    const reset = target === undefined ? undefined : this.#pool.resetCooldown(target.credential.id);
+
+    return target === undefined || reset === undefined
+      ? { ok: false }
+      : { ok: true, authIndex: this.#authIndex(target.credential.id), models: reset.models };
+  }
+
+  /**
+   * The account a hub API request names by `authIndex` (ADR 0052), `undefined` when it is not on the hub for `viewer`:
+   * an enabled auth file of a provider the hub's readers read, which `viewer` manages in full (their own private
+   * accounts; the shared ones for an org admin). Disabled accounts, provider keys, other providers and accounts the
+   * viewer only sees (`limited`) do not exist there.
+   */
+  #hubAccount(authIndex: string, viewer: Viewer): RefreshTarget | undefined {
+    return findCredential(this.#hubAccounts(viewer), { authIndex }, this.#authIndex);
+  }
+
+  /** Every account on the hub for `viewer` (see {@link #hubAccount}). */
+  #hubAccounts(viewer: Viewer): RefreshTarget[] {
+    return this.#scope(viewer, "full").filter(
+      ({ credential }) =>
+        credential.source === "file" &&
+        !credential.disabled &&
+        isHubProvider(executorKey(credential)),
+    );
+  }
+
+  /** The hub API's account list (`GET /v0/management/auth-files`, ADR 0052): no token, no raw id token. */
+  listHubAccounts(viewer: Viewer): HubAccount[] {
+    return this.#hubAccounts(viewer).map(({ credential }) =>
+      hubAccount(credential, this.#authIndex(credential.id)),
+    );
+  }
+
+  /**
+   * The token target of a relayed call (`POST /v0/management/api-call`, ADR 0052) to an endpoint of `provider` for
+   * the account `authIndex` names: refreshed first when needed, as {@link quotaProbeTarget} does. An account of
+   * another provider is `wrong_provider`, answered before any refresh. `needsProject` is whether the call sends the
+   * account's Cloud project (Antigravity's quota summary): without it (the userinfo call) an account with no stored
+   * project still gets its token. Carries token material: the Worker uses it for the upstream call only.
+   */
+  async hubCallTarget(
+    authIndex: string,
+    provider: HubProvider,
+    viewer: Viewer,
+    needsProject = true,
+  ): Promise<HubTargetResult> {
+    const target = this.#hubAccount(authIndex, viewer);
+
+    if (target === undefined) return { ok: false, error: "not_found" };
+
+    if (executorKey(target.credential) !== provider) return { ok: false, error: "wrong_provider" };
+    const fresh = await this.#refresh.ensureFresh(target.credential.id);
+
+    if (!fresh.ok) return { ok: false, error: "unavailable", message: "token refresh failed" };
+
+    if (provider === "antigravity" && !needsProject) {
+      const token = apiCallToken(fresh.credential);
+
+      return token === ""
+        ? { ok: false, error: "unavailable", message: "credential has no access token" }
+        : { ok: true, target: { id: fresh.credential.id, provider, token } };
+    }
+
+    const built = buildQuotaTarget(fresh.credential, provider);
+
+    if (built.ok) return { ok: true, target: built.target };
+
+    return {
+      ok: false,
+      error: "unavailable",
+      message: built.error === "unavailable" ? built.message : "token unavailable",
+    };
+  }
+
+  /** Clears the cooldowns of the account `authIndex` names on the hub (`POST /v0/management/reset-quota`, ADR 0052). */
+  resetHubCooldown(authIndex: string, viewer: Viewer): HubResetResult {
+    const target = this.#hubAccount(authIndex, viewer);
     const reset = target === undefined ? undefined : this.#pool.resetCooldown(target.credential.id);
 
     return target === undefined || reset === undefined

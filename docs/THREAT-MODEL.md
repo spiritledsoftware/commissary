@@ -75,6 +75,10 @@ Every Worker sets the `global_fetch_strictly_public` compatibility flag, so a fe
 - An OAuth 1.0a sign-in to a toolkit (#206) has no PKCE and no `state` parameter: the sign-in's `state` rides in the `oauth_callback` URL Commissary signs into its temporary credential request, and the callback goes through the same gate, bound to the member who started the sign-in. Its `oauth_token` must be the temporary token that sign-in got (kept sealed in its flow with the token's secret), so a callback with another token finishes nothing; the verifier is used once. The consumer's secret is the toolkit's OAuth app's, sealed.
 - A toolkit's **credential settings** (#206: OAuth 1.0a's signature method and realm, a NetSuite account, a JWT's algorithm, claims and token endpoint, a GitHub App's API, a token exchange's endpoint, AWS's region and service, a compound credential's template) are not secret: they are stored in the clear, shown to everyone who reads the toolkit (members connecting their own credential need them) and kept in its export. A manager who puts a literal secret into a template or a claim makes it visible to those readers; the secret belongs in the credential's fields. Their URLs pass the outbound guard on save and on use, and a compound template's fields are percent-encoded into a base URL, so a field cannot change its host.
 
+### Allowance readers on the hub API
+
+The hub API (ADR 0052) lets a management key, kept in a desktop application such as T3 Code, read account emails, plans, project ids and allowances and have Commissary call a provider with an account's token, outside Access. It is a fixed list, not a proxy: seven method and URL pairs, for an account of that provider only, with headers and bodies Commissary builds and the caller's headers ignored; the token is redacted from the answer, and a redirect is relayed, never followed. The key acts as its issuer, so it reaches only the accounts that member manages in full, and nothing once they leave the org. Every relayed call leaves a log line.
+
 ### Live View and handoff
 
 A Live View link is a bearer link. Commissary mints it only for the session's member, with the shortest lifetime (60 seconds to open the connection), shows it only in the panel, and never gives it to the model or a log. The open frame outlives its link, so once a Live View is minted the session marks what a person types for the rest of its life. Before each later call acts, it masks from the model the fields typed into or changed since the last call. In a tab or frame the marking never reached, or a page where it could not be installed, it masks every field that is not empty. A field marked as typed into is also masked whenever a call reads the page, so typing while a call runs is masked in that call; in a frame without the marking, what is typed while a call runs shows in that call and is masked from the next one.
@@ -84,7 +88,7 @@ This masking keeps what a person types away from the model. It does not protect 
 ### Running up costs and exhausting resources
 
 - Cloudflare absorbs volumetric attacks.
-- Spend limits bound members, teams, shared credentials and keys. On Commissary Cloud, plan limits, the billing cap and a per-org request-rate ceiling bound orgs; the ceiling covers the client API, and the MCP endpoint. The management API has no ceiling: it serves people and management keys.
+- Spend limits bound members, teams, shared credentials and keys. On Commissary Cloud, plan limits, the billing cap and a per-org request-rate ceiling bound orgs; the ceiling covers the client API, the MCP endpoint and the hub API (ADR 0052). The management API has no ceiling: it serves people and management keys.
 - A self-hosted Commissary has no default caps (ADR 0041): a member can run up the operator's Cloudflare bill within their grants.
 
 ### Supply chain
@@ -110,6 +114,7 @@ This masking keeps what a person types away from the model. It does not protect 
 - Prompt injection can steer an agent or a client within its reach; exfiltration through a chain of tools or a browser navigation is the admin's choice to allow.
 - A self-hosted Commissary has no rate limits or caps.
 - On Commissary Cloud the request-rate ceiling fails open, and Turnstile alone guards sign-up.
+- On a self-hosted Commissary, a management key reaches the hub API without passing Access (ADR 0052); on Commissary Cloud an admin key held by an allowance reader also opens the whole management API. A narrower key kind for the hub is deferred.
 - On a self-hosted Commissary, an MCP client signed in through Access has its member's whole reach, narrowed only by `?toolkits=`, and is cut off by revoking the person's Access session (ADR 0045).
 
 ## Not in v1

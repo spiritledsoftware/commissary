@@ -56,8 +56,10 @@ export const recentRequestBuckets = (
     failed: entry.failed,
   }));
 
-/** Codex `id_token` claims the panel shows (plan type and subscription window). */
-const codexClaims = (credential: Credential): JsonObject | undefined => {
+/** Codex `id_token` claims the panel shows (plan type and subscription window); the hub API reads the plan too. */
+export const codexClaims = (
+  credential: Pick<Credential, "provider" | "metadata">,
+): JsonObject | undefined => {
   if (credential.provider !== "codex") return undefined;
   const token = text(credential.metadata.id_token);
 

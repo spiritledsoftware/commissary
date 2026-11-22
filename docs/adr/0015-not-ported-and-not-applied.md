@@ -1,5 +1,5 @@
 ---
-status: partly superseded by ADR-0025
+status: partly superseded by ADR-0025, amended by ADR-0052
 ---
 
 # What the port leaves out, and how it treats the Go server's keys

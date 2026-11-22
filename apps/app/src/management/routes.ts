@@ -9,8 +9,10 @@
  * `GET /server/latest-version`, the static `routing/model-definitions/:channel` catalog, `GET /oauth/callback` and
  * `GET /observability/usage/api-keys` (all four only fed the upstream panel; the control panel reads
  * `routing/models`, `credentials/models`, `POST /oauth/callback` and `provider-keys`), the deprecated `/v0/management`
- * tree, `POST /requests/api-call` (the upstream panel's token-substituting upstream probe; quota and key checks and
- * Claude reset grants run server-side, so tokens never leave the Worker), and the upstream panel page itself (Go serves it at
+ * tree (three of its routes are now the hub API, served by the API Worker to allowance readers with a management key,
+ * ADR 0052; this Worker answers the prefix `404` naming the API host), the generic `POST /requests/api-call` (the
+ * upstream panel's token-substituting upstream probe, still absent; quota and key checks and Claude reset grants run
+ * server-side, and the hub API's `api-call` relays a fixed list of calls only, so tokens never leave the Worker), and the upstream panel page itself (Go serves it at
  * `/management.html`; here that path redirects to `/`). The upstream panel's `X-CPA-Version` and
  * `X-CPA-Support-Plugin` response headers are not sent. The org's members, teams and service tokens (`/members`,
  * `/membership`, `/teams`, `/service-tokens`) are in `member-routes.ts`; Commissary Cloud's per-org single sign-on

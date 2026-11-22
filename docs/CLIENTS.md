@@ -323,6 +323,25 @@ bearer_token_env_var = "COMMISSARY_API_KEY"
 }
 ```
 
+## T3 Code (usage hub)
+
+T3 Code shows each account's allowances by polling a CLIProxyAPI hub. Commissary answers it with the **hub API** (ADR
+0052): `GET /v0/management/auth-files`, `POST /v0/management/api-call` and `POST /v0/management/reset-quota`, for
+Codex, Claude, xAI and Antigravity accounts.
+
+- **Hub URL**: the API URL, the address API keys are sent to: the API host (`https://api.example.com`); the app host on
+  a stage with one host (`https://commissary.example.com`); a preview's API Worker `workers.dev` URL. The panel shows it
+  (`GET /me` `api_url`). On a self-hosted stage with a separate API host, pointing T3 Code at the app host gets Access's
+  sign-in redirect (and the app Worker's `404` naming the API host), not the hub.
+- **Key**: a **management key** (`cmsm_…`), not an API key. Issue it yourself in the panel under **Management keys**:
+  the hub acts as you, the key's issuer. A `member` key shows your own private accounts; an `admin` key (if you are an
+  admin) adds the org's shared accounts. Disabled accounts and provider keys are not listed. If you leave the org, the
+  key stops working; revoke it when you stop using T3 Code.
+- **One hub entry per org**: a key belongs to one org, so add one hub per org whose accounts you want to see.
+
+T3 Code reads allowances only through seven fixed provider calls, and can redeem a Codex reset credit and clear an
+account's cooldowns; Commissary never hands it a token.
+
 ## Browser users
 
 Anyone allowed by an Access Allow policy who is a member of an org (added by an org admin, or joined through auto-join,

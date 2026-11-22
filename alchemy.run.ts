@@ -418,8 +418,8 @@ export default Alchemy.Stack(
         },
       });
 
-    // The API Worker (apps/api): the client API and the cron jobs. Its own workers.dev URL on a preview, the API host on a
-    // stage that has one, else zone routes for the client API paths on the app host (`zoneRoutedPrefixes`: a route
+    // The API Worker (apps/api): the client API, the hub API (ADR 0052) and the cron jobs. Its own workers.dev URL on a
+    // preview, the API host on a stage that has one, else zone routes for their paths on the app host (`zoneRoutedPrefixes`: a route
     // pattern matches every path that starts with it, as the Workers match them, so `/v1*` covers `/v1beta`; on a
     // self-hosted stage not `/mcp`, which the app Worker serves behind Access, ADR 0045). Under `alchemy dev` it serves
     // its own port.

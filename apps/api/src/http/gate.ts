@@ -1,6 +1,6 @@
 /**
- * The API Worker's client gate (ADR 0022, ADR 0030): a client API request must carry a credential
- * `@commissary/auth`'s `authenticateClient` accepts (an API key, or an Access sign-in where the org still accepts them;
+ * The API Worker's gate (ADR 0022, ADR 0030), for the client API and the hub API (ADR 0052). A client API request must
+ * carry a credential `@commissary/auth`'s `authenticateClient` accepts (an API key, or an Access sign-in where the org still accepts them;
  * on Commissary Cloud an API key, under the request-rate ceiling of the org's plan, `@commissary/billing`), after the
  * cross-site checks (`crossSiteRejection`). On success the principal is available to handlers as `AccessPrincipal`, and
  * `CurrentOrg` is the org the API key names. Any new client-facing surface (the MCP endpoint, #197) must sit behind
@@ -12,6 +12,12 @@
  * `resource_metadata` is Commissary Cloud's OAuth server's, #200), so an MCP client asks for a key rather than
  * retrying; there an MCP client may send an access token of that server instead of an API key, which the gate swaps
  * for the key it stands for (`withMcpAccessToken`), and a `503` answers when that server's store cannot be read.
+ *
+ * The hub API (`/v0/management*`) is not the client API: its requests are classified apart (`hubGate`) and take a
+ * management key only (`authenticateManagementKey`), after the cross-site checks of a management route (JSON bodies
+ * only, any foreign `Origin` refused), and on Commissary Cloud count against the same ceiling. The key acts as its
+ * issuer (`AccessPrincipal`) in its own org (`CurrentOrg`). The gate is global, so no spelling of a path under the
+ * prefix reaches a handler (or the router's 404) without a key.
  */
 import { Effect, Layer, Result } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -20,6 +26,7 @@ import {
   AccessJwks,
   AccessPrincipal,
   authenticateClient,
+  authenticateManagementKey,
   type AuthConfig,
   type AuthDirectory,
   crossSiteRejection,
@@ -33,6 +40,7 @@ import { mcpChallenge, withMcpAccessToken } from "@commissary/tools/api";
 import {
   CurrentOrg,
   isClientApiPath,
+  isHubApiPath,
   isMcpPath,
   isSystemOnePath,
   normalizedPath,
@@ -41,17 +49,57 @@ import {
 import { CorsLayer } from "./cors.ts";
 
 /**
- * Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not),
- * and Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which an authorization server fetches without a
- * key.
+ * What a request URL is to the gate: the hub API (ADR 0052); open to anyone (any other path but the client API, and
+ * Commissary's CIMD document of toolkits' OAuth sign-ins, #202, which an authorization server fetches without a key);
+ * or the client API (a URL that cannot be parsed included).
  */
-const isPublic = (requestUrl: string): boolean => {
+const classify = (requestUrl: string): "hub" | "public" | "client" => {
   const path = normalizedPath(requestUrl);
 
-  return path !== undefined && (!isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH);
+  if (path === undefined) return "client";
+
+  if (isHubApiPath(path)) return "hub";
+
+  return !isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH ? "public" : "client";
 };
 
-/** Global middleware: authenticates every client API request (see the module comment). */
+/** The hub API to the cross-site checks: a management route of no panel page that takes JSON bodies only. */
+const HUB_TARGET = { panelPage: false, bodyTypes: [] } as const;
+
+/**
+ * The hub API's gate (ADR 0052): the cross-site checks of a management route, then a management key (member role) acting
+ * as its issuer, under the request-rate ceiling on Commissary Cloud. `app` runs with `AccessPrincipal` and `CurrentOrg`
+ * provided, or the refusal is answered.
+ */
+const hubGate = <E, R>(
+  request: HttpServerRequest.HttpServerRequest,
+  app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+) =>
+  Effect.gen(function* () {
+    const rejection = crossSiteRejection(
+      request.method,
+      request.headers,
+      request.originalUrl,
+      HUB_TARGET,
+    );
+
+    if (rejection !== undefined) return refusalResponse(rejection.status, rejection.message);
+
+    const authenticated = yield* Effect.result(
+      authenticateManagementKey(request.headers, "member").pipe(
+        Effect.tap((identity) => limitClientRate(identity.org)),
+      ),
+    );
+
+    if (Result.isFailure(authenticated)) return yield* accessErrorResponse(authenticated.failure);
+
+    return yield* app.pipe(
+      Effect.provideService(AccessPrincipal, authenticated.success),
+      Effect.provideService(CurrentOrg, authenticated.success.org),
+    );
+  });
+
+/** Global middleware: gates every client API request (see the module comment). */
 export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
   Effect.gen(function* () {
     // Resolved when the layer is built (once per isolate); `AuthConfig` stays a per-request service.
@@ -60,9 +108,12 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
     return (app) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
+        const kind = classify(request.originalUrl);
 
-        if (isPublic(request.originalUrl))
+        if (kind === "public")
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);
+
+        if (kind === "hub") return yield* hubGate(request, app);
 
         const dialect = isSystemOnePath(request.originalUrl) ? "systemone" : "flat";
 

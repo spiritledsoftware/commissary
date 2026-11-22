@@ -1,8 +1,8 @@
-// What the API Worker serves (ADR 0028, ADR 0030): the client API and `/healthz`, wherever it answers: on the API host
-// (`API_DOMAIN`), through zone routes on the app host, or on a preview's workers.dev URL. Every other path is the app
+// What the API Worker serves (ADR 0028, ADR 0030): the client API, the hub API (ADR 0052) and `/healthz`, wherever it
+// answers: on the API host (`API_DOMAIN`), through zone routes on the app host, or on a preview's workers.dev URL. Every other path is the app
 // Worker's (its panel, sign-in and management API), and is refused before the router with a 404 that names the app host
 // when the deployment has one (`APP_DOMAIN`). The app Worker refuses the client API in turn (apps/app/src/http/hosts.ts).
-import { isClientApiPath, normalizedPath } from "@commissary/core";
+import { isClientApiPath, isHubApiPath, normalizedPath } from "@commissary/core";
 import { PROTECTED_RESOURCE_METADATA_PATH } from "@commissary/tools/api";
 import type { ApiBindings } from "../worker-env.ts";
 
@@ -19,7 +19,7 @@ const notFound = (message: string): Response =>
 
 /**
  * The answer to a request for a path the API Worker does not serve, `undefined` when the request goes on to the router:
- * the client API (and a URL that cannot be parsed, which the gate refuses), `/healthz` and the MCP endpoint's RFC 9728
+ * the client API (and a URL that cannot be parsed, which the gate refuses), the hub API, `/healthz` and the MCP endpoint's RFC 9728
  * metadata (Commissary Cloud's OAuth server's, #200; unknown without it) go on.
  */
 export const misdirected = (
@@ -31,6 +31,7 @@ export const misdirected = (
   if (
     path === undefined ||
     isClientApiPath(path) ||
+    isHubApiPath(path) ||
     path === HEALTH_PATH ||
     path === PROTECTED_RESOURCE_METADATA_PATH
   )
