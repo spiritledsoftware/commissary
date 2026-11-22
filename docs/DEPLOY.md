@@ -550,13 +550,18 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   on the API Worker's output, so the client API never leaves Access while a Worker that only reads the Access edge's JWT
   serves it), an Access application with a Bypass policy on the client API paths (`/v1*`, `/v1beta*`, `/v1internal*`,
   `/openai/v1*`, `/backend-api/codex*`, `/chat/completions`, `/completions`, `/responses`,
-  `/oauth/toolkits/client.json`; not `/mcp`), so clients reach the
+  `/oauth/toolkits/client.json`, and last the hub API's `/v0/management*`, ADR 0052; not `/mcp`), so clients reach the
   API Worker with an API key and no Access sign-in; an API host or a preview needs none
   ([ACCESS.md](ACCESS.md#api-keys)). From that deploy on, clients that send Access service token headers to those paths
   are refused: move them to API keys first ([MIGRATION.md](MIGRATION.md#5-move-clients-to-api-keys)).
   `cloudflared access` tokens (`cf-access-token`) keep working in `global` while its `access_clients` setting is on. The
   keys live in each org's ControlPlane (tables created on first use): no migration to run. With your own application
-  (`ACCESS_AUD`) the deploy creates no bypass; add one yourself, `/oauth/toolkits/client.json` included.
+  (`ACCESS_AUD`) the deploy creates no bypass; add one yourself, `/oauth/toolkits/client.json` and `/v0/management`
+  included (without `/v0/management`, allowance readers such as T3 Code get Access's sign-in redirect instead of the
+  hub API).
+- **Hub API** (ADR 0052): the API Worker serves `/v0/management/auth-files`, `/api-call` and `/reset-quota` to
+  allowance readers with a management key ([CLIENTS.md](CLIENTS.md#t3-code-usage-hub)); on a stage with one host its
+  zone route and the bypass come with the deploy. No binding, secret or migration.
 - **MCP endpoint.** The client API gains `/mcp` (Tools, #197): API keys on the API host (a preview: the API Worker's
   URL), and no binding, secret or migration (upstream sessions live in each org's ControlPlane, a table created on
   first use).
