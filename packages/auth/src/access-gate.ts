@@ -15,7 +15,7 @@ import {
   type ManagementRoute,
   targetOrg,
 } from "./gate.ts";
-import { managementKeyIdentity, presentedManagementKey } from "./management-key.ts";
+import { managementKeyInStanding, presentedManagementKey } from "./management-key.ts";
 import type { AccessIdentity, AdmissiblePrincipal } from "./principal.ts";
 
 export const ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
@@ -71,7 +71,7 @@ export const accessGate = (
     const managementKey = route === undefined ? undefined : presentedManagementKey(headers);
 
     if (managementKey !== undefined) {
-      const { identity } = yield* managementKeyIdentity(managementKey, slug, needs);
+      const { identity } = yield* managementKeyInStanding(managementKey, slug, needs);
 
       return identity;
     }

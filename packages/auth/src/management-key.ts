@@ -19,10 +19,13 @@ import {
   makeOrgCache,
 } from "@commissary/core";
 import { orgExists, VERIFIED_KEY_TTL_MS } from "./api-key.ts";
+import { AuthConfig } from "./config.ts";
 import { AuthDirectory, directoryFailure } from "./directory.ts";
 import { looksLikeManagementKey, parseManagementKey } from "./keys.ts";
 import { type AccessIdentity, makeIdentity } from "./principal.ts";
+import { isHosted } from "./mode.ts";
 import { roleAtLeast, type RouteAccess } from "./roles.ts";
+import { requireStanding } from "./standing.ts";
 
 export interface VerifiedManagementKey {
   readonly org: OrgId;
@@ -139,4 +142,27 @@ export const managementKeyIdentity = (
     );
 
     return { identity, key };
+  });
+
+/**
+ * {@link managementKeyIdentity}, and on Commissary Cloud the standing of the key's org and issuer (403 `Suspended`):
+ * the management key branch every gate shares (`access-gate.ts`, `hosted-gate.ts`, the hub API's
+ * `authenticateManagementKey`).
+ */
+export const managementKeyInStanding = (
+  text: string,
+  slug: string | undefined,
+  needs: RouteAccess,
+): Effect.Effect<
+  { readonly identity: AccessIdentity; readonly key: VerifiedManagementKey },
+  UnauthorizedError | ForbiddenError | NotFoundError | InternalError,
+  AuthConfig | AuthDirectory
+> =>
+  Effect.gen(function* () {
+    const verified = yield* managementKeyIdentity(text, slug, needs);
+
+    if (isHosted(yield* AuthConfig))
+      yield* requireStanding(verified.key.org, verified.key.ownerEmail);
+
+    return verified;
   });

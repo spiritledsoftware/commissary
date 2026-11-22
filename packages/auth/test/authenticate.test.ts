@@ -14,6 +14,7 @@ import {
   type AuthDirectory,
   authenticateClient,
   authenticateManagement,
+  authenticateManagementKey,
   reauthorizeClient,
   ensureSignedUp,
   NOT_SIGNED_IN,
@@ -417,6 +418,164 @@ describe("authenticateManagement", () => {
       );
     },
   );
+});
+
+describe("authenticateManagementKey (the hub API, ADR 0052)", () => {
+  const CLOUD: AuthBindings = { ...SELF_HOSTED, COMMISSARY_MODE: "cloud" };
+
+  const bearer = (text: string) => ({ authorization: `Bearer ${text}` });
+
+  it.effect(
+    "takes a management key in its org, up to its role, as the member who issued it",
+    () => {
+      const { directory, acme } = staffed();
+      const erinId = directory.addMember(acme, "erin@example.com", "member");
+      const memberKey = directory.issueManagementKey(acme, "t3", "member", "erin@example.com");
+      const adminKey = directory.issueManagementKey(acme, "t3", "admin", "carol@example.com");
+
+      return run(
+        directory,
+        Effect.gen(function* () {
+          const member = yield* authenticateManagementKey(bearer(memberKey), "member");
+
+          assert.strictEqual(member.org, acme);
+          assert.strictEqual(member.principal.kind, "mkey");
+          assert.strictEqual(member.principalId.startsWith("mkey:"), true);
+          assert.strictEqual(member.role, "member");
+          assert.strictEqual(member.memberId, erinId);
+
+          const admin = yield* authenticateManagementKey(bearer(adminKey), "member");
+
+          assert.strictEqual(admin.role, "admin");
+          assert.isString(admin.memberId);
+
+          assert.strictEqual(
+            (yield* Effect.flip(authenticateManagementKey(bearer(memberKey), "admin")))._tag,
+            "ForbiddenError",
+          );
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "caps the key's role at its issuer's current one, and a key of nobody acts as nobody",
+    () => {
+      const { directory, acme } = staffed();
+      // dan is a plain member now: the admin key he issued earlier acts as a member.
+      const demoted = directory.issueManagementKey(acme, "t3", "admin", "dan@example.com");
+      const nobodys = directory.issueManagementKey(acme, "script", "admin");
+
+      return run(
+        directory,
+        Effect.gen(function* () {
+          const capped = yield* authenticateManagementKey(bearer(demoted), "member");
+
+          assert.strictEqual(capped.role, "member");
+          assert.isString(capped.memberId);
+
+          const plain = yield* authenticateManagementKey(bearer(nobodys), "member");
+
+          assert.strictEqual(plain.role, "admin");
+          assert.isUndefined(plain.memberId);
+        }),
+      );
+    },
+  );
+
+  it.effect("refuses a key whose issuer left the org", () => {
+    const { directory, acme } = staffed();
+    const text = directory.issueManagementKey(acme, "t3", "admin", "dan@example.com");
+
+    directory.removeMember(acme, "dan@example.com");
+
+    return run(
+      directory,
+      Effect.gen(function* () {
+        const refused = yield* Effect.flip(authenticateManagementKey(bearer(text), "member"));
+
+        assert.strictEqual(refused._tag, "ForbiddenError");
+      }),
+    );
+  });
+
+  it.effect("takes nothing but a management key, and no revoked one", () => {
+    const { directory, acme } = staffed();
+    const apiKey = directory.issueApiKey(acme, "dan@example.com");
+    const revoked = directory.issueManagementKey(acme, "old", "admin");
+
+    directory.revokeKey(acme, revoked);
+
+    return run(
+      directory,
+      Effect.gen(function* () {
+        const access = yield* signedIn(userClaims("admin@example.com"));
+
+        const refusal = (headers: Record<string, string>) =>
+          Effect.flip(authenticateManagementKey(headers, "member")).pipe(
+            Effect.map((error) => `${error._tag}: ${error.message}`),
+          );
+
+        assert.strictEqual(yield* refusal({}), "UnauthorizedError: Missing API key");
+        assert.strictEqual(yield* refusal(access), "UnauthorizedError: Missing API key");
+        assert.strictEqual(
+          yield* refusal({ cookie: "session" }),
+          "UnauthorizedError: Missing API key",
+        );
+        assert.strictEqual(yield* refusal(bearer(apiKey)), "UnauthorizedError: Invalid API key");
+
+        assert.strictEqual(
+          yield* refusal(bearer(access["cf-access-jwt-assertion"])),
+          "UnauthorizedError: Invalid API key",
+        );
+
+        assert.strictEqual(yield* refusal(bearer(revoked)), "UnauthorizedError: Invalid API key");
+      }),
+    );
+  });
+
+  it.effect("ignores the dev bypass", () => {
+    const { directory } = staffed();
+
+    return run(
+      directory,
+      Effect.gen(function* () {
+        assert.strictEqual(
+          (yield* Effect.flip(authenticateManagementKey({}, "member"))).message,
+          "Missing API key",
+        );
+      }),
+      { ...SELF_HOSTED, ACCESS_TEAM_DOMAIN: "", ACCESS_AUD: "", ACCESS_DEV_BYPASS: "true" },
+    );
+  });
+
+  it.effect("refuses on Commissary Cloud a key of a suspended org or issuer", () => {
+    const { directory, acme } = staffed();
+    const carols = directory.issueManagementKey(acme, "t3", "admin", "carol@example.com");
+    const dans = directory.issueManagementKey(acme, "t3", "member", "dan@example.com");
+
+    directory.suspendPerson("carol@example.com");
+
+    return run(
+      directory,
+      Effect.gen(function* () {
+        assert.strictEqual(
+          (yield* Effect.flip(authenticateManagementKey(bearer(carols), "member"))).message,
+          SUSPENDED,
+        );
+        assert.strictEqual((yield* authenticateManagementKey(bearer(dans), "member")).org, acme);
+
+        resetStandingCaches();
+        directory.setOrg(acme, { suspended: true });
+
+        assert.strictEqual(
+          (yield* Effect.flip(authenticateManagementKey(bearer(dans), "member"))).message,
+          SUSPENDED,
+        );
+      }),
+      CLOUD,
+    );
+  });
 });
 
 describe("Commissary Cloud", () => {
