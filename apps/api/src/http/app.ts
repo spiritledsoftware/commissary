@@ -1,7 +1,7 @@
 import { Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { WorkersLoggerLayer } from "@commissary/core";
-import { ClientApiLayer as ModelsClientApi, TraceLayer } from "@commissary/models/api";
+import { ClientApiLayer as ModelsClientApi, HubApiLayer, TraceLayer } from "@commissary/models/api";
 import {
   ClientApiLayer as ToolsClientApi,
   ProtectedResourceMetadataRoutes,
@@ -10,16 +10,16 @@ import { behindGate, GateLayer } from "./gate.ts";
 import { RootRoutes } from "./routes.ts";
 
 /**
- * All routes and global middleware of the API Worker (ADR 0030): `/healthz` and the client API of each area it mounts,
- * listed here explicitly (Models' model routes, Tools' MCP endpoint), behind CORS and the
- * client gate (`gate.ts`).
+ * All routes and global middleware of the API Worker (ADR 0030): `/healthz`, the client API of each area it mounts,
+ * listed here explicitly (Models' model routes, Tools' MCP endpoint), and Models' hub API (ADR 0052), behind CORS and
+ * the gate (`gate.ts`), which tells the client API and the hub API apart.
  */
 export const ApiLayer = Layer.mergeAll(
   RootRoutes,
   // Public: the MCP endpoint's OAuth metadata on Commissary Cloud (#200), unknown elsewhere.
   ProtectedResourceMetadataRoutes,
   GateLayer,
-  behindGate(Layer.mergeAll(ModelsClientApi, ToolsClientApi)),
+  behindGate(Layer.mergeAll(ModelsClientApi, ToolsClientApi, HubApiLayer)),
   // Request trace id header and structured request logs (packages/models/src/observability).
   TraceLayer,
   WorkersLoggerLayer,

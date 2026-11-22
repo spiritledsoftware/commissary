@@ -2,7 +2,7 @@
 import { Effect, Predicate } from "effect";
 import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { refusalResponse } from "@commissary/auth";
-import { isSystemOnePath } from "@commissary/core";
+import { isHubApiPath, isSystemOnePath, normalizedPath } from "@commissary/core";
 
 /** Mirrors `corsExposedResponseHeaders` in internal/api/server_middleware.go. */
 export const CORS_EXPOSED_RESPONSE_HEADERS = [
@@ -72,15 +72,33 @@ const notFound = (requestUrl: string): HttpServerResponse.HttpServerResponse =>
     ? refusalResponse(404, "Not Found", "systemone")
     : HttpServerResponse.text("404 page not found", { status: 404 });
 
+/** Whether a request URL is on the hub API (ADR 0052). */
+const onHub = (requestUrl: string): boolean => {
+  const path = normalizedPath(requestUrl);
+
+  return path !== undefined && isHubApiPath(path);
+};
+
 /**
  * Global middleware of the client API: every response (including 404s) carries the CORS headers, and `OPTIONS`
  * requests are answered with an empty 204 before routing. The client API is meant to be called from any origin with an
  * API key; the app Worker, whose management zone must not be readable across origins, answers no CORS (ADR 0030).
+ * Nor does the hub API (ADR 0052), which a management key reaches: no CORS headers, no preflight, and its unknown
+ * routes answer a JSON 404 like its other refusals.
  */
 export const CorsLayer = HttpRouter.middleware<{ handles: HttpServerError.HttpServerError }>()(
   (app) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
+
+      if (onHub(request.originalUrl))
+        return yield* app.pipe(
+          Effect.catchTag("HttpServerError", (error) =>
+            Predicate.isTagged(error.reason, "RouteNotFound")
+              ? Effect.succeed(refusalResponse(404, "Not found"))
+              : Effect.fail(error),
+          ),
+        );
 
       const response =
         request.method === "OPTIONS"

@@ -44,6 +44,9 @@ describe("host routing", () => {
         "/completions",
         "/responses",
         "/mcp",
+        // The hub API (ADR 0052).
+        "/v0/management/auth-files",
+        "/V0//management/api-call",
         "/healthz",
         "/.well-known/oauth-protected-resource/mcp",
         "//V1/models",
@@ -87,6 +90,14 @@ const send = async (url: string, hosts: Partial<Env>, init?: RequestInit) => {
 };
 
 describe("an API Worker with an API host", () => {
+  it("serves the hub API, behind a management key", async () => {
+    const hosts = { APP_DOMAIN: "app.example.com", API_DOMAIN: "localhost" };
+    const response = await send("http://localhost/v0/management/auth-files", hosts);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Missing API key" });
+  });
+
   it("serves the client API and /healthz only", async () => {
     const hosts = { APP_DOMAIN: "app.example.com", API_DOMAIN: "localhost" };
     const models = await send("http://localhost/v1/models", hosts);
