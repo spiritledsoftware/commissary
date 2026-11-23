@@ -13,17 +13,17 @@
     "typecheck": "tsrs"
   },
   "dependencies": {
-    "@better-auth/core": "1.7.18",
-    "@better-auth/sso": "1.7.18",
+    "@better-auth/core": "1.7.25",
+    "@better-auth/sso": "1.7.25",
     "@commissary/auth": "workspace:*",
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/state": "workspace:*",
-    "better-auth": "1.7.18",
+    "better-auth": "1.7.25",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.6.0",
+    "@cloudflare/vitest-plugin": "1.8.3",
     "@commissary/state-worker": "workspace:*",
     "@types/node": "catalog:",
     "jose": "catalog:",
