@@ -3491,6 +3491,28 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     reorders the parsed object, so a key that is an array index (`"0"`) always comes first, which Go's byte reordering does not
     force. The executor runs the wire normalisation (`normalizeAntigravityRequest`) again after the structured-output prompt,
     so the prompt joins the system instruction's single part.
+  - _Signature cache per credential_ (`signature-scope.ts`, Go `85225381`, `06225fcf`): request-time recovery and response-time
+    writes use a view of the org's cache keyed by the credential id, a hash of its grant and the project, so a signature one
+    Google account issued is never sent on another, and the `CACHE` KV keys carry the same scope. An attempt without a token
+    recovers and records nothing. Go hashes the access and refresh tokens and carries that grant identity across refreshes in
+    credential metadata; Commissary hashes the refresh token (the access token without one), which a refresh keeps and a new
+    login replaces, so the refresh path stays as it is.
+  - _Replay keys_ (`replay/scope.ts`, Go `3988a389`): subagents, tasks, threads, conversations and Codex subagents that share a
+    session id each get their own replay key, from the request's explicit session (`metadata.sessionId`, Go's canonical session)
+    or the session identities in its body; a fork without an identifiable child session replays nothing. Commissary has no
+    LCP-reconciled canonical id or execution-session metadata, so those branches of Go's priority list never fire.
+  - _Failed responses_ (Go `c813f779`, `f2efe2c4`, `ae3d80f7`, `84b838e1`): an in-band `error` in a 200 body or stream frame is the
+    upstream error it names (cooldowns included); a response with no output (no payload, only signatures, or a `MALFORMED`
+    finish without content) is a 502 before anything reaches the client (`helps/gemini-zero-output.ts`, with Antigravity's
+    `response` wrapper). Retry delays come from the body, else the `Retry-After` header, for 429 and 503. These checks run
+    before the replay commit, which then completes even if the client disconnects.
+  - _Token counting_: `countTokens` sends the normalised request with `request.model` as `models/<id>` and no `stream`, skips the
+    credits bypass, and rejects a 200 whose body is over 1 MiB, not a JSON object, or lacks a non-negative integer `totalTokens`.
+  - _Not ported_: thinking-level groups and `RequestedAntigravityThinkingLevel` (Go `2f86992c`, `14a95b19`, the Antigravity half
+    of `ffa55112`) and model enums (`e9a92d25`, `bfed6e89`) need per-credential model catalogs Commissary does not have;
+    connection pools and transports (`bffe6e7e`, `80fb55d8`, `d0c90bb5`) have no counterpart on Workers `fetch`; AI Studio has no
+    executor here. Go `dd0d80c8` (canonical session on the credits round) needs no change: the credits round copies the
+    request's metadata.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
