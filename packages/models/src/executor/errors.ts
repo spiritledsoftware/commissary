@@ -89,6 +89,16 @@ export const notImplemented = (message: string): ExecutionError =>
 export const headersRecord = (headers: Headers): Record<string, string> =>
   Object.fromEntries(headers.entries());
 
+/**
+ * A model cooldown: the selection's own `model_cooldown` failure, or a terminal upstream 429 the conductor marked with
+ * the pool's reset (`modelCooldown`).
+ */
+export const isModelCooldown = (error: {
+  readonly code?: string | undefined;
+  readonly modelCooldown?: boolean | undefined;
+}): boolean =>
+  error.modelCooldown === true || error.code?.trim().toLowerCase() === "model_cooldown";
+
 /** Copy of `error` with some fields replaced (an `Error` subclass does not survive object spread). */
 export const withErrorFields = (
   error: ExecutionError,

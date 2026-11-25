@@ -362,6 +362,46 @@ describe("the pool's cooldown on a terminal 429 (CLIProxyAPI 4da9f685)", () => {
   });
 });
 
+describe("the pool's cooldown with a zero-weight candidate (IgnoresZeroWeightCandidateUnderWeightedSelector)", () => {
+  const zeroB = `
+    - name: b
+      base-url: https://b.example/v1
+      models: [{ name: m }]
+      keys: [{ api-key: key-b, weight: 0 }]`;
+
+  const cooled = async (strategy: string) => {
+    const { pool } = await makePool(
+      config(group("a") + zeroB, `routing:\n  strategy: ${strategy}\n`),
+    );
+
+    const picked = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+    pool.report(picked.lease, {
+      success: false,
+      httpStatus: 429,
+      error: { message: "q", retryable: true, httpStatus: 429 },
+      retryAfterMs: 600_000,
+    });
+
+    return pool.planRetry({
+      providers: providers(["a", "b"]),
+      model: "m",
+      round: 0,
+      requestRetry: 0,
+      status: 429,
+      maxWaitMs: 0,
+      poolOnly: true,
+    });
+  };
+
+  it("ignores the zero-weight candidate under the weighted selector", async () => {
+    expect(await cooled("weighted-round-robin")).toEqual({ retry: false, poolCooldownMs: 600_000 });
+  });
+
+  it("counts it as available under round-robin, which picks it", async () => {
+    expect(await cooled("round-robin")).toEqual({ retry: false });
+  });
+});
+
 describe("cooldown-aware selection", () => {
   it("returns model_cooldown (429 + Retry-After) when every candidate is cooling", async () => {
     const { pool, clock } = await makePool(config(group("a")));

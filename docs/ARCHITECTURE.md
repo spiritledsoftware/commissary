@@ -648,7 +648,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   A terminal 429 when every candidate cools carries the pool's earliest reset (`RetryPlan.poolCooldownMs`, CLIProxyAPI
   4da9f685): the conductor marks the error `modelCooldown` and sets its trusted `Retry-After` to it, so the client hears
   when the first credential recovers rather than the last attempt's own window, and a Claude client reads the reset in
-  the message. It ignores the retry budget; a pool with an unblocked candidate, or none cooling, gives none.
+  the message. It ignores the retry budget; a pool with an unblocked candidate, or none cooling, gives none, and under
+  `weighted-round-robin` a zero-weight credential takes no part. A terminal 429 that ended without a retry plan (a stop,
+  the attempt cap, the credits round) asks for the reset alone (`RetryQuery.poolOnly`), so every exit carries it, as in Go.
 - **Shared and private credentials** (`credentials/ownership.ts`, `credentials/private-keys.ts`; Workers addition, ADR 0023,
   ADR 0025, no Go counterpart): a credential belongs to the org (a _shared credential_, `owner` unset) or to one member (a
   _private credential_, `owner` the member's id). A stored account carries `owner` (nullable `credentials.owner`, also on

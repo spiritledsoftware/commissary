@@ -582,6 +582,7 @@ export class CredentialPool {
       routing: { ...view.settings, knownPrefixes: knownPrefixes(entries) },
       reach: this.#reach(query.memberId),
       coolingDisabled: (credential) => coolingDisabledFor(credential, view.cooldown),
+      strategy: view.settings.strategy,
       now,
       // The shared scopes of the pick's spender: the member's. (A key limit refuses at the pick and keeps no credential
       // away, so a retry needs none.)

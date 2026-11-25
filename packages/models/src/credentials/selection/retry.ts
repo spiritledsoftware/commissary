@@ -9,6 +9,7 @@
 import { Schema } from "effect";
 import type { Json } from "@commissary/json";
 import type { SpendGate } from "@commissary/state/spend";
+import type { RoutingStrategy } from "../../config/schema.ts";
 import type { Reach } from "../../grants/reach.ts";
 import { ErrorCode, isCredentialRetryRoundStatus } from "../cooldown/classify.ts";
 import { MIN_QUOTA_COOLDOWN_MS } from "../cooldown/mark-result.ts";
@@ -49,6 +50,11 @@ export const RetryQuery = Schema.Struct({
   memberId: optional(Schema.String),
   requireAuthKind: optional(AuthKind),
   disallowFreeCodex: optional(Schema.Boolean),
+  /**
+   * Only the pool's cooldown is asked for (`poolCooldownMs` of a terminal 429 that ended without a retry plan: a stop,
+   * the attempt cap): the answer is never a retry.
+   */
+  poolOnly: optional(Schema.Boolean),
 });
 
 export type RetryQuery = typeof RetryQuery.Type;
@@ -255,6 +261,8 @@ export interface RetryPlanInput {
   readonly reach: Reach;
   /** `credential -> cooling disabled`. */
   readonly coolingDisabled: (credential: Credential) => boolean;
+  /** The selection strategy: a zero weight takes no part under `weighted-round-robin`. */
+  readonly strategy: RoutingStrategy;
   readonly now: number;
   /** The Spend limits of the request's member (`@commissary/state/spend`): shared credentials may be out of reach until a period ends. */
   readonly spend?: SpendGate | undefined;
@@ -267,13 +275,15 @@ interface RetryCandidate {
   readonly route: ModelRoute | undefined;
 }
 
-const retryCandidates = (input: RetryPlanInput): RetryCandidate[] => {
+/** The query's executor keys, normalised. */
+const queryProviders = (query: RetryQuery): ReadonlySet<string> =>
+  new Set(query.providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean));
+
+const retryCandidates = (
+  input: RetryPlanInput,
+  providers: ReadonlySet<string>,
+): RetryCandidate[] => {
   const { query } = input;
-
-  const providers = new Set(
-    query.providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean),
-  );
-
   const pinned = query.pinnedAuthId?.trim() ?? "";
   const candidates: RetryCandidate[] = [];
 
@@ -350,12 +360,17 @@ const routeBlock = (candidate: RetryCandidate, now: number): Block => {
  */
 const poolCooldown = (
   candidates: ReadonlyArray<RetryCandidate>,
+  strategy: RoutingStrategy,
   now: number,
 ): number | undefined => {
   let cooling = 0;
   let earliest = 0;
+  let counted = 0;
 
   for (const candidate of candidates) {
+    // The weighted selector never picks a zero weight, so it neither keeps the pool open nor sets its reset.
+    if (strategy === "weighted-round-robin" && candidate.credential.weight <= 0) continue;
+    counted += 1;
     const block = routeBlock(candidate, now);
 
     if (!block.blocked) return undefined;
@@ -370,26 +385,26 @@ const poolCooldown = (
       earliest = block.next;
   }
 
-  return candidates.length > 0 && cooling > 0 && earliest !== 0 ? earliest - now : undefined;
+  return counted > 0 && cooling > 0 && earliest !== 0 ? earliest - now : undefined;
 };
 
 /** `shouldRetryAfterErrorWithAttempted` steps 3-5 (the caller has already checked the error class). */
 export const planRetry = (input: RetryPlanInput): RetryPlan => {
   const { query, now } = input;
 
-  const providers = new Set(
-    query.providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean),
-  );
+  const providers = queryProviders(query);
 
-  if (providers.size === 0 || query.round < 0) return { retry: false };
-  const candidates = retryCandidates(input);
-  const pool = query.status === 429 ? poolCooldown(candidates, now) : undefined;
+  if (providers.size === 0 || (query.round < 0 && query.poolOnly !== true)) return { retry: false };
+  const candidates = retryCandidates(input, providers);
+  const pool = query.status === 429 ? poolCooldown(candidates, input.strategy, now) : undefined;
 
   const stop = (retryAfterMs?: number): RetryPlan => ({
     retry: false,
     ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(pool === undefined ? {} : { poolCooldownMs: pool }),
   });
+
+  if (query.poolOnly === true) return stop();
 
   const attempted = new Set(query.attempted ?? []);
   const maxWait = query.maxWaitMs;

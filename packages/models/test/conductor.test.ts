@@ -483,6 +483,24 @@ describe("request-scoped error rules", () => {
     }),
   );
 
+  it.effect(
+    "a stop on a 429 that leaves the pool cooling still carries the pool's reset (CLIProxyAPI 4da9f685)",
+    () =>
+      Effect.gen(function* () {
+        const stopOn429 = `request-scoped-errors:\n        - { status: 429, match: ["quota"], action: stop-and-cooldown }`;
+
+        const run = yield* setup(config(group("a", stopOn429)), () =>
+          upstreamError(429, "quota", { "retry-after": "600" }),
+        );
+
+        const error = yield* failure(run.exec(executeNonStream(chatInput())));
+        assert.strictEqual(error.status, 429);
+        assert.strictEqual(error.modelCooldown, true);
+        assert.strictEqual(error.safeHeaders?.["retry-after"], "600");
+        assert.strictEqual(run.calls.length, 1);
+      }),
+  );
+
   it.effect("a rule that does not match leaves the default classification in place", () =>
     Effect.gen(function* () {
       const run = yield* setup(config(group("a", rule("continue"))), () =>

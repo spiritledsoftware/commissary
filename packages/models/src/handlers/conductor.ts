@@ -21,6 +21,7 @@ import type { Config } from "../config/schema.ts";
 import type { RetryPlan } from "../credentials/selection/retry.ts";
 import {
   ExecutionError,
+  isModelCooldown,
   outboundRefusedError,
   safeRetryAfter,
   withErrorFields,
@@ -333,7 +334,7 @@ export const withPoolCooldown = (
 ): ExecutionError => {
   if (poolCooldownMs === undefined || poolCooldownMs <= 0 || error.status !== 429) return error;
 
-  if (error.code === "model_cooldown" || error.modelCooldown === true) return error;
+  if (isModelCooldown(error)) return error;
 
   return withErrorFields(error, {
     modelCooldown: true,
@@ -766,21 +767,41 @@ export const conduct = <T, R>(
 
         if (outcome.stop || isRequestInvalid(error) || !isRetryRoundError(error)) return NO_RETRY;
 
+        return yield* picker.planRetry(retryQuery(error, round, outcome.attempted));
+      });
+
+    const retryQuery = (
+      error: ExecutionError,
+      round: number,
+      attempted: ReadonlyArray<string>,
+    ) => ({
+      providers: failover.remaining(),
+      model: prepared.routeModel,
+      round,
+      requestRetry: settings.requestRetry,
+      status: error.code === "transient_transport" ? 0 : error.status,
+      attempted,
+      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
+      maxWaitMs: settings.maxWaitMs,
+      ...(prepared.pinnedId === undefined ? {} : { pinnedAuthId: prepared.pinnedId }),
+      ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
+      ...(prepared.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
+    });
+
+    /**
+     * The pool's cooldown for a terminal 429 that ended without a retry plan (a stop, the attempt cap, the credits
+     * round): Go annotates the terminal error on every exit (`annotatePoolCooldownTerminalError`).
+     */
+    const terminalPoolCooldown = (error: ExecutionError, attempted: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        if (error.status !== 429 || isModelCooldown(error)) return undefined;
+
         const plan = yield* picker.planRetry({
-          providers: failover.remaining(),
-          model: prepared.routeModel,
-          round,
-          requestRetry: settings.requestRetry,
-          status: error.code === "transient_transport" ? 0 : error.status,
-          attempted: outcome.attempted,
-          ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-          maxWaitMs: settings.maxWaitMs,
-          ...(prepared.pinnedId === undefined ? {} : { pinnedAuthId: prepared.pinnedId }),
-          ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
-          ...(prepared.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
+          ...retryQuery(error, 0, attempted),
+          poolOnly: true,
         });
 
-        return plan;
+        return plan.retry ? undefined : plan.poolCooldownMs;
       });
 
     let preferredUpstream: ExecutionError | undefined;
@@ -833,6 +854,9 @@ export const conduct = <T, R>(
 
       if (credited.ok) return { ok: true, value: credited.value } satisfies ConductResult<T>;
     }
+
+    if (poolCooldownMs === undefined)
+      poolCooldownMs = yield* terminalPoolCooldown(error, last.attempted);
 
     return {
       ok: false,
