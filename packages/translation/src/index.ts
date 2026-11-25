@@ -45,6 +45,8 @@ export {
 
 export { thinkingTextsNeedingCachedSignatures } from "./translator/antigravity/claude/request.ts";
 
+export { normalizeAntigravityRequest } from "./translator/antigravity/common/request-format.ts";
+
 export {
   hasAntigravityGoogleSearchTool,
   hasClaudeTypedWebSearchTool,

@@ -124,8 +124,20 @@ describe("antigravity executor: non-stream", () => {
     expect(sent.model).toBe("gemini-2.5-flash");
     expect(sent.userAgent).toBe("antigravity");
     expect(sent.requestType).toBe("agent");
-    expect(sent.requestId).toMatch(/^agent-/);
-    expect(sent.request.sessionId).toMatch(/^-\d+$/);
+    // The agent envelope (CLIProxyAPI b8e3bc66): agent/<cascade>/<millis>/<trajectory>/<step>, signed int64 session.
+    expect(sent.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/1$/);
+    expect(sent.request.sessionId).toMatch(/^-?\d+$/);
+    expect(sent.request.labels.used_non_gemini_model).toBe("false");
+    expect(sent.request.systemInstruction.role).toBe("user");
+    // The native key order of an agent request.
+    expect(Object.keys(sent)).toEqual([
+      "project",
+      "requestId",
+      "request",
+      "model",
+      "userAgent",
+      "requestType",
+    ]);
     expect(sent.request.safetySettings).toBeUndefined();
     // Non-Claude models lose maxOutputTokens; the payload rule (root `request`) still lands afterwards.
     expect(sent.request.generationConfig.maxOutputTokens).toBeUndefined();
@@ -295,9 +307,11 @@ describe("antigravity executor: Claude 5.5 structured output", () => {
 
       const sent = JSON.parse(h.calls[0]?.body ?? "{}");
       const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
-      // The original system text (obfuscated) stays first; the schema instruction follows, complete.
-      expect(parts[0]?.text).toBe("keep the s\u034Fecret safe");
-      expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
+      // The original system text (obfuscated) stays first; the schema instruction follows, complete. The native wire
+      // format joins the parts into one (`NormalizeAntigravityRequestDoc`, CLIProxyAPI 38067a29).
+      expect(parts).toHaveLength(1);
+      expect(parts[0]?.text.startsWith("keep the s\u034Fecret safe\n\n")).toBe(true);
+      expect(parts[0]?.text).toContain(JSON.stringify(schema));
       expect(sent.request.generationConfig.responseSchema).toBeUndefined();
       expect(sent.request.generationConfig.responseJsonSchema).toBeUndefined();
       expect(sent.request.generationConfig.responseMimeType).toBeUndefined();

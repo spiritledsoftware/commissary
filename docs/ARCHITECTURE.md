@@ -877,7 +877,7 @@ Core contracts every provider slice implements (Go references in each module hea
     leading instructions and the first user input (only when no explicit marker exists); used when the LCP matcher does not
     apply (no non-system turn) and recorded in usage even with affinity off. Last fallback: the FNV message hash of the first
     system/user/assistant messages (`msg:<hex>`, short hash as parent).
-  - The derived id also reaches executors as `ExecutionMetadata.derivedSessionId` (`ctx:v1:...`, absent with an explicit marker): OpenAI-compatible prompt-cache keys and Antigravity's `derivedAntigravitySessionId` hash it like Go's `DerivedSessionUUID`.
+  - The derived id also reaches executors as `ExecutionMetadata.derivedSessionId` (`ctx:v1:...`, absent with an explicit marker): OpenAI-compatible prompt-cache keys hash it like Go's `DerivedSessionUUID`, and Antigravity hashes it with the credential into its `request.sessionId` (Go `AntigravitySessionIDForAuth`).
   - Deviations: the Go JSON `Raw` text is replaced by the compact re-serialisation of the parsed body (sampling of >16 KiB JSON
     parts and `original_size` are measured on it), a sparse sample cut inside a multi-byte character decodes to U+FFFD, and
     execution-session (WebSocket) metadata ids are not consulted. Go parity is tested with `tools/fixturegen/session`
@@ -3475,6 +3475,22 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     above): a filter `finishReason` is translated in the frame it arrives in.
   - _Schemas_: the cleaners drop `minProperties`/`maxProperties` (kept as description hints) and `prefixItems` (Go `65ba7863`),
     for Gemini too, since the cleaner is shared.
+- **Executor at `dd543d09` (SPI-1421)**:
+  - _Session ids_ (`executor/antigravity/derived-session.ts`, Go `55e5a7ea`, `3a24d03c`, `14e12fb5`, `18a03e40`):
+    `request.sessionId` is a signed 64-bit decimal (64-bit FNV-1a), like Antigravity Hub's. The request's canonical session
+    (`ExecutionMetadata.sessionId`), else its WebSocket execution session, else its derived identity is hashed together with
+    the credential id; a client's own `request.sessionId` is scoped the same way; without either, the first non-empty text of
+    the first user turn (any part) is hashed with the credential. Two credentials never share an upstream session.
+  - _Agent envelope_ (`agent-envelope.ts`, Go `b8e3bc66`, `38067a29`): an agent request gets `requestId`
+    `agent/<cascade>/<millis>/<trajectory>/<step>` and `request.labels` (cascade, trajectory, step counters, `used_claude`, ...),
+    with one cascade and trajectory per org, credential and session. They live in per-isolate memory (4096 sessions, least
+    recently used out), as Go keeps them in process memory; a new isolate starts a new cascade. Go also keys them by the
+    credential's model-catalog scope and writes `labels.model_enum`; Commissary has no per-credential model enums yet, so it
+    never writes one. After the payload rules the body goes out compact and, for an agent request (a rule may change
+    `requestType`), in the native client's key order (`payload-order.ts`, Go `SerializeAntigravityPayload`). Commissary
+    reorders the parsed object, so a key that is an array index (`"0"`) always comes first, which Go's byte reordering does not
+    force. The executor runs the wire normalisation (`normalizeAntigravityRequest`) again after the structured-output prompt,
+    so the prompt joins the system instruction's single part.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of

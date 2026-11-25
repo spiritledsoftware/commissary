@@ -13,7 +13,7 @@
  *
  * Deviations from Go (see ARCHITECTURE.md "Antigravity provider"): no per-credential HTTP pools or proxies, and the short quota cooldown / credits state live in KV `CACHE`.
  */
-import { derivedAntigravitySessionId } from "./derived-session.ts";
+import { antigravitySessionIdForCredential } from "./derived-session.ts";
 import { translateRequestForExecutor } from "../helps/translate.ts";
 import { Clock, Effect, Option, Result, Stream } from "effect";
 import {
@@ -122,6 +122,7 @@ import {
 import { type AntigravityState, antigravityStateFor } from "./state.ts";
 import { convertStreamToNonStream, JsonAssembler, UsageFilter } from "./stream.ts";
 import { antigravityRequestUserAgent, currentAntigravityVersion } from "./version.ts";
+import { serializeAntigravityPayload } from "./payload-order.ts";
 import { ModelsEnv } from "../../env.ts";
 import { deploymentKvIfBound, orgKvIfBound } from "../../kv.ts";
 
@@ -162,6 +163,8 @@ interface PreparedRequest {
   readonly url: string;
   readonly headers: Record<string, string>;
   readonly body: Json;
+  /** The body as sent: compact, in the native key order for agent requests (`SerializeAntigravityPayload`). */
+  readonly wire: string;
   readonly baseModel: string;
   /** Translated (pre-envelope) request handed to the response translators. */
   readonly translated: Json;
@@ -463,15 +466,20 @@ export const makeAntigravityExecutor = (
     body = ensureBoundaryUserContent(baseModel, replay.payload);
     const accumulator = makeAccumulator(replay.scope, body);
 
-    const project = attempt.project;
-    const derivedSession = derivedAntigravitySessionId(options.metadata.derivedSessionId ?? "");
-    body = geminiToAntigravity(
-      baseModel,
-      body,
-      project,
-      derivedSession,
-      yield* Clock.currentTimeMillis,
-    );
+    const credentialId = context.credential.id;
+
+    const envelope = geminiToAntigravity(baseModel, body, attempt.project, {
+      credentialId,
+      org: attempt.org,
+      sessionId: antigravitySessionIdForCredential(credentialId, {
+        canonical: options.metadata.sessionId,
+        execution: options.metadata.websocket?.sessionId,
+        derived: options.metadata.derivedSessionId,
+      }),
+      now: yield* Clock.currentTimeMillis,
+    });
+
+    body = envelope.payload;
     const translatedForResponse = structuredClone(body);
     body = constrainRequestPayload(baseModel, body);
 
@@ -503,10 +511,19 @@ export const makeAntigravityExecutor = (
       context.usage,
     );
 
+    // A payload rule may drop or change `requestType`: only an agent request keeps the agent key order.
+    const requestType = get(finalBody, "requestType");
+
+    const isAgent =
+      envelope.isAgent &&
+      (requestType === undefined ||
+        (typeof requestType === "string" && requestType.trim() === "agent"));
+
     return {
       url,
       headers: headersFor(attempt, agent),
       body: finalBody,
+      wire: serializeAntigravityPayload(finalBody, isAgent),
       baseModel,
       translated: translatedForResponse,
       useCredits,
@@ -520,7 +537,7 @@ export const makeAntigravityExecutor = (
     const client = yield* HttpClient.HttpClient;
 
     const request = HttpClientRequest.post(prepared.url).pipe(
-      HttpClientRequest.bodyText(JSON.stringify(prepared.body), "application/json"),
+      HttpClientRequest.bodyText(prepared.wire, "application/json"),
       HttpClientRequest.setHeaders(prepared.headers),
     );
 
@@ -1020,6 +1037,7 @@ export const makeAntigravityExecutor = (
       url,
       headers: headersFor(attempt, agent),
       body: finalBody,
+      wire: JSON.stringify(finalBody),
       baseModel,
       translated: finalBody,
       useCredits: false,

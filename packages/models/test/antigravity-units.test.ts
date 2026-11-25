@@ -32,6 +32,8 @@ import {
   stableSessionId,
 } from "../src/executor/antigravity/envelope.ts";
 import { prepareClaudeStructuredOutput } from "../src/executor/antigravity/structured-output.ts";
+import { scopeAntigravitySessionIdForCredential } from "../src/executor/antigravity/derived-session.ts";
+import { serializeAntigravityPayload } from "../src/executor/antigravity/payload-order.ts";
 import { normalizeFunctionResponseRoles } from "../src/executor/antigravity/content.ts";
 import { usesReasoningReplay } from "../src/executor/helps/reasoning-replay.ts";
 import {
@@ -178,6 +180,13 @@ describe("429 decisions and retry delays", () => {
   });
 });
 
+const envelopeOptions = (credentialId = "", sessionId = "", now = 1_700_000_000_000) => ({
+  credentialId,
+  org: "org-test",
+  sessionId,
+  now,
+});
+
 describe("envelope", () => {
   it("derives stable session ids from the first user text and completes the envelope", () => {
     const payload: Json = {
@@ -187,34 +196,121 @@ describe("envelope", () => {
     };
 
     expect(stableSessionId(payload)).toBe(stableSessionId(structuredClone(payload)));
-    expect(stableSessionId(payload)).toMatch(/^-\d+$/);
+    // Signed int64 (CLIProxyAPI 55e5a7ea): FNV-1a of "hello".
+    expect(stableSessionId(payload)).toBe("-6615550055289275125");
+    // Scoped per credential (3a24d03c).
+    expect(stableSessionId(payload, "auth-a")).not.toBe(stableSessionId(payload, "auth-b"));
     const before = structuredClone(payload);
-    const out = geminiToAntigravity("claude-sonnet-4-5", payload, "proj", "", 1_700_000_000_000);
+
+    const { payload: out, isAgent } = geminiToAntigravity(
+      "claude-sonnet-4-5",
+      payload,
+      "proj",
+      envelopeOptions(),
+    );
+
     expect(payload).toEqual(before);
+    expect(isAgent).toBe(true);
     expect(get(out, "project")).toBe("proj");
     expect(get(out, "requestType")).toBe("agent");
     expect(get(out, "request.safetySettings")).toBeUndefined();
     expect(get(out, "request.toolConfig.functionCallingConfig.mode")).toBe("AUTO");
     expect(get(out, "toolConfig")).toBeUndefined();
-    expect(asString(get(out, "requestId"))).toMatch(/^agent-[0-9a-f-]{36}$/);
+    expect(asString(get(out, "requestId"))).toMatch(
+      /^agent\/[0-9a-f-]{36}\/1700000000000\/[0-9a-f-]{36}\/1$/,
+    );
+    expect(get(out, "request.labels.used_claude")).toBe("true");
+    expect(get(out, "request.labels.used_non_gemini_model")).toBe("true");
+    expect(get(out, "request.labels.last_step_index")).toBe("0");
   });
 
-  it("keeps explicit and derived session ids, skips them for image and web search requests", () => {
+  it("scans every part of a user turn for the session text (CLIProxyAPI 18a03e40)", () => {
+    const payload: Json = {
+      request: {
+        contents: [{ role: "user", parts: [{ inlineData: { data: "AA" } }, { text: "hello" }] }],
+      },
+    };
+
+    expect(stableSessionId(payload)).toBe("-6615550055289275125");
+  });
+
+  it("keeps one cascade per credential session and counts the agent's steps", () => {
+    const payload: Json = {
+      request: {
+        contents: [
+          { role: "user", parts: [{ text: "go" }] },
+          { role: "model", parts: [{ functionCall: { name: "f", args: {} } }] },
+          { role: "user", parts: [{ functionResponse: { name: "f", response: {} } }] },
+        ],
+      },
+    };
+
+    const first = geminiToAntigravity("gemini-3-pro", payload, "p", envelopeOptions("a", "s", 5));
+    const again = geminiToAntigravity("gemini-3-pro", payload, "p", envelopeOptions("a", "s", 5));
+    const other = geminiToAntigravity("gemini-3-pro", payload, "p", envelopeOptions("b", "s", 5));
+    const cascade = get(first.payload, "request.labels.cascade_id");
+    expect(get(again.payload, "request.labels.cascade_id")).toBe(cascade);
+    expect(get(other.payload, "request.labels.cascade_id")).not.toBe(cascade);
+    expect(get(first.payload, "request.labels.last_step_index")).toBe("2");
+    // Two requests within one millisecond still get distinct request ids.
+    expect(get(again.payload, "requestId")).not.toBe(get(first.payload, "requestId"));
+    expect(get(first.payload, "request.labels.used_non_gemini_model")).toBe("false");
+  });
+
+  it("scopes the session per credential, prefers the request's own session, skips image and web search", () => {
     const explicit: Json = { request: { sessionId: "mine", contents: [] } };
-    const explicitOut = geminiToAntigravity("gemini-3-pro", explicit, "p", "derived");
-    expect(get(explicitOut, "request.sessionId")).toBe("mine");
-    const derived: Json = { request: { contents: [] } };
-    const derivedOut = geminiToAntigravity("gemini-3-pro", derived, "p", "derived");
-    expect(get(derivedOut, "request.sessionId")).toBe("derived");
+    const unscoped = geminiToAntigravity("gemini-3-pro", explicit, "p", envelopeOptions());
+    expect(get(unscoped.payload, "request.sessionId")).toBe("mine");
+    const scoped = geminiToAntigravity("gemini-3-pro", explicit, "p", envelopeOptions("auth-a"));
+
+    expect(get(scoped.payload, "request.sessionId")).toBe(
+      scopeAntigravitySessionIdForCredential("auth-a", "mine"),
+    );
+
+    const derived = geminiToAntigravity("gemini-3-pro", explicit, "p", envelopeOptions("a", "-9"));
+    expect(get(derived.payload, "request.sessionId")).toBe("-9");
     const image: Json = { request: { contents: [] } };
-    const imageOut = geminiToAntigravity("gemini-3.1-flash-image", image, "p", "", 5);
-    expect(get(imageOut, "requestType")).toBe("image_gen");
-    expect(asString(get(imageOut, "requestId"))).toMatch(/^image_gen\/5\/[0-9a-f-]{36}\/12$/);
-    expect(get(imageOut, "request.sessionId")).toBeUndefined();
+
+    const imageOut = geminiToAntigravity(
+      "gemini-3.1-flash-image",
+      image,
+      "p",
+      envelopeOptions("", "", 5),
+    );
+
+    expect(imageOut.isAgent).toBe(false);
+    expect(get(imageOut.payload, "requestType")).toBe("image_gen");
+
+    expect(asString(get(imageOut.payload, "requestId"))).toMatch(
+      /^image_gen\/5\/[0-9a-f-]{36}\/12$/,
+    );
+
+    expect(get(imageOut.payload, "request.sessionId")).toBeUndefined();
     const search: Json = { requestType: "web_search", request: { contents: [] } };
-    const searchOut = geminiToAntigravity("gemini-3-pro", search, "p");
-    expect(get(searchOut, "requestId")).toBeUndefined();
-    expect(get(searchOut, "request.sessionId")).toBeUndefined();
+    const searchOut = geminiToAntigravity("gemini-3-pro", search, "p", envelopeOptions("a"));
+    expect(get(searchOut.payload, "requestId")).toBeUndefined();
+    expect(get(searchOut.payload, "request.sessionId")).toBeUndefined();
+  });
+
+  it("orders agent requests like the native client and compacts the rest unchanged", () => {
+    const payload: Json = {
+      requestType: "agent",
+      model: "m",
+      request: {
+        sessionId: "s",
+        generationConfig: { thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: true } },
+        contents: [
+          { parts: [{ functionCall: { args: { b: 1, a: 2 }, name: "f" } }], role: "model" },
+        ],
+      },
+      project: "p",
+    };
+
+    expect(serializeAntigravityPayload(payload, true)).toBe(
+      '{"project":"p","request":{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f","args":{"a":2,"b":1}}}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"HIGH"}},"sessionId":"s"},"model":"m","requestType":"agent"}',
+    );
+
+    expect(serializeAntigravityPayload(payload, false)).toBe(JSON.stringify(payload));
   });
 
   it("selects the daily endpoint unless a base URL is configured", () => {

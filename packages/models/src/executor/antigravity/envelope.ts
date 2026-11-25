@@ -2,10 +2,10 @@
  * Antigravity request envelope: `geminiToAntigravity`, endpoint selection and schema sanitisation.
  *
  * Go source: internal/runtime/executor/antigravity_executor_request.go (`buildRequest` body part,
- * `geminiToAntigravity`, `sanitizeAntigravityRequestSchemas`, `generateStableSessionID`,
+ * `geminiToAntigravityDocForAuth`, `sanitizeAntigravityRequestSchemas`, `generateStableSessionIDFromContentsForAuth`,
  * `resolveAntigravityRequestBaseURL`). Payload rules are applied by the executor after this module (never before).
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   asInt,
   asString,
@@ -24,8 +24,14 @@ import {
   cleanJsonSchemaForAntigravityResponse,
   cleanJsonSchemaForAntigravityTool,
   lookupModelInfo,
+  normalizeAntigravityRequest,
   normalizeJsonSchemaNumericConstraints,
 } from "@commissary/translation";
+import { applyAgentEnvelope } from "./agent-envelope.ts";
+import {
+  hashAntigravitySessionId,
+  scopeAntigravitySessionIdForCredential,
+} from "./derived-session.ts";
 import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 
 export const ANTIGRAVITY_BASE_URL_DAILY = "https://daily-cloudcode-pa.googleapis.com";
@@ -67,28 +73,43 @@ export const configuredUserAgent = (
   metadata: JsonObject,
 ): string => attributeOrMetadata(attributes, metadata, "user_agent");
 
-const generateSessionId = (): string => {
-  const value =
-    BigInt.asUintN(63, BigInt(`0x${randomUUID().replaceAll("-", "").slice(0, 16)}`)) %
-    9_000_000_000_000_000_000n;
+/** `generateSessionID`: a random signed 64-bit decimal id. */
+const generateSessionId = (): string =>
+  BigInt.asIntN(64, BigInt(`0x${randomUUID().replaceAll("-", "").slice(0, 16)}`)).toString();
 
-  return `-${value}`;
-};
+/**
+ * `generateStableSessionIDFromContentsForAuth`: the first non-empty text of the first user turn that has one (every part
+ * is scanned, CLIProxyAPI 18a03e40), hashed into a signed 64-bit id (55e5a7ea). With a credential the id is scoped to it
+ * (3a24d03c); without contents the id is random.
+ */
+export const stableSessionId = (payload: Json, credentialId = ""): string => {
+  let contents = get(payload, "request.contents");
 
-/** `generateStableSessionID`: the first user turn's first text hashed into a stable negative-looking id. */
-export const stableSessionId = (payload: Json): string => {
-  const contents = get(payload, "request.contents");
+  if (!isJsonArray(contents)) contents = get(payload, "contents");
 
   if (!isJsonArray(contents)) return generateSessionId();
+  const credential = credentialId.trim();
 
   for (const content of contents) {
     if (asString(get(content, "role")) !== "user") continue;
-    const text = asString(get(content, "parts.0.text"));
+    const parts = get(content, "parts");
+    let text = "";
+
+    if (isJsonArray(parts)) {
+      for (const part of parts) {
+        text = asString(get(part, "text"));
+
+        if (text !== "") break;
+      }
+    }
 
     if (text === "") continue;
-    const digest = createHash("sha256").update(text, "utf8").digest();
 
-    return `-${digest.readBigUInt64BE(0) & 0x7fffffffffffffffn}`;
+    return hashAntigravitySessionId(
+      credential === ""
+        ? text
+        : `${text}\0${credential}\0cli-proxy-api:antigravity:content-session`,
+    );
   }
 
   return generateSessionId();
@@ -98,21 +119,42 @@ const setIfDifferent = (payload: Json, path: string, value: string): void => {
   if (get(payload, path) !== value) set(payload, path, value);
 };
 
+export interface EnvelopeOptions {
+  /** The credential the request goes out on: session ids are scoped to it. */
+  readonly credentialId: string;
+  /** The org of the request (the agent sessions' namespace). */
+  readonly org: string;
+  /**
+   * The request's session identity already scoped to the credential (`AntigravitySessionIDForAuth`), empty without
+   * one.
+   */
+  readonly sessionId?: string;
+  /** The upstream model enum of the selected model, when known (`request.labels.model_enum`). */
+  readonly modelEnum?: string;
+  readonly now: number;
+}
+
+/** The completed envelope, and whether it uses the agent protocol (its key order and labels). */
+export interface AntigravityEnvelope {
+  readonly payload: Json;
+  readonly isAgent: boolean;
+}
+
 /**
- * `geminiToAntigravity`: completes the translator's envelope with project, request ids and request type. The result is a
- * copy: the caller's payload is never mutated (da21f1e5, `bytes.Clone`).
+ * `geminiToAntigravityDocForAuth`: completes the translator's envelope with project, session, request ids and request
+ * type. Returns a copy (the caller's payload is never mutated, da21f1e5) and whether the request uses the agent
+ * protocol.
  */
 export const geminiToAntigravity = (
   modelName: string,
   input: Json,
   projectId: string,
-  derivedSessionId = "",
-  now: number = Date.now(),
-): Json => {
+  options: EnvelopeOptions,
+): AntigravityEnvelope => {
   const payload = structuredClone(input);
   setIfDifferent(payload, "model", modelName);
   setIfDifferent(payload, "userAgent", "antigravity");
-  const isImageModel = modelName.includes("image");
+  const isImageModel = modelName.toLowerCase().includes("image");
   let requestType = asString(get(payload, "requestType")).trim();
 
   if (requestType === "") {
@@ -123,16 +165,43 @@ export const geminiToAntigravity = (
   if (projectId !== "") setIfDifferent(payload, "project", projectId);
   else del(payload, "project");
 
+  const credentialId = options.credentialId.trim();
+  const incoming = asString(get(payload, "request.sessionId")).trim();
+  const scoped = options.sessionId?.trim() ?? "";
+
+  // `scopeIncomingAntigravitySessionID`: the request's own session identity wins over the id the client sent.
+  const scopeIncoming = (): string =>
+    scoped !== "" ? scoped : scopeAntigravitySessionIdForCredential(credentialId, incoming);
+
   if (isImageModel) {
-    set(payload, "requestId", `image_gen/${now}/${randomUUID()}/12`);
-  } else if (requestType !== "web_search") {
-    set(payload, "requestId", `agent-${randomUUID()}`);
-    let sessionId = asString(get(payload, "request.sessionId")).trim();
+    if (asString(get(payload, "requestId")).trim() === "")
+      set(payload, "requestId", `image_gen/${options.now}/${randomUUID()}/12`);
 
-    if (sessionId === "") sessionId = derivedSessionId.trim();
+    if (incoming !== "" && credentialId !== "") set(payload, "request.sessionId", scopeIncoming());
+  } else if (requestType === "web_search") {
+    if (incoming !== "" && credentialId !== "") set(payload, "request.sessionId", scopeIncoming());
+  } else {
+    let sessionId = "";
 
-    if (sessionId === "") sessionId = stableSessionId(payload);
+    if (credentialId !== "") {
+      if (scoped !== "" || incoming !== "") sessionId = scopeIncoming();
+    } else sessionId = incoming === "" ? scoped : incoming;
+
+    if (sessionId === "") sessionId = stableSessionId(payload, credentialId);
     set(payload, "request.sessionId", sessionId);
+
+    if (requestType === "agent") {
+      applyAgentEnvelope(payload, {
+        org: options.org,
+        credentialId,
+        sessionId,
+        modelName,
+        ...(options.modelEnum === undefined ? {} : { modelEnum: options.modelEnum }),
+        now: options.now,
+      });
+    } else if (asString(get(payload, "requestId")).trim() === "") {
+      set(payload, "requestId", `${requestType}/${randomUUID()}`);
+    }
   }
 
   del(payload, "request.safetySettings");
@@ -143,7 +212,7 @@ export const geminiToAntigravity = (
     del(payload, "toolConfig");
   }
 
-  return payload;
+  return { payload, isAgent: !isImageModel && requestType === "agent" };
 };
 
 const DECLARATION_KEYS = ["functionDeclarations", "function_declarations"] as const;
@@ -271,6 +340,9 @@ export const sanitizeRequestSchemas = (
  */
 export const constrainRequestPayload = (modelName: string, payload: Json): Json => {
   const promptStructuredOutput = prepareClaudeStructuredOutput(modelName, payload);
+  // The native wire format (`NormalizeAntigravityRequestDoc`, CLIProxyAPI 38067a29): a payload rule or the structured
+  // output prompt may have added a system instruction the translator never saw.
+  normalizeAntigravityRequest(payload);
   const maxOut = get(payload, "request.generationConfig.maxOutputTokens");
 
   if (typeof maxOut === "number") {

@@ -35,6 +35,10 @@ const normalize = (text: string): string =>
     .replace(/"(created_at|completed_at)":\d+/g, '"$1":0')
     .replace(/"requestId":"[^"]*"/g, '"requestId":"R"')
     .replace(/"sessionId":"[^"]*"/g, '"sessionId":"S"')
+    .replace(
+      /"(cascade_id|root_cascade_id|trajectory_id|request_id)":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+      '"$1":"U',
+    )
     .replace(/(resp|msg)_[0-9a-f]{8,}_\d+/g, "$1_X");
 
 const capsulesIn = (text: string): string[] => [
@@ -270,9 +274,14 @@ describe("compaction scenarios against the Go executors", () => {
       expect(response.status).toBe(200);
       expect(h.calls).toHaveLength(scenario.seen.length);
       h.calls.forEach((call, index) => {
-        expect(JSON.parse(normalize(call.body)), `upstream body ${index}`).toEqual(
-          JSON.parse(scenario.seen[index] ?? ""),
-        );
+        // Antigravity bodies are compared byte for byte: the agent envelope's key order is part of the wire format.
+        if (scenario.provider === "antigravity")
+          expect(normalize(call.body), `upstream body ${index}`).toBe(scenario.seen[index]);
+        else {
+          expect(JSON.parse(normalize(call.body)), `upstream body ${index}`).toEqual(
+            JSON.parse(scenario.seen[index] ?? ""),
+          );
+        }
       });
 
       const summaries = await Promise.all(capsulesIn(text).map(unsealCompaction));
