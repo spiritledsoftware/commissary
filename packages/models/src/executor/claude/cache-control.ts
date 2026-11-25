@@ -308,7 +308,7 @@ const rollingMessageTarget = (body: JsonObject): RollingTarget | undefined => {
   return undefined;
 };
 
-const injectMessagesCacheControl = (body: JsonObject): void => {
+export const injectMessagesCacheControl = (body: JsonObject): void => {
   const target = rollingMessageTarget(body);
 
   if (target === undefined) return;
@@ -328,7 +328,7 @@ const injectMessagesCacheControl = (body: JsonObject): void => {
   }
 };
 
-const injectToolsCacheControl = (body: JsonObject): void => {
+export const injectToolsCacheControl = (body: JsonObject): void => {
   const tools = body.tools;
 
   if (!isArr(tools)) return;
@@ -355,7 +355,7 @@ const systemBlockCanHostCacheControl = (item: Json | undefined): boolean => {
 const lastCacheableSystemIndex = (system: ReadonlyArray<Json>): number =>
   system.findLastIndex(systemBlockCanHostCacheControl);
 
-const injectSystemCacheControl = (body: JsonObject): void => {
+export const injectSystemCacheControl = (body: JsonObject): void => {
   const system = body.system;
 
   if (isArr(system)) {

@@ -27,7 +27,7 @@ export const COPILOT_DEFAULT_API = "https://api.individual.githubcopilot.com";
 const COPILOT_TOKEN_URL = `${GITHUB_API}/copilot_internal/v2/token`;
 
 /** `CLIUserAgent`: the official CLI's agent; Workers report the `linux` platform. */
-const COPILOT_USER_AGENT = "copilot/1.0.114 (linux v24.22.1) term/unknown";
+export const COPILOT_USER_AGENT = "copilot/1.0.114 (linux v24.22.1) term/unknown";
 
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 

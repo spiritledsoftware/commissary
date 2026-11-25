@@ -73,7 +73,11 @@ export {
   wrapApplyPatchInput,
 } from "./translator/common/apply-patch.ts";
 
-export { sseEventData } from "./translator/common/bytes.ts";
+export {
+  claudeInputTokensJson,
+  geminiTokenCountJson,
+  sseEventData,
+} from "./translator/common/bytes.ts";
 
 export { TOOL_SEARCH_ID_PREFIX } from "./translator/common/responses-tools.ts";
 

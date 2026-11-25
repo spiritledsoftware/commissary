@@ -9,6 +9,7 @@ import { Context, Effect, Layer } from "effect";
 import { makeAntigravityExecutor } from "./antigravity/executor.ts";
 import { makeClaudeExecutor } from "./claude/executor.ts";
 import { makeCodexExecutor } from "./codex/executor.ts";
+import { makeCopilotExecutor } from "./copilot/executor.ts";
 import { makeDevinExecutor } from "./devin/executor.ts";
 import {
   makeGeminiExecutor,
@@ -54,6 +55,7 @@ const FIXED_EXECUTORS = new Map<string, () => ProviderExecutor>([
   ["gemini-interactions", makeGeminiInteractionsExecutor],
   ["vertex", makeVertexExecutor],
   ["devin", makeDevinExecutor],
+  ["copilot", () => makeCopilotExecutor()],
   ["meta", makeMetaExecutor],
   ["kimi", makeKimiExecutor],
   ["kimi-ai", makeKimiExecutor],
