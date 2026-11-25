@@ -16,7 +16,8 @@ import {
   sseResponse,
   type UpstreamResponder,
 } from "./support/pipeline.ts";
-import type { Json } from "@commissary/json";
+import { get, type Json } from "@commissary/json";
+import { capGeminiMaxOutputTokens } from "../src/executor/gemini/shaping.ts";
 
 const YAML = `
 requests:
@@ -122,6 +123,27 @@ describe("POST /v1beta/models/{model}:generateContent", () => {
     );
     const body = JSON.parse(h.calls[0]?.body ?? "{}");
     expect(body.generationConfig.maxOutputTokens).toBeLessThan(99999999);
+  });
+
+  // Go: gemini_executor_test.go (ac415c08): a fractional value just over the limit is capped too.
+  it("caps a fractional maxOutputTokens just over the model limit", () => {
+    const limited = capGeminiMaxOutputTokens(
+      { generationConfig: { maxOutputTokens: 1e12 } },
+      "gemini-2.5-flash",
+    );
+
+    const limit = Number(get(limited, "generationConfig.maxOutputTokens"));
+    const over = { generationConfig: { maxOutputTokens: limit + 0.5 } };
+
+    expect(
+      get(capGeminiMaxOutputTokens(over, "gemini-2.5-flash"), "generationConfig.maxOutputTokens"),
+    ).toBe(limit);
+    expect(
+      capGeminiMaxOutputTokens(
+        { generationConfig: { maxOutputTokens: limit } },
+        "gemini-2.5-flash",
+      ),
+    ).toEqual({ generationConfig: { maxOutputTokens: limit } });
   });
 
   it("passes `alt` through as $alt and keeps the suffix out of the upstream model", async () => {

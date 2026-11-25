@@ -8,7 +8,7 @@
  */
 import { Buffer } from "node:buffer";
 import { deflateSync } from "node:zlib";
-import { asInt, asString, del, exists, get, isJsonArray, type Json, set } from "@commissary/json";
+import { asString, del, exists, get, isJsonArray, type Json, set } from "@commissary/json";
 import {
   compatibleGeminiSignature,
   isGeminiThoughtSignatureBypass,
@@ -140,7 +140,8 @@ export const capGeminiMaxOutputTokens = (body: Json, modelName: string): Json =>
   const outputTokenLimit = info.outputTokenLimit ?? 0;
   const limit = outputTokenLimit > 0 ? outputTokenLimit : (info.maxCompletionTokens ?? 0);
 
-  if (limit <= 0 || asInt(maxOut) <= limit) return body;
+  // A float comparison: a fractional or huge value is capped too (CLIProxyAPI ac415c08).
+  if (limit <= 0 || maxOut <= limit) return body;
 
   return set(body, "generationConfig.maxOutputTokens", limit);
 };
