@@ -21,7 +21,7 @@ import {
 } from "../src/thinking/index.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
-import { catalogLookup } from "./support/thinking.ts";
+import { catalogLookup, channelCatalogLookup } from "./support/thinking.ts";
 
 // Ports of the Go unit tests in internal/thinking (summary_test.go, claude_enabled_effort_test.go,
 // kimi_max_clamp_repro_test.go, apply_codex_usage_test.go, apply_configured_api_key_test.go).
@@ -940,7 +940,7 @@ describe("Codex reasoning effort and configuration_update", () => {
           id: "opaque-route",
           type: "codex",
           supportConfigurationUpdate: supported,
-          thinking: { levels: ["low", "high", "xhigh"] },
+          thinking: { levels: ["low", "medium", "high", "xhigh"] },
         };
 
         const result = applyWithModelInfo(
@@ -965,6 +965,136 @@ describe("Codex reasoning effort and configuration_update", () => {
         );
         expect(str(result.body, "reasoning.effort")).toBe("high");
         expect(str(result.body, "input.0.type") === "configuration_update").toBe(supported);
+      });
+    }
+  });
+});
+
+// Go internal/thinking/apply_responses_effort_test.go (f03f4cd8).
+describe("native Responses effort validation", () => {
+  const cases: ReadonlyArray<{
+    readonly name: string;
+    readonly suffix?: string;
+    readonly body: string;
+    readonly want?: string;
+  }> = [
+    {
+      name: "unsupported baseline uses minimum effort",
+      body: `{"reasoning":{"effort":"none","summary":"auto","other":7},"input":[{"role":"user","content":"hi"}]}`,
+      want: `{"reasoning":{"effort":"low","summary":"auto","other":7},"input":[{"role":"user","content":"hi"}]}`,
+    },
+    {
+      name: "every update is validated without flattening the baseline",
+      body: `{"reasoning":{"effort":"xhigh","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"none","other":7}},{"role":"user","content":"first"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"assistant","content":"reply"},{"type":"configuration_update","reasoning":{"effort":"none"}}]}`,
+      want: `{"reasoning":{"effort":"xhigh","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"low","other":7}},{"role":"user","content":"first"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"assistant","content":"reply"},{"type":"configuration_update","reasoning":{"effort":"low"}}]}`,
+    },
+    {
+      name: "update does not invent a baseline",
+      body: `{"input":[{"type":"configuration_update","reasoning":{"effort":"none"}},{"role":"user","content":"hi"}]}`,
+      want: `{"input":[{"type":"configuration_update","reasoning":{"effort":"low"}},{"role":"user","content":"hi"}]}`,
+    },
+    {
+      name: "suffix overrides baseline but updates are still validated",
+      suffix: "(high)",
+      body: `{"reasoning":{"effort":"invalid","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}}]}`,
+      want: `{"reasoning":{"effort":"high","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}}]}`,
+    },
+    {
+      name: "invalid suffix does not bypass effort validation",
+      suffix: "(invalid)",
+      body: `{"reasoning":{"effort":"none"},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}}]}`,
+      want: `{"reasoning":{"effort":"low"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}}]}`,
+    },
+    {
+      name: "auto uses the existing model fallback",
+      body: `{"reasoning":{"effort":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"auto"}}]}`,
+      want: `{"reasoning":{"effort":"medium"},"input":[{"type":"configuration_update","reasoning":{"effort":"medium"}}]}`,
+    },
+    {
+      name: "supported efforts remain unchanged",
+      body: `{"reasoning":{"effort":"max","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}},{"type":"configuration_update","reasoning":{"effort":"medium"}},{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"configuration_update","reasoning":{"effort":"xhigh"}},{"type":"configuration_update","reasoning":{"effort":"max"}}]}`,
+    },
+    {
+      name: "missing effort remains absent",
+      body: `{"reasoning":{"summary":"auto"},"input":[{"type":"configuration_update","tools":[]},{"role":"user","content":"hi"}]}`,
+    },
+  ];
+
+  for (const model of ["gpt-6-sol", "gpt-6.1-sol"]) {
+    for (const format of ["openai-response", "codex"]) {
+      for (const c of cases) {
+        it(`${model}/${format}/${c.name}`, () => {
+          const info = channelCatalogLookup(model, "codex");
+
+          expect(info?.supportConfigurationUpdate, `${model} must be native Responses`).toBe(true);
+
+          const result = applyWithModelInfo(
+            parse(c.body),
+            undefined,
+            model + (c.suffix ?? ""),
+            format,
+            "codex",
+            "codex",
+            info ?? null,
+          );
+
+          expect(result.error).toBeUndefined();
+          expect(result.body).toEqual(parse(c.want ?? c.body));
+        });
+      }
+    }
+  }
+
+  describe("respects model capabilities", () => {
+    const body = `{"reasoning":{"effort":"none","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}}]}`;
+
+    const capabilities: ReadonlyArray<{
+      readonly name: string;
+      readonly thinking?: ThinkingModelInfo["thinking"];
+      readonly userDefined?: boolean;
+      readonly want?: string;
+    }> = [
+      { name: "none is a supported level", thinking: { levels: ["none", "low", "high"] } },
+      {
+        name: "model permits zero effort",
+        thinking: { zeroAllowed: true, levels: ["low", "high"] },
+      },
+      { name: "missing thinking metadata remains opaque" },
+      { name: "missing levels remain opaque", thinking: {} },
+      {
+        name: "user defined capabilities remain opaque",
+        thinking: { levels: ["low", "high"] },
+        userDefined: true,
+      },
+      {
+        name: "configured model uses its lowest level rather than a hardcoded low",
+        thinking: { levels: ["high", "medium"] },
+        want: `{"reasoning":{"effort":"medium","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"medium"}}]}`,
+      },
+    ];
+
+    for (const c of capabilities) {
+      it(c.name, () => {
+        const info: ThinkingModelInfo = {
+          id: "opaque-route",
+          type: "codex",
+          supportConfigurationUpdate: true,
+          thinking: c.thinking,
+          userDefined: c.userDefined,
+        };
+
+        const result = applyWithModelInfo(
+          parse(body),
+          undefined,
+          info.id,
+          "openai-response",
+          "codex",
+          "codex",
+          info,
+        );
+
+        expect(result.error).toBeUndefined();
+        expect(result.body).toEqual(parse(c.want ?? body));
       });
     }
   });
@@ -1195,17 +1325,13 @@ describe("configuration_update routing", () => {
         body: `{"model":"gpt-6-sol","input":[{"type":"configuration_update","reasoning":{"effort":"xhigh"}}]}`,
         effort: "xhigh",
       },
-      {
-        body: `{"model":"gpt-6-sol","reasoning":{"effort":"high"},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}}]}`,
-        effort: "none",
-      },
     ];
 
     for (const c of bodies) {
       for (const bound of [false, true]) {
         const body = parse(c.body);
         const original = cloneJson(body);
-        const info = catalogLookup("gpt-6-sol", "codex");
+        const info = channelCatalogLookup("gpt-6-sol", "codex");
         expect(
           info?.supportConfigurationUpdate,
           "gpt-6-sol must support configuration updates",

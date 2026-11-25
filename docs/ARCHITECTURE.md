@@ -496,6 +496,34 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   (OpenAI-compatible models) is clamped to a supported level, as across families, instead of being rejected
   (`LEVEL_NOT_SUPPORTED`). The thinking golden test masks those cases by that predicate.
 - `stripThinkingConfig` matches the provider name case-insensitively and strips `openai-response` like `codex` (Go `6e6afab9`).
+- **Budget ↔ level** (Go `a308c55b`, `f110136a`). A budget above `xhigh`'s 32768 converts to `max`. A budget becomes a
+  level for level-only models, and on hybrid models when the target is Interactions or a Claude target the client did
+  not send as Claude (translated budgets use adaptive effort; a native Claude budget stays a budget); the derived level
+  then clamps to the nearest level the model lists, ties to the lower. OpenAI Chat, Codex and xAI see a hybrid model as
+  level-only, since they accept effort levels only. A same-family explicit level the model does not list is a 400
+  (`LEVEL_NOT_SUPPORTED`); across families it clamps.
+- **User-defined models** are validated too when they carry thinking support, so a translated budget clamps to the
+  model's range, but validation stops before the range and level checks and keeps custom settings. A level stays a
+  level for a budget-capable target when the client sent Gemini or Interactions or the model lists levels (Go
+  `3d1a0e0d`); `none` and `auto` still become budgets.
+- **Native Responses** (Go `f03f4cd8`): a Codex/xAI model with configuration updates keeps its effort timeline (top-level
+  baseline and each `configuration_update`), but each effort the model does not list is validated and rewritten with
+  the applier's rules (`none` on a model that cannot turn thinking off becomes its lowest level, `auto` its fallback),
+  and an invalid one is a 400. A thinking suffix replaces the baseline, so only the updates are checked then. Models
+  without levels, and user-defined ones, pass through.
+- **Claude budgets below the model minimum** after the `max_tokens` cap disable thinking (Go `75d03aea`) instead of
+  passing the invalid budget upstream. Antigravity drops its `thinkingConfig` in that case, and with it the
+  `includeThoughts` flag and the summary re-application (Go `b2151d64`).
+- **Antigravity** writes `thinkingLevel` upper case (`HIGH`, Go `127c50bc`) and replaces a snake_case `thinking_config`
+  object with `thinkingConfig`, keeping its `includeThoughts` (Go `84856805`).
+- **OpenAI Chat requests** without a non-blank `reasoning_effort` read Gemini's thinking fields
+  (`generationConfig.thinkingConfig`, `generation_config.thinking_config`, then `extra_body.google.thinking_config`,
+  snake_case or camelCase; Go `ffa55112`), for validation and the usage effort label. The Gemini and Antigravity Chat
+  request translators' use of them belongs with those translators.
+- **Model lookup per provider** (Go `3d1a0e0d`): Go's `LookupModelInfo(id, provider)` prefers the provider channel's
+  static definition (Antigravity's `gemini-3.1-flash-lite` differs from Gemini's). The thinking fixture dumps those
+  channel definitions (`catalogByChannel`), and the thinking golden test looks models up through them
+  (`channelCatalogLookup`).
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
   leniently in `extractCodexConfig`; the Workers port only handles parsed bodies, so the applier cases whose body and
@@ -1171,7 +1199,13 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
     additions' own records. `aistudio` and `gemini` share `google`, `vertex` takes `google-vertex`, Codex plans take
     `openai`. Differences from Go: Devin is one aggregated section (a `devin/<id>` lookup resolves the whole section, Go's raw-section
     quirk is not repeated for `devin/` ids in `lookupModelInfo`), and Go's hard-coded Codex/xAI/Devin built-ins
-    (`builtins.json`) are now additions.
+    (`builtins.json`) are now additions, so a provider has one catalog: where Go's shared static lookup still reads its
+    raw xAI entries under the built-ins, Commissary answers the built-in record. A channel-qualified id (`vertex/<id>`)
+    also matches the channel's bare catalog id and answers with the qualified id, as in Go.
+    `gemini` and `aistudio` share `google`, so both serve every Gemini 4 model models.dev lists there (Go's `gemini`
+    section lists only Argon, its `aistudio` section no Neon), and Gemini 4 output limits are models.dev's (`google`
+    gives Argon and Carbon 32768 where Go caps every Gemini 4 model at 65536). Their thinking follows Go through the
+    additions' `facts`: a 128–65535 budget with levels, except Neon everywhere and Hydrogen on Vertex (levels only).
   - _Bundled and stored copies_: `catalog/models-dev.json` is the trimmed snapshot shipped with the Worker (regenerated
     with `pnpm run catalog:sync [url|file]`, `tools/sync-models-dev-catalog.ts`, idempotent). The same document is stored in KV
     `CACHE` (`registry/models-dev.json`) by the refresh; `CatalogStore` (`catalog-store.ts`) serves the KV copy per isolate,
@@ -1232,6 +1266,8 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
 - **Index** (`registry.ts`): provider counts, per-provider records ("last registered wins", credentials registered in id
   order), the 5 min quota window and suspension rules of `modelRegistrationAvailability`, `GetModelProviders`,
   `GetModelInfo`, `LookupModelInfo` (registry, then static catalogs), `GetFirstAvailableModel`, native web-search capability.
+  A lookup that names a provider sees only that provider's registrations, then that provider's static catalog, then the
+  shared static catalogs (never Devin's for a bare id); without a provider it takes the last registered record.
   Records are camelCase `ModelInfo`s that satisfy `ThinkingModelInfo`; `snapshot.lookupModelInfo` is the `ModelInfoLookup`
   for `applyThinking`, `snapshot.providersForModel` is `util.GetProviderName` (the pipeline's `ModelProviders`).
 - **Listings** (`listings.ts`, `models-api.ts`, `routes.ts`): `GET /v1/models[/{id}]` dispatches Grok shell UA -> `client_version`
@@ -1263,7 +1299,9 @@ models and Home.
 
 **Codex client catalog** (`GET /v1/models[/{id}]?client_version=...`, `registry/codex-client-models.ts`, port of
 `internal/client/codex/models`): every available model becomes an entry cloned from its template in `codex_client_models.json`
-(or the `gpt-5.5` template with compact instructions), with reasoning levels (`max`/`ultra` only for clients >= 0.144.0 or
+(or the `gpt-5.5` baseline template with compact instructions, listed, `supported_in_api` and
+`minimal_client_version: 0.124.0`, keeping the model's own display name over the catalog's), template modalities filtered
+to what the client accepts (`text`, `image`), with reasoning levels (`max`/`ultra` only for clients >= 0.144.0 or
 unparseable versions), modalities, priorities, Devin display names, `client.codex.optimize-multi-agent-v2` (`multi_agent_version`),
 `client.codex.enable-apply-patch` (`apply_patch_tool_type: freeform` only when every provider of the exact public model has an
 executor, `supportsApplyPatchProviders`) and `cpa_capabilities.web_search` for `client_version=cpa`. The body is plain `JSON.stringify` output.

@@ -4,7 +4,15 @@
  * Go source: internal/thinking/suffix.go, plus `parseSuffixToConfig` from internal/thinking/apply.go and
  * `preserveResolvedModelSuffix` from sdk/cliproxy/auth/oauth_model_alias.go.
  */
-import { budgetConfig, EMPTY_CONFIG, Level, levelConfig, noneConfig, autoConfig } from "./types.ts";
+import {
+  autoConfig,
+  budgetConfig,
+  EMPTY_CONFIG,
+  hasThinkingConfig,
+  Level,
+  levelConfig,
+  noneConfig,
+} from "./types.ts";
 import type { SuffixResult, ThinkingConfig, ThinkingMode } from "./types.ts";
 
 /** Splits `model(value)`: the last `(` up to a final `)` (the model must end with `)`). */
@@ -95,4 +103,11 @@ export const parseSuffixToConfig = (rawSuffix: string): ThinkingConfig => {
   if (budget !== undefined) return budget === 0 ? noneConfig() : budgetConfig(budget);
 
   return EMPTY_CONFIG;
+};
+
+/** Whether the model's suffix is a thinking config (`model(high)`), not an ignored one (`model(preview)`). */
+export const hasThinkingSuffix = (model: string): boolean => {
+  const suffix = parseSuffix(model);
+
+  return suffix.hasSuffix && hasThinkingConfig(parseSuffixToConfig(suffix.rawSuffix));
 };

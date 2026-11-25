@@ -39,6 +39,8 @@ export interface ApplyFixture {
 
 export interface Fixture {
   readonly catalog: Record<string, ModelSpec>;
+  /** Per provider key, the models whose channel definition differs from `catalog`'s. */
+  readonly catalogByChannel: Record<string, Record<string, ModelSpec>>;
   readonly synthetic: Record<string, ModelSpec>;
   readonly suffix: ReadonlyArray<{
     readonly input: string;
@@ -116,8 +118,15 @@ export interface Fixture {
 
 export const fixture = JSON.parse(raw) as Fixture;
 
-/** `registry.LookupModelInfo` over the static catalog dumped from Go (provider-independent). */
+/** `registry.LookupStaticModelInfo` over the static catalog dumped from Go (provider-independent). */
 export const catalogLookup: ModelInfoLookup = (modelId) => fixture.catalog[modelId];
+
+/**
+ * `registry.LookupModelInfo` over the static catalog dumped from Go: the provider's channel definition first (Go
+ * `3d1a0e0d`), then the provider-independent one.
+ */
+export const channelCatalogLookup: ModelInfoLookup = (modelId, provider) =>
+  fixture.catalogByChannel[provider.trim().toLowerCase()]?.[modelId] ?? fixture.catalog[modelId];
 
 /** Parses fixture JSON text; unparsable text (a Go "invalid body") becomes `undefined`. */
 export const parseBody = (text: string): Json | undefined => tryParseJson(text);

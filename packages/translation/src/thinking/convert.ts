@@ -15,7 +15,6 @@ const LEVEL_TO_BUDGET: ReadonlyMap<string, number> = new Map([
   ["medium", 8192],
   ["high", 24576],
   ["xhigh", 32768],
-  // "max" is Claude adaptive effort; per-model clamping reduces it for budget-only providers.
   ["max", 128000],
 ]);
 
@@ -31,7 +30,9 @@ export const THRESHOLD_MEDIUM = 8192;
 
 export const THRESHOLD_HIGH = 24576;
 
-/** Budget → nearest level; `undefined` for invalid negatives (< -1). */
+export const THRESHOLD_XHIGH = 32768;
+
+/** Budget → its canonical level (above xhigh's 32768 is max); `undefined` for invalid negatives (< -1). */
 export const convertBudgetToLevel = (budget: number): string | undefined => {
   if (budget < -1) return undefined;
 
@@ -47,7 +48,9 @@ export const convertBudgetToLevel = (budget: number): string | undefined => {
 
   if (budget <= THRESHOLD_HIGH) return Level.high;
 
-  return Level.xhigh;
+  if (budget <= THRESHOLD_XHIGH) return Level.xhigh;
+
+  return Level.max;
 };
 
 /** Case-insensitive, trimmed membership test. */

@@ -8,6 +8,7 @@ import { asInt, asString, get, type Json } from "@commissary/json";
 import { extractClaudeEffortDirectiveConfig } from "./claude-effort-directive.ts";
 import { convertBudgetToLevel } from "./convert.ts";
 import { extractConfigurationUpdateConfig, isResponsesFormat } from "./configuration-update.ts";
+import { extractOpenAIGoogleThinkingConfig } from "./google-extra-body.ts";
 import { getFirst, getString, normalize } from "./json.ts";
 import { parseSuffix, parseSuffixToConfig } from "./suffix.ts";
 import {
@@ -155,14 +156,20 @@ export const extractInteractionsConfig = (body: Json | undefined): ThinkingConfi
   return EMPTY_CONFIG;
 };
 
-/** `reasoning_effort` (Chat Completions); `none` disables. The value is not normalised. */
+/**
+ * `reasoning_effort` (Chat Completions); `none` disables. The value is not normalised. A missing or blank effort
+ * falls back to Gemini's thinking fields (`generationConfig`, `extra_body.google.thinking_config`).
+ */
 export const extractOpenAIConfig = (body: Json | undefined): ThinkingConfig => {
   const effort = get(body, "reasoning_effort");
 
-  if (effort === undefined) return EMPTY_CONFIG;
-  const value = asString(effort);
+  if (effort !== undefined) {
+    const value = asString(effort);
 
-  return value === "none" ? noneConfig() : levelConfig(value);
+    if (value.trim() !== "") return value === "none" ? noneConfig() : levelConfig(value);
+  }
+
+  return extractOpenAIGoogleThinkingConfig(body);
 };
 
 /**

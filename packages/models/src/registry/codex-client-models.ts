@@ -79,6 +79,9 @@ const LEGACY_LEVELS = new Set(["none", "minimal", "low", "medium", "high", "xhig
 const FALLBACK_INSTRUCTIONS =
   "You are Codex, a coding agent. You and the user share one workspace.";
 
+/** `codexClientFallbackMinimalClientVersion`: models without a template do not inherit the baseline's version gate. */
+const FALLBACK_MINIMAL_CLIENT_VERSION = "0.124.0";
+
 const NON_CHAT_IDS = new Set([
   "grok-imagine-image-quality",
   ...OPENAI_IMAGE_MODEL_IDS,
@@ -371,6 +374,24 @@ const setModalities = (entry: Entry, modalities: string[], originalDetail: boole
 
   if (modalities.includes("image")) entry["supports_image_detail_original"] = originalDetail;
   else delete entry["supports_image_detail_original"];
+};
+
+/** `stringSliceValue`: the string items of a JSON array (`[]` for anything else). */
+const stringItems = (value: Json | undefined): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+/**
+ * A named template keeps only the modalities the Codex client accepts; without an image modality it loses
+ * `supports_image_detail_original`.
+ */
+const filterTemplateModalities = (entry: Entry): void => {
+  const inherited = stringItems(entry["input_modalities"]);
+
+  if (inherited.length === 0) return;
+  const filtered = filterModalities(inherited);
+  entry["input_modalities"] = filtered;
+
+  if (!filtered.includes("image")) delete entry["supports_image_detail_original"];
 };
 
 /** `applyCodexClientInputModalitiesMetadata`. */
@@ -763,22 +784,26 @@ const applyModelMetadata = (
   let thinking: ThinkingSupport | undefined;
 
   if (info !== undefined) {
-    if (info.displayName) displayName = info.displayName;
+    // The model's own (configured) display name wins over the catalog's.
+    if (displayName === "") displayName = info.displayName?.trim() ?? "";
 
     if (info.description) description = info.description;
 
     if (contextWindow <= 0 && (info.contextLength ?? 0) > 0)
       contextWindow = info.contextLength ?? contextWindow;
 
-    if (info.type === "openai-image") {
-      entry["visibility"] = "hide";
-      delete entry["input_modalities"];
-      delete entry["supports_image_detail_original"];
-    } else {
-      applyInputModalitiesMetadata(entry, info.supportedInputModalities);
-    }
-
     thinking ??= info.thinking;
+  }
+
+  if (info?.type === "openai-image") {
+    entry["visibility"] = "hide";
+    delete entry["input_modalities"];
+    delete entry["supports_image_detail_original"];
+  } else {
+    // The baseline template may be hidden or carry modalities the client rejects: a fallback model is listed.
+    entry["visibility"] = "list";
+    applyInputModalitiesMetadata(entry, stringItems(entry["input_modalities"]));
+    applyInputModalitiesMetadata(entry, info?.supportedInputModalities);
   }
 
   applyThinkingMetadata(entry, thinking, input.clientVersion);
@@ -788,6 +813,8 @@ const applyModelMetadata = (
   entry["slug"] = id;
   entry["display_name"] = displayName === "" ? id : displayName;
   entry["description"] = description === "" ? id : description;
+  entry["minimal_client_version"] = FALLBACK_MINIMAL_CLIENT_VERSION;
+  entry["supported_in_api"] = true;
   entry["prefer_websockets"] = false;
 
   if (input.optimizeMultiAgentV2) entry["multi_agent_version"] = "v2";
@@ -873,6 +900,7 @@ export const buildCodexClientModels = (input: CodexClientModelsInput): JsonObjec
     if (template !== undefined) {
       const entry = clone(template);
       entry["slug"] = id;
+      filterTemplateModalities(entry);
       applyModelCapabilities(input, entry, id, metadataId, input.lookupModelInfo(id));
       setIfString(entry, "display_name", model);
       setIfString(entry, "description", model);

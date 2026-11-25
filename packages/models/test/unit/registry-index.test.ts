@@ -13,6 +13,15 @@ import {
   scenarioIndex,
 } from "../support/registry.ts";
 
+/** Go xAI built-ins (`WithXAIBuiltins`) whose raw models.json entry differs from the built-in. */
+const GO_RAW_XAI_SHADOWED = new Set([
+  "grok-imagine-image",
+  "grok-imagine-image-2.0",
+  "grok-imagine-image-quality",
+  "grok-imagine-video",
+  "grok-imagine-video-1.5",
+]);
+
 describe("registry index parity with Go (model_registry.go)", () => {
   for (const scenario of fixture.scenarios) {
     describe(scenario.name, () => {
@@ -36,10 +45,11 @@ describe("registry index parity with Go (model_registry.go)", () => {
       });
 
       it("LookupModelInfo falls back to the static catalogs", () => {
-        // Go looks Devin models up in the raw `devin` section, not the aggregated list the registry serves; the
-        // catalog has the aggregated list only (ADR 0020), so those queries are not comparable.
+        // Go's shared static fallback reads its raw models.json xAI entries, which its xAI built-ins replace
+        // everywhere else; the fixture carries only the built-ins and Commissary has one xAI catalog, so those
+        // queries are not comparable.
         for (const query of scenario.registry.lookups.filter(
-          (entry) => !entry.model.startsWith("devin/"),
+          (entry) => !(entry.provider.trim() !== "" && GO_RAW_XAI_SHADOWED.has(entry.model)),
         )) {
           expect(
             canonOf(index.lookupModelInfo(catalogs, query.model, query.provider)),

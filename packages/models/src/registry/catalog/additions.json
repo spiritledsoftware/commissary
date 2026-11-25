@@ -294,6 +294,29 @@
             "min": 128,
             "max": 65535
           }
+        },
+        "gemini-4-argon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-carbon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-hydrogen": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-neon": {
+          "thinking": {
+            "dynamicAllowed": false
+          }
         }
       },
       "models": [
@@ -465,6 +488,28 @@
           "thinking": {
             "min": 128,
             "max": 65535
+          }
+        },
+        "gemini-4-argon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-carbon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-hydrogen": {
+          "thinking": {
+            "dynamicAllowed": false
+          }
+        },
+        "gemini-4-neon": {
+          "thinking": {
+            "dynamicAllowed": false
           }
         }
       },
@@ -942,6 +987,29 @@
             "min": 128,
             "max": 65535
           }
+        },
+        "gemini-4-argon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-carbon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-hydrogen": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-neon": {
+          "thinking": {
+            "dynamicAllowed": false
+          }
         }
       },
       "models": [
@@ -1307,6 +1375,12 @@
     },
     "meta": {
       "facts": {
+        "muse-ember-1.0": {
+          "name": "muse-ember-1.0",
+          "nativeCapabilities": {
+            "webSearch": true
+          }
+        },
         "muse-spark-1.3": {
           "name": "muse-spark-1.3"
         },
@@ -1564,6 +1638,8 @@
         ],
         "team": [
           "gpt-5.5",
+          "gpt-6.2-astra",
+          "gpt-6.2-sol",
           "gpt-6-astra",
           "gpt-6-sol",
           "gpt-6.1-sol",
@@ -1583,6 +1659,8 @@
         ],
         "plus": [
           "gpt-5.5",
+          "gpt-6.2-astra",
+          "gpt-6.2-sol",
           "gpt-6-astra",
           "gpt-6-sol",
           "gpt-6.1-sol",
@@ -1602,6 +1680,8 @@
         ],
         "pro": [
           "gpt-5.5",
+          "gpt-6.2-astra",
+          "gpt-6.2-sol",
           "gpt-6-astra",
           "gpt-6-sol",
           "gpt-6.1-sol",
@@ -1975,6 +2055,76 @@
           }
         },
         {
+          "id": "gpt-6.2-astra",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "openai",
+          "created": 1794942000,
+          "displayName": "GPT 6.2 Astra",
+          "version": "gpt-6.2",
+          "description": "GPT-6.2 Astra is our most capable model for your hardest projects, from start to finish.",
+          "contextLength": 272000,
+          "maxCompletionTokens": 128000,
+          "supportedParameters": [
+            "tools"
+          ],
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportConfigurationUpdate": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "openai",
+          "created": 1794942000,
+          "displayName": "GPT 6.2 Sol",
+          "version": "gpt-6.2",
+          "description": "GPT-6.2 Sol is our go-to model for everyday work, from coding to powering agents at scale.",
+          "contextLength": 500000,
+          "maxCompletionTokens": 128000,
+          "supportedParameters": [
+            "tools"
+          ],
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportConfigurationUpdate": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        },
+        {
           "id": "gpt-5.6-sol",
           "object": "model",
           "ownedBy": "openai",
@@ -1982,7 +2132,7 @@
           "created": 1783616400,
           "displayName": "GPT 5.6 Sol",
           "version": "gpt-5.6",
-          "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts\u2014try starting lower, then turn it up for harder jobs.",
+          "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs.",
           "contextLength": 921000,
           "maxCompletionTokens": 128000,
           "supportedParameters": [
@@ -2184,6 +2334,148 @@
           }
         },
         {
+          "id": "gemini-4-argon-high",
+          "object": "model",
+          "ownedBy": "antigravity",
+          "type": "antigravity",
+          "created": 0,
+          "displayName": "Gemini 4 Argon",
+          "name": "gemini-4-argon-high",
+          "description": "Gemini 4 Argon (High)",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportsWebSearch": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "min": 1,
+            "max": 65535,
+            "dynamicAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        },
+        {
+          "id": "gemini-4-carbon-high",
+          "object": "model",
+          "ownedBy": "antigravity",
+          "type": "antigravity",
+          "created": 0,
+          "displayName": "Gemini 4 Carbon",
+          "name": "gemini-4-carbon-high",
+          "description": "Gemini 4 Carbon (High)",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportsWebSearch": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "min": 1,
+            "max": 65535,
+            "dynamicAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        },
+        {
+          "id": "gemini-4-hydrogen-xhigh",
+          "object": "model",
+          "ownedBy": "antigravity",
+          "type": "antigravity",
+          "created": 0,
+          "displayName": "Gemini 4 Hydrogen",
+          "name": "gemini-4-hydrogen-xhigh",
+          "description": "Gemini 4 Hydrogen (XHigh)",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportsWebSearch": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "min": 1,
+            "max": 65535,
+            "dynamicAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        },
+        {
+          "id": "gemini-4-neon-xhigh",
+          "object": "model",
+          "ownedBy": "antigravity",
+          "type": "antigravity",
+          "created": 0,
+          "displayName": "Gemini 4 Neon",
+          "name": "gemini-4-neon-xhigh",
+          "description": "Gemini 4 Neon (XHigh)",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportsWebSearch": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "min": 1,
+            "max": 65535,
+            "dynamicAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        },
+        {
           "id": "gemini-3.8-flash-high",
           "object": "model",
           "ownedBy": "antigravity",
@@ -2192,6 +2484,41 @@
           "displayName": "Gemini 3.8 Flash",
           "name": "gemini-3.8-flash-high",
           "description": "Gemini 3.8 Flash (High)",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "supportsWebSearch": true,
+          "nativeCapabilities": {
+            "webSearch": true
+          },
+          "thinking": {
+            "min": 1,
+            "max": 65535,
+            "dynamicAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        },
+        {
+          "id": "gemini-3.8-flash-tiered",
+          "object": "model",
+          "ownedBy": "antigravity",
+          "type": "antigravity",
+          "created": 0,
+          "displayName": "Gemini 3.8 Flash (Tiered)",
+          "name": "gemini-3.8-flash-tiered",
+          "description": "Gemini 3.8 Flash (Tiered)",
           "contextLength": 1048576,
           "maxCompletionTokens": 65536,
           "supportedInputModalities": [
@@ -2512,6 +2839,38 @@
           ]
         },
         {
+          "id": "devin/claude-fable-5-2",
+          "object": "model",
+          "ownedBy": "anthropic",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Claude Fable 5.2",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1000000,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
           "id": "devin/claude-sonnet-5",
           "object": "model",
           "ownedBy": "anthropic",
@@ -2564,6 +2923,98 @@
               "low",
               "medium",
               "high"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/gemini-4-carbon",
+          "object": "model",
+          "ownedBy": "google",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Gemini 4 Carbon",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/gemini-4-hydrogen",
+          "object": "model",
+          "ownedBy": "google",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Gemini 4 Hydrogen",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/gemini-4-neon",
+          "object": "model",
+          "ownedBy": "google",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Gemini 4 Neon",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
             ]
           },
           "inputTokenLimit": 1048576,
@@ -2730,6 +3181,37 @@
           ]
         },
         {
+          "id": "devin/kimi-k3-1-pro",
+          "object": "model",
+          "ownedBy": "moonshot",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Kimi K3.1 Pro",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
           "id": "devin/glm-5-3",
           "object": "model",
           "ownedBy": "zhipu",
@@ -2851,7 +3333,7 @@
           "ownedBy": "cognition",
           "type": "devin",
           "created": 0,
-          "displayName": "SWE-2 Lightning",
+          "displayName": "SWE-2 Medium Ultrafast Lightning",
           "contextLength": 262144,
           "maxCompletionTokens": 64000,
           "supportedInputModalities": [
@@ -2865,6 +3347,99 @@
             "levels": [
               "medium",
               "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/swe-2-flash-lightning",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2 Flash Medium Ultrafast Lightning",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/swe-2-1",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2.1",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/swe-2-1-lightning",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2.1 Ultrafast Lightning",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
               "max"
             ]
           },
@@ -4165,6 +4740,70 @@
           ]
         },
         {
+          "id": "devin/gpt-6-2-astra",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "devin",
+          "created": 0,
+          "displayName": "GPT-6.2 Astra",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1050000,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/gpt-6-2-sol",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "devin",
+          "created": 0,
+          "displayName": "GPT-6.2 Sol",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1050000,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
           "id": "devin/nemotron-3-5-super",
           "object": "model",
           "ownedBy": "nvidia",
@@ -4184,6 +4823,34 @@
             "levels": [
               "none",
               "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/nemotron-3-5-lightning",
+          "object": "model",
+          "ownedBy": "nvidia",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Nemotron 3.5 Lightning",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "none",
               "high"
             ]
           },

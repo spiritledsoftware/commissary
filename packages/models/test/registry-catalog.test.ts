@@ -125,6 +125,89 @@ describe("static lookups", () => {
     expect(lookupStaticModelInfo(catalogs, "gpt-6-astra[1m]")).toBeUndefined();
   });
 
+  it("serves Gemini 4 and GPT-6.2 on their routes", () => {
+    const ids = (section: Parameters<typeof sectionModels>[1]) =>
+      sectionModels(catalogs, section).map((model) => model.id);
+
+    for (const plan of ["codex-team", "codex-plus", "codex-pro"] as const) {
+      expect(ids(plan), plan).toEqual(expect.arrayContaining(["gpt-6.2-astra", "gpt-6.2-sol"]));
+    }
+
+    expect(ids("codex-free")).not.toContain("gpt-6.2-sol");
+
+    // Go's records at dd543d09 (internal/registry/models/models.json): hybrid budget-and-level thinking, except
+    // Hydrogen and Neon on Vertex (levels only, no dynamic budget). Neon has no Go record on gemini/aistudio; it
+    // follows Vertex's. Output limits follow models.dev (ADR 0020): `google` lists 32768 for Argon and Carbon where
+    // Go caps at 65536.
+    const HIGH = ["low", "medium", "high"];
+    const XHIGH = [...HIGH, "xhigh"];
+    const hybrid = (levels: string[]) => ({ min: 128, max: 65535, dynamicAllowed: true, levels });
+    const levelsOnly = (levels: string[]) => ({ dynamicAllowed: false, levels });
+
+    const expected = {
+      gemini: {
+        "gemini-4-argon": [32768, hybrid(HIGH)],
+        "gemini-4-carbon": [32768, hybrid(HIGH)],
+        "gemini-4-hydrogen": [65536, hybrid(XHIGH)],
+        "gemini-4-neon": [65536, levelsOnly(XHIGH)],
+      },
+      aistudio: {
+        "gemini-4-argon": [32768, hybrid(HIGH)],
+        "gemini-4-carbon": [32768, hybrid(HIGH)],
+        "gemini-4-hydrogen": [65536, hybrid(XHIGH)],
+        "gemini-4-neon": [65536, levelsOnly(XHIGH)],
+      },
+      vertex: {
+        "gemini-4-argon": [65536, hybrid(HIGH)],
+        "gemini-4-carbon": [65536, hybrid(HIGH)],
+        "gemini-4-hydrogen": [65536, levelsOnly(XHIGH)],
+        "gemini-4-neon": [65536, levelsOnly(XHIGH)],
+      },
+    } as const;
+
+    for (const [section, models] of Object.entries(expected)) {
+      for (const [id, [maxCompletionTokens, thinking]] of Object.entries(models)) {
+        // SAFETY: `expected`'s keys are catalog sections.
+        const model = sectionModels(catalogs, section as keyof typeof expected).find(
+          (entry) => entry.id === id,
+        );
+
+        expect(
+          { maxCompletionTokens: model?.maxCompletionTokens, thinking: model?.thinking },
+          `${section} ${id}`,
+        ).toEqual({ maxCompletionTokens, thinking });
+      }
+    }
+
+    expect(ids("antigravity")).toEqual(
+      expect.arrayContaining([
+        "gemini-4-carbon-high",
+        "gemini-4-neon-xhigh",
+        "gemini-4-hydrogen-xhigh",
+        "gemini-3.8-flash-tiered",
+      ]),
+    );
+    expect(ids("devin")).toEqual(
+      expect.arrayContaining(["devin/gpt-6-2-sol", "devin/gemini-4-neon", "devin/swe-2-1"]),
+    );
+    expect(
+      sectionModels(catalogs, "meta").find((model) => model.id === "muse-ember-1.0")
+        ?.nativeCapabilities,
+    ).toEqual({ webSearch: true });
+  });
+
+  it("a channel-qualified id also matches the channel's bare catalog id", () => {
+    expect(lookupStaticModelInfoByChannel(catalogs, "Vertex/gemini-4-neon", "vertex")?.id).toBe(
+      "vertex/gemini-4-neon",
+    );
+    expect(lookupStaticModelInfo(catalogs, "vertex/gemini-4-neon")?.id).toBe(
+      "vertex/gemini-4-neon",
+    );
+    expect(lookupStaticModelInfoByChannel(catalogs, "gemini/gemini-4-neon", "vertex")).toBe(
+      undefined,
+    );
+  });
+
   it("an exact id wins over its family", () => {
     // claude-opus-4-5-20251101 and claude-opus-4-5 are both catalog entries: neither answers for the other.
     expect(lookupStaticModelInfo(catalogs, "claude-opus-4-5-20251101")?.id).toBe(
