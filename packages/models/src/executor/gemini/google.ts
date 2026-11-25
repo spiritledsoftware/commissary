@@ -37,6 +37,7 @@ import { Formats } from "@commissary/translation/formats";
 import { responseModelOf } from "../../usage/record.ts";
 import { ExecutionError, headersRecord, notImplemented } from "../errors.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
+import { parseGoogleRetryAfterMs } from "../helps/google-retry.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
@@ -128,14 +129,27 @@ const transportError = (error: HttpClientError.HttpClientError) =>
     cause: error,
   });
 
-const toExecutionError = (status: number, text: string, headers: Headers): ExecutionError =>
-  new ExecutionError({
+/**
+ * Go `newGeminiStatusErr` (ed1c23f9): an upstream status error, with the 429's `RetryInfo`, `Retry-After` or message
+ * delay as the cooldown hint.
+ */
+const toExecutionError = (
+  status: number,
+  text: string,
+  headers: Headers,
+  now: number,
+): ExecutionError => {
+  const retryAfterMs = parseGoogleRetryAfterMs(status, headers, text, now);
+
+  return new ExecutionError({
     status,
     message: text,
     headers: headersRecord(headers),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     // A rejected credential is credential-scoped: the conductor rotates/cools it down.
     ...(status === 401 ? { credentialScoped: true } : {}),
   });
+};
 
 /** `isImagenModel`. */
 export const isImagenModel = (model: string): boolean => model.toLowerCase().includes("imagen");
@@ -348,7 +362,12 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
         );
       }
 
-      return yield* toExecutionError(response.status, text, new Headers(response.headers));
+      return yield* toExecutionError(
+        response.status,
+        text,
+        new Headers(response.headers),
+        yield* Clock.currentTimeMillis,
+      );
     }
 
     return response;

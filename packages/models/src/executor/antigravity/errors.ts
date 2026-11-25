@@ -1,18 +1,17 @@
 /**
  * Antigravity upstream error handling: retry-delay parsing and the 429 decision table.
  *
- * Go source: internal/runtime/executor/helps/json_retry_helpers.go (`ParseRetryDelay`),
+ * Go source: internal/runtime/executor/helps/json_retry_helpers.go (`ParseRetryDelay`, in `helps/google-retry.ts`),
  * internal/runtime/executor/antigravity_executor_credits.go (`decideAntigravity429`, `newAntigravityStatusErr`,
  * `antigravityHasExplicitCreditsBalanceExhaustedReason`).
  */
 import { asString, get, isJsonArray, tryParseJson } from "@commissary/json";
 import { ExecutionError, headersRecord } from "../errors.ts";
+import { parseGoogleRetryDelayMs } from "../helps/google-retry.ts";
 
 export const INSTANT_RETRY_THRESHOLD_MS = 3_000;
 
 export const SHORT_QUOTA_COOLDOWN_THRESHOLD_MS = 5 * 60_000;
-
-const RETRY_INFO = "type.googleapis.com/google.rpc.RetryInfo";
 
 const ERROR_INFO = "type.googleapis.com/google.rpc.ErrorInfo";
 
@@ -58,49 +57,8 @@ export const parseGoDuration = (text: string): number | undefined => {
   return sign * total;
 };
 
-/** `ParseRetryDelay`: the retry delay in milliseconds of a Google API 429 body. */
-export const parseRetryDelayMs = (body: string): number | undefined => {
-  const root = tryParseJson(body);
-  const details = get(root, "error.details");
-
-  if (isJsonArray(details)) {
-    for (const detail of details) {
-      if (asString(get(detail, "@type")) !== RETRY_INFO) continue;
-      const retryDelay = asString(get(detail, "retryDelay"));
-
-      if (retryDelay === "") continue;
-
-      return parseGoDuration(retryDelay);
-    }
-
-    for (const detail of details) {
-      if (asString(get(detail, "@type")) !== ERROR_INFO) continue;
-      const quotaResetDelay = asString(get(detail, "metadata.quotaResetDelay"));
-
-      if (quotaResetDelay === "") continue;
-      const parsed = parseGoDuration(quotaResetDelay);
-
-      if (parsed !== undefined) return parsed;
-    }
-  }
-
-  const message = asString(get(root, "error.message"));
-
-  if (message !== "") {
-    const seconds = /after\s+(\d+)s\.?/.exec(message);
-
-    if (seconds?.[1] !== undefined) return Number.parseInt(seconds[1], 10) * 1000;
-    const human = /after\s+((?:\d+h)?(?:\d+m)?(?:\d+s)?)\.?/.exec(message.toLowerCase());
-
-    if (human !== null && human[1] !== undefined && human[1] !== "") {
-      const parsed = parseGoDuration(human[1]);
-
-      if (parsed !== undefined && parsed > 0) return parsed;
-    }
-  }
-
-  return undefined;
-};
+/** `ParseRetryDelay`: the retry delay in milliseconds of a Google API 429 body (zero kept). */
+export const parseRetryDelayMs = parseGoogleRetryDelayMs;
 
 export type Antigravity429Kind =
   | "soft_retry"
