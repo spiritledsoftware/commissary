@@ -1,7 +1,8 @@
-// SPI-1415 (Go ed1c23f9): Gemini credentials end to end, through the production Worker
+// SPI-1415 (Go ed1c23f9, cf07c78a, 7e82d0d1): Gemini credentials end to end, through the production Worker
 // (`exports.default.fetch`) with the real ControlPlane picker and `markResult`; only the Gemini API is mocked, through
 // the global `fetch`. A 429's RetryInfo hint sets the key's cooldown, so later requests go to the other key without
-// asking the first again.
+// asking the first again. A zero-output abnormal finish fails before the response commits, so the request moves on to
+// the other key, and the key is not cooled for it.
 import { env, exports } from "cloudflare:workers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { FULL_ACCESS, withModelsPart } from "@commissary/models/testing";
@@ -11,6 +12,12 @@ const LIMITED_KEY = "AIza-limited-0001";
 const SPARE_KEY = "AIza-spare-0002";
 
 const MODEL = "gemini-2.5-flash";
+
+/** The model the first key answers with a zero-output MALFORMED_FUNCTION_CALL. */
+const MALFORMED_MODEL = "gemini-2.5-pro";
+
+/** The model both keys answer with a zero-output MALFORMED_FUNCTION_CALL. */
+const ALWAYS_MALFORMED_MODEL = "gemini-2.5-flash-lite";
 
 const YAML = `
 api-keys:
@@ -45,17 +52,47 @@ const GENERATED = {
   modelVersion: MODEL,
 };
 
+const usageMetadata = { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 };
+
+// A finish with nothing visible: an empty part list, then MALFORMED_FUNCTION_CALL (Go issue 7513).
+const SHELL = { candidates: [{ content: { role: "model", parts: [] }, index: 0 }] };
+
+const MALFORMED = {
+  candidates: [
+    {
+      content: { role: "model", parts: [] },
+      finishReason: "MALFORMED_FUNCTION_CALL",
+      index: 0,
+    },
+  ],
+  usageMetadata,
+};
+
+const TEXT_CHUNK = {
+  candidates: [{ content: { role: "model", parts: [{ text: "hello" }] }, index: 0 }],
+};
+
+const STOP_CHUNK = {
+  candidates: [{ content: { role: "model", parts: [] }, finishReason: "STOP", index: 0 }],
+  usageMetadata,
+};
+
+const sse = (frames: ReadonlyArray<object>): Response =>
+  new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
+    headers: { "content-type": "text/event-stream" },
+  });
+
 /** The key of each Gemini API call, in order. */
 const calls: string[] = [];
 
 const realFetch = globalThis.fetch;
 
-const chat = () =>
+const chat = (model = MODEL, stream = false) =>
   exports.default.fetch(
     new Request("http://localhost/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "hi" }] }),
+      body: JSON.stringify({ model, stream, messages: [{ role: "user", content: "hi" }] }),
     }),
   );
 
@@ -88,8 +125,16 @@ beforeAll(async () => {
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
     const key = request.headers.get("x-goog-api-key") ?? "";
+    const url = new URL(request.url);
+    const stream = url.pathname.endsWith(":streamGenerateContent");
 
     calls.push(key);
+
+    const malformed =
+      url.pathname.includes(ALWAYS_MALFORMED_MODEL) ||
+      (key === LIMITED_KEY && url.pathname.includes(MALFORMED_MODEL));
+
+    if (malformed) return stream ? sse([SHELL, MALFORMED]) : Response.json(MALFORMED);
 
     if (key === LIMITED_KEY)
       return new Response(EXHAUSTED, {
@@ -97,7 +142,7 @@ beforeAll(async () => {
         headers: { "content-type": "application/json" },
       });
 
-    return Response.json(GENERATED);
+    return stream ? sse([TEXT_CHUNK, STOP_CHUNK]) : Response.json(GENERATED);
   };
 
   const stored = await withModelsPart(controlPlane(), (part) => part.importConfig(YAML, "test"));
@@ -135,5 +180,38 @@ describe("a Gemini 429's RetryInfo hint", () => {
 
     expect(until - started).toBeGreaterThanOrEqual(RETRY_DELAY_SECONDS * 1000 - 5000);
     expect(until - started).toBeLessThanOrEqual(RETRY_DELAY_SECONDS * 1000 + 60_000);
+  });
+});
+
+describe("a zero-output MALFORMED_FUNCTION_CALL", () => {
+  /** The model state of `model` on every key: none may be cooled for a zero-output failure. */
+  const modelCooldowns = async (model: string): Promise<ReadonlyArray<number>> =>
+    (await summaries()).map((summary) => summary.modelStates[model]?.nextRetryAfter ?? 0);
+
+  for (const stream of [false, true]) {
+    it(`moves on to the other key without cooling the first (stream: ${String(stream)})`, async () => {
+      for (let request = 0; request < 3; request += 1) {
+        const response = await chat(MALFORMED_MODEL, stream);
+        const text = await response.text();
+
+        expect(response.status).toBe(200);
+        expect(text).toContain("hello");
+        expect(text).not.toContain("MALFORMED_FUNCTION_CALL");
+      }
+
+      // Not cooled: the first key is asked again on every request, and each time the spare answers.
+      expect(calls.filter((key) => key === LIMITED_KEY)).toHaveLength(3);
+      expect(calls.filter((key) => key === SPARE_KEY)).toHaveLength(3);
+      expect(await modelCooldowns(MALFORMED_MODEL)).toEqual([0, 0]);
+    });
+  }
+
+  it("answers 502 when every key finishes that way, cooling none", async () => {
+    const response = await chat(ALWAYS_MALFORMED_MODEL, true);
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("MALFORMED_FUNCTION_CALL");
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(await modelCooldowns(ALWAYS_MALFORMED_MODEL)).toEqual([0, 0]);
   });
 });

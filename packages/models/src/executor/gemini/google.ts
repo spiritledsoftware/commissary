@@ -38,6 +38,14 @@ import { responseModelOf } from "../../usage/record.ts";
 import { ExecutionError, headersRecord, notImplemented } from "../errors.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { parseGoogleRetryAfterMs } from "../helps/google-retry.ts";
+import {
+  translatedClaudeError,
+  type ZeroOutputAction,
+  zeroOutputError,
+  zeroOutputErrorMessage,
+  zeroOutputFinishReason,
+  ZeroOutputStreamGuard,
+} from "../helps/gemini-zero-output.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
@@ -680,6 +688,19 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const response = yield* send(context, prepared);
     let text = yield* response.text.pipe(Effect.mapError(transportError));
 
+    // Go cf07c78a, 7e82d0d1: an abnormal finish without visible output answered nothing. It fails before the replay
+    // ledger is written, as a 502 that rotates the credential without cooling it.
+    const zeroOutput =
+      native || prepared.imagen ? undefined : zeroOutputFinishReason(tryParseJson(text));
+
+    if (zeroOutput !== undefined) {
+      const message = zeroOutputErrorMessage(responseFormatOf(options), zeroOutput);
+      context.usage.publish(parseGeminiUsageBody(tryParseJson(text)));
+      context.usage.fail(502, message);
+
+      return yield* zeroOutputError(message);
+    }
+
     // `cacheAntigravityReasoningReplayFromResponse`: the turn is published before the client sees its answer.
     if (prepared.replay !== undefined && variant.replayLedger !== undefined) {
       const completed = tryParseJson(text);
@@ -735,7 +756,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       context.usage.publish(usage);
       context.usage.fail(502, out);
 
-      return yield* new ExecutionError({ status: 502, message: out });
+      return yield* translatedClaudeError(out);
     }
 
     context.usage.publish(usage);
@@ -795,9 +816,14 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     // stream fails with it once the upstream is drained (the client already got the event; its framer does not repeat it).
     let streamError: string | undefined;
 
+    // Go cf07c78a: withholds leading contentless frames and fails an abnormal zero-output finish before them.
+    const guard = new ZeroOutputStreamGuard(responseFormat);
+
     const captureError = (chunks: ReadonlyArray<string>) => {
       if (responseFormat === Formats.Claude && streamError === undefined)
         streamError = claudeStreamErrorPayload(chunks);
+
+      if (chunks.some((chunk) => chunk !== "")) guard.markEmitted();
 
       return chunks;
     };
@@ -831,6 +857,56 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
     let sawFinish = false;
 
+    /** The withheld frames, then `then`: a frame of `""` (one the usage filter emptied) is skipped. */
+    const emitAll = (
+      frames: ReadonlyArray<string>,
+      then: Stream.Stream<string, ExecutionError> = Stream.empty,
+    ): Stream.Stream<string, ExecutionError> =>
+      Stream.concat(
+        Stream.fromIterable(frames).pipe(
+          Stream.flatMap((frame) => (frame === "" ? Stream.empty : translated(frame))),
+        ),
+        then,
+      );
+
+    const failZeroOutput = (finishReason: string) =>
+      Stream.fail(zeroOutputError(zeroOutputErrorMessage(responseFormat, finishReason)));
+
+    /** Applies a guard decision; `frame` is the current (usage-filtered) payload, if any. */
+    const guarded = (
+      action: ZeroOutputAction,
+      frame: string | undefined,
+    ): Stream.Stream<string, ExecutionError> => {
+      switch (action.kind) {
+        case "continue":
+          return Stream.empty;
+        case "fail":
+          return failZeroOutput(action.finishReason);
+        case "emit-error-then-fail":
+          return emitAll(
+            [action.frame === "" ? "[DONE]" : action.frame],
+            failZeroOutput(action.finishReason),
+          );
+        case "emit":
+          return emitAll(frame === undefined ? action.flush : [...action.flush, frame]);
+      }
+    };
+
+    /** The end of a stream that did not fail: the truncation check, then the translators' `[DONE]`. */
+    const afterDrain = (): Stream.Stream<string, ExecutionError> => {
+      // Claude and OpenAI chat clients fail a truncated stream (Go 4f2e5270, 3f5d3a16): they would otherwise see a
+      // clean `message_stop` / `[DONE]`.
+      if ((responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish)
+        return Stream.fail(
+          new ExecutionError({
+            status: 502,
+            message: "upstream stream closed before finishReason",
+          }),
+        );
+
+      return translated("[DONE]");
+    };
+
     return Stream.concat(
       lines.pipe(
         Stream.flatMap((line) => {
@@ -841,35 +917,30 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
           const usage = parseGeminiStreamUsage(line);
 
           if (usage !== undefined) context.usage.publish(usage);
+          const raw = jsonPayload(line);
           const filtered = variant.vertex ? line : filterSseUsageMetadata(line);
           const payload = jsonPayload(filtered);
 
           if (payload !== undefined && !sawFinish && hasFinishSignal(payload)) sawFinish = true;
 
-          if (payload === undefined) return Stream.empty;
-          const blocked = promptBlockMessage(tryParseJson(payload));
+          if (raw === undefined) return Stream.empty;
+          const rawRoot = tryParseJson(raw);
+          const blocked = promptBlockMessage(rawRoot);
 
           if (blocked !== undefined)
             return Stream.fail(new ExecutionError({ status: 502, message: blocked }));
 
-          return translated(payload);
+          // The guard reads the raw frame (with its usage); what goes out is the filtered one.
+          return guarded(guard.observe(payload ?? "", rawRoot), payload ?? "");
         }),
       ),
       Stream.suspend(() => {
-        if (streamError !== undefined)
-          return Stream.fail(new ExecutionError({ status: 502, message: streamError }));
+        if (streamError !== undefined) return Stream.fail(translatedClaudeError(streamError));
+        const final = guard.finalize();
 
-        // Claude and OpenAI chat clients fail a truncated stream (Go 4f2e5270, 3f5d3a16): they would otherwise see a
-        // clean `message_stop` / `[DONE]`.
-        if ((responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish)
-          return Stream.fail(
-            new ExecutionError({
-              status: 502,
-              message: "upstream stream closed before finishReason",
-            }),
-          );
+        if (final.kind !== "emit") return guarded(final, undefined);
 
-        return translated("[DONE]");
+        return emitAll(final.flush, Stream.suspend(afterDrain));
       }),
     );
   };

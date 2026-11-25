@@ -542,7 +542,7 @@ describe("OpenAI Responses client -> Gemini credential", () => {
         }),
       );
 
-      return { text: await response.text(), records: h.records };
+      return { status: response.status, text: await response.text(), records: h.records };
     };
 
     it("fails a stream that closes before any finishReason with 502", async () => {
@@ -550,8 +550,8 @@ describe("OpenAI Responses client -> Gemini credential", () => {
       expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
     });
 
-    it("fails a MALFORMED_FUNCTION_CALL stream with 502 after its error event (Go 7f2f17d7)", async () => {
-      const { text, records } = await ask([
+    it("fails a zero-output MALFORMED_FUNCTION_CALL stream with 502 before it commits (Go 7f2f17d7, cf07c78a)", async () => {
+      const { status, text, records } = await ask([
         `data: ${JSON.stringify({
           candidates: [
             {
@@ -565,7 +565,10 @@ describe("OpenAI Responses client -> Gemini credential", () => {
         })}\n\n`,
       ]);
 
-      expect(text.split("event: error\n")).toHaveLength(2);
+      // Nothing went out before the abnormal finish, so the client gets the 502 itself, not an error event.
+      expect(status).toBe(502);
+      expect(text).toContain("MALFORMED_FUNCTION_CALL");
+      expect(text).not.toContain("event: error\n");
       expect(text).not.toContain("message_stop");
       expect(records[0]).toMatchObject({
         failed: true,
