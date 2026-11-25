@@ -491,6 +491,36 @@ them and reports the upstream commits since that commit and the test files that 
 `.github/workflows/upstream-drift.yml` keeps one `upstream-drift` issue with that report. After porting, set
 `UPSTREAM_COMMIT` to the reference commit you ported up to and commit the regenerated fixtures.
 
+### Porting from a pinned commit
+
+A port split into tickets that land in parallel must generate every fixture from the same upstream commit, but each
+`pnpm install` fast-forwards the shared reference checkout. `tools/fixturegen/PORT_TARGET` records the **port target**:
+the upstream commit the current port ports up to and regenerates from. `UPSTREAM_COMMIT` stays at the last ported state
+until the port's last ticket moves it to the target. `tools/regen-fixtures.sh` regenerates from the target:
+
+```sh
+tools/regen-fixtures.sh translator thinking   # the named generators (directories of tools/fixturegen)
+tools/regen-fixtures.sh                       # all of them
+tools/regen-fixtures.sh --commit <sha> devin  # another commit than PORT_TARGET
+```
+
+It runs the generators against a detached worktree of the reference clone at that commit, kept under
+`${XDG_CACHE_HOME:-~/.cache}/commissary/reference` (`COMMISSARY_REFERENCE_CACHE` moves it) and reused by every worktree,
+through a throwaway `go.work`: the shared checkout's HEAD, branch and files never move, and it may fetch the commit into
+the clone when it is missing. The generators run on Linux, as in CI: Go's Devin executor writes `runtime.GOOS` into its
+requests and Commissary sends `linux`, so on macOS the script runs them in a `golang` container at `go.work`'s Go
+version (Docker, e.g. OrbStack). Delete a cached worktree with `git -C .repos/CLIProxyAPI worktree remove <path>`.
+`tools/upstream-drift.sh` still regenerates from the synced checkout.
+
+**A ticket commits only the fixture files it owns.** A generator writes all its files at once (the translator writes one
+file per format pair, plus `translator-executor.json`), so after regenerating, commit the files the ticket names and
+restore the rest (`git checkout -- <path>`); a ticket that needs a file another ticket owns stops and says so. Two runs
+at the same commit can differ: the tests mask the generated ids, timestamps and local ports, and the Go map order of the
+model listings in `registry.json`. One known case is not masked and is non-deterministic at the current port target:
+the order of the final events of `stream: interleaved patch and function calls`
+(`translator/openai-response-claude-apply-patch.json`) follows Go map iteration, so a regeneration can fail that case
+until its test or fixture handles the order.
+
 ## Git hooks
 
 `pnpm install` enables the Git hooks in `.vite-hooks/` (the `prepare` script runs `vp config`, which installs Vite+'s
