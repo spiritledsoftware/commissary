@@ -2,7 +2,7 @@
  * Upstream message sanitising for Claude targets.
  *
  * Go source: internal/runtime/executor/claude_executor.go (sanitizeClaudeMessagesForClaudeUpstreamWithDebug,
- * shouldSanitizeClaudeMessagesForUpstream, sanitizeClaudeWebSearchDomains). Signature handling is the full
+ * shouldSanitizeClaudeMessagesForUpstream, sanitizeClaudeWebSearchDomains, sanitizeClaudeAdvisorToolModelsDoc). Signature handling is the full
  * `internal/signature` port (`signature/claude-messages.ts`); the report logging of Go is not ported. Non-portable tool
  * call ids are normalised last (`helps/tool-call-ids.ts`, Go helps.NormalizeClaudeToolCallIDs).
  */
@@ -13,6 +13,7 @@ import {
   sanitizeClaudeMessagesForClaudeUpstream,
   signatureProviderFromModelName,
 } from "@commissary/translation/signature";
+import { parseSuffix } from "@commissary/translation/thinking";
 import { normalizeClaudeToolCallIds } from "../helps/tool-call-ids.ts";
 
 /** `sanitizeClaudeWebSearchDomains`: empty domain lists are rejected upstream. */
@@ -27,6 +28,24 @@ export const sanitizeWebSearchDomains = (body: JsonObject): void => {
 
       if (isArr(value) && value.length === 0) delete tool[field];
     }
+  }
+};
+
+/**
+ * `sanitizeClaudeAdvisorToolModelsDoc` (CLIProxyAPI 8bdffcad): an `advisor_*` server tool's `model` loses its thinking
+ * suffix (`claude-opus-4-8(high)` -> `claude-opus-4-8`), so Anthropic gets a valid model id.
+ */
+export const sanitizeAdvisorToolModels = (body: JsonObject): void => {
+  if (!isArr(body.tools)) return;
+
+  for (const tool of body.tools) {
+    if (!isObj(tool) || !str(tool.type).trim().toLowerCase().startsWith("advisor_")) continue;
+
+    if (typeof tool.model !== "string") continue;
+    const parsed = parseSuffix(tool.model.trim());
+    const base = parsed.modelName.trim();
+
+    if (parsed.hasSuffix && base !== "") tool.model = base;
   }
 };
 
@@ -47,5 +66,6 @@ export const sanitizeForClaudeUpstream = (
   }
 
   sanitizeWebSearchDomains(body);
+  sanitizeAdvisorToolModels(body);
   normalizeClaudeToolCallIds(body);
 };

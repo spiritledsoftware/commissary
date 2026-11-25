@@ -1263,6 +1263,31 @@ describe("history sanitising", () => {
   });
 });
 
+describe("advisor tool models", () => {
+  // Go: claude_issue7591_test.go (8bdffcad).
+  it("strips a thinking suffix from advisor tool models only", () => {
+    const body: JsonObject = {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { type: "advisor_20260301", name: "advisor", model: "claude-opus-4-8(high)" },
+        { type: "Advisor_20260301", name: "second", model: " claude-fable-5-1(16384) " },
+        { type: "advisor_20260301", name: "plain", model: "claude-opus-4-8" },
+        { type: "advisor_20260301", name: "bare", model: "(high)" },
+        { type: "custom", name: "other", model: "claude-opus-4-8(high)" },
+      ],
+    };
+
+    sanitizeForClaudeUpstream(body, "claude-sonnet-4-5", false);
+    expect((body.tools as JsonObject[]).map((tool) => tool.model)).toEqual([
+      "claude-opus-4-8",
+      "claude-fable-5-1",
+      "claude-opus-4-8",
+      "(high)",
+      "claude-opus-4-8(high)",
+    ]);
+  });
+});
+
 describe("commentary marker restore", () => {
   it("turns a marked thinking block into text for a non-Claude upstream model, leaving other signatures alone", () => {
     const body: JsonObject = {
