@@ -21,7 +21,9 @@ import {
 import {
   bytesToBinaryString,
   detectSignatureProvider,
+  DevinSignatureType,
   GEMINI_CODEX_CARRIER_MAGIC,
+  isDevinOpenAIReasoningSignature,
 } from "@commissary/translation/signature";
 import { sanitizeDevinToolDescription, UserRun } from "@commissary/translation";
 import { uuidV5Oid } from "../helps/uuid.ts";
@@ -355,32 +357,32 @@ const detectProvider = (signature: string): "claude" | "gpt" | "gemini" | "meta"
 const detectSignatureType = (signature: string): string => {
   const s = signature.trim();
 
-  if (s.startsWith("sealed.v1.")) return "sealed";
+  if (s.startsWith("sealed.v1.")) return DevinSignatureType.sealed;
 
-  if (s.startsWith("claude#")) return "anthropic";
+  if (s.startsWith("claude#")) return DevinSignatureType.anthropic;
 
-  if (s.startsWith("gpt#")) return "openai";
+  if (s.startsWith("gpt#")) return DevinSignatureType.openai;
 
-  if (s.startsWith("gemini#")) return "gemini";
+  if (s.startsWith("gemini#")) return DevinSignatureType.gemini;
 
   switch (detectProvider(s)) {
     case "claude":
-      return "anthropic";
+      return DevinSignatureType.anthropic;
     case "gpt":
-      return "openai";
+      return DevinSignatureType.openai;
     case "gemini":
-      return "gemini";
+      return DevinSignatureType.gemini;
     case "meta":
       return "";
   }
 
-  if (s.startsWith("CAQS") || s.startsWith("CAIS")) return "anthropic";
+  if (s.startsWith("CAQS") || s.startsWith("CAIS")) return DevinSignatureType.anthropic;
 
-  if (s.startsWith("gAAAA")) return "openai";
+  if (s.startsWith("gAAAA")) return DevinSignatureType.openai;
 
-  if (s.startsWith("AY")) return "gemini";
+  if (s.startsWith("AY")) return DevinSignatureType.gemini;
 
-  return "sealed";
+  return DevinSignatureType.sealed;
 };
 
 const decodeStdBase64 = (value: string): Uint8Array | undefined => {
@@ -406,29 +408,30 @@ export const parseSignatureBytes = (signature: string): SignatureBytes => {
 
   if (s === "") return NO_SIGNATURE;
 
-  if (s.startsWith("sealed.v1.")) return { bytes: utf8.encode(s), type: "sealed" };
+  if (s.startsWith("sealed.v1.")) return { bytes: utf8.encode(s), type: DevinSignatureType.sealed };
 
   if (s.startsWith("claude#"))
-    return { bytes: utf8.encode(s.slice("claude#".length)), type: "anthropic" };
+    return { bytes: utf8.encode(s.slice("claude#".length)), type: DevinSignatureType.anthropic };
 
-  if (s.startsWith("gpt#")) return { bytes: utf8.encode(s.slice("gpt#".length)), type: "openai" };
+  if (s.startsWith("gpt#"))
+    return { bytes: utf8.encode(s.slice("gpt#".length)), type: DevinSignatureType.openai };
 
   if (s.startsWith("gemini#"))
-    return { bytes: utf8.encode(s.slice("gemini#".length)), type: "gemini" };
+    return { bytes: utf8.encode(s.slice("gemini#".length)), type: DevinSignatureType.gemini };
 
   switch (detectProvider(s)) {
     case "claude":
-      return { bytes: utf8.encode(s), type: "anthropic" };
+      return { bytes: utf8.encode(s), type: DevinSignatureType.anthropic };
     case "gpt":
-      return { bytes: utf8.encode(s), type: "openai" };
+      return { bytes: utf8.encode(s), type: DevinSignatureType.openai };
     case "gemini":
-      return { bytes: utf8.encode(s), type: "gemini" };
+      return { bytes: utf8.encode(s), type: DevinSignatureType.gemini };
     case "meta":
       // Positively foreign to the Devin backend: never supplemented as a sealed signature.
       return NO_SIGNATURE;
   }
 
-  if (s.startsWith("AY")) return { bytes: utf8.encode(s), type: "gemini" };
+  if (s.startsWith("AY")) return { bytes: utf8.encode(s), type: DevinSignatureType.gemini };
   const decoded = decodeStdBase64(s);
 
   if (decoded !== undefined && decoded.length > 0) {
@@ -437,39 +440,40 @@ export const parseSignatureBytes = (signature: string): SignatureBytes => {
     if (text.startsWith(GEMINI_CODEX_CARRIER_MAGIC)) {
       const inner = text.slice(GEMINI_CODEX_CARRIER_MAGIC.length).trim();
 
-      if (inner.startsWith("sealed.v1.")) return { bytes: utf8.encode(inner), type: "sealed" };
+      if (inner.startsWith("sealed.v1."))
+        return { bytes: utf8.encode(inner), type: DevinSignatureType.sealed };
 
       switch (detectProvider(inner)) {
         case "claude":
-          return { bytes: utf8.encode(inner), type: "anthropic" };
+          return { bytes: utf8.encode(inner), type: DevinSignatureType.anthropic };
         case "gpt":
-          return { bytes: utf8.encode(inner), type: "openai" };
+          return { bytes: utf8.encode(inner), type: DevinSignatureType.openai };
         case "gemini":
-          return { bytes: utf8.encode(inner), type: "gemini" };
+          return { bytes: utf8.encode(inner), type: DevinSignatureType.gemini };
         default:
           return NO_SIGNATURE;
       }
     }
 
-    if (text.startsWith("sealed.v1.")) return { bytes: decoded, type: "sealed" };
+    if (text.startsWith("sealed.v1.")) return { bytes: decoded, type: DevinSignatureType.sealed };
 
     switch (detectProvider(text)) {
       case "claude":
-        return { bytes: decoded, type: "anthropic" };
+        return { bytes: decoded, type: DevinSignatureType.anthropic };
       case "gpt":
-        return { bytes: decoded, type: "openai" };
+        return { bytes: decoded, type: DevinSignatureType.openai };
       case "gemini":
-        return { bytes: utf8.encode(s), type: "gemini" };
+        return { bytes: utf8.encode(s), type: DevinSignatureType.gemini };
       case "meta":
         return NO_SIGNATURE;
     }
 
     if (text.startsWith("CAQS") || text.startsWith("CAIS"))
-      return { bytes: decoded, type: "anthropic" };
+      return { bytes: decoded, type: DevinSignatureType.anthropic };
 
-    if (text.startsWith("gAAAA")) return { bytes: decoded, type: "openai" };
+    if (text.startsWith("gAAAA")) return { bytes: decoded, type: DevinSignatureType.openai };
 
-    if (decoded[0] === 0x01) return { bytes: utf8.encode(s), type: "gemini" };
+    if (decoded[0] === 0x01) return { bytes: utf8.encode(s), type: DevinSignatureType.gemini };
   }
 
   return { bytes: utf8.encode(s), type: detectSignatureType(s) };
@@ -796,16 +800,28 @@ export const parseInteractionsPayload = (
         case "thought": {
           const text = extractStepText(step);
 
-          const signature = parseSignatureBytes(
-            firstNonEmpty(
-              asString(get(step, "signature")),
-              asString(get(step, "thought_signature")),
-            ),
+          const rawSignature = firstNonEmpty(
+            asString(get(step, "signature")),
+            asString(get(step, "thought_signature")),
           );
+
+          // A typed list of GPT reasoning items goes back verbatim, as its own assistant turn when the previous one
+          // already carries a signature.
+          const openAI =
+            asString(get(step, "signature_type")) === DevinSignatureType.openai &&
+            isDevinOpenAIReasoningSignature(rawSignature);
+
+          const signature: SignatureBytes = openAI
+            ? { bytes: utf8.encode(rawSignature), type: DevinSignatureType.openai }
+            : parseSignatureBytes(rawSignature);
 
           const previous = last();
 
-          if (previous !== undefined && previous.source === 2) {
+          if (
+            previous !== undefined &&
+            previous.source === 2 &&
+            !(openAI && previous.signature.length > 0)
+          ) {
             previous.thinking = previous.thinking !== "" ? `${previous.thinking}\n\n${text}` : text;
 
             if (signature.bytes.length > 0 && previous.signature.length === 0) {

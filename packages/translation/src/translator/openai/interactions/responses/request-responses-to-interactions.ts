@@ -35,6 +35,10 @@ import {
   responsesToolParametersOf,
 } from "../../../common/responses-tools.ts";
 import { UserTurnDrops } from "../../../common/parts.ts";
+import type { TranslateRequestOptions } from "../../../registry.ts";
+import { DevinSignatureType } from "../../../../signature/devin-signature-type.ts";
+import { isGeminiVertexBareTinkSignature } from "../../../../signature/gemini.ts";
+import { isDevinOpenAIReasoningSignature } from "../../../../signature/gpt.ts";
 import {
   firstExisting,
   firstNonEmpty,
@@ -162,14 +166,22 @@ const rememberCallName = (item: Json, namesByCallId: Map<string, string>): void 
 };
 
 /**
- * `responsesReasoningToInteractions`: a Devin-sealed reasoning item goes back upstream as a thought step so the model
- * keeps its earlier thinking across tool-call turns. Items without a Devin signature stay out: other providers cannot
- * read them.
+ * `responsesReasoningToInteractions`: a reasoning item goes back upstream as a thought step so the model keeps its
+ * earlier thinking across tool-call turns. Devin-sealed items always do; on the Devin route a typed list of GPT reasoning
+ * items (verbatim) and an unprefixed Vertex bare-Tink Gemini signature do too, typed, because Devin rejects a signature
+ * it cannot verify. Everything else stays out: other providers cannot read it.
  */
-const reasoningToInteractions = (item: Json): JsonObject | undefined => {
-  const signature = getStr(item, "encrypted_content").trim();
+const reasoningToInteractions = (item: Json, replayDevin: boolean): JsonObject | undefined => {
+  const raw = get(item, "encrypted_content");
 
-  if (!signature.startsWith("sealed.v1.")) return undefined;
+  if (typeof raw !== "string") return undefined;
+  let signature = raw.trim();
+  const openAI = replayDevin && isDevinOpenAIReasoningSignature(raw);
+
+  const gemini =
+    replayDevin && !signature.includes("#") && isGeminiVertexBareTinkSignature(signature);
+
+  if (!openAI && !gemini && !signature.startsWith("sealed.v1.")) return undefined;
   const summary = get(item, "summary");
   const texts: string[] = [];
 
@@ -181,7 +193,18 @@ const reasoningToInteractions = (item: Json): JsonObject | undefined => {
     }
   }
 
-  return { ...textStep("thought", texts.join("\n\n")), signature };
+  const step: JsonObject = textStep("thought", texts.join("\n\n"));
+
+  if (openAI) {
+    signature = raw;
+    step["signature_type"] = DevinSignatureType.openai;
+  } else if (gemini) {
+    step["signature_type"] = DevinSignatureType.gemini;
+  }
+
+  step["signature"] = signature;
+
+  return step;
 };
 
 /** `responsesInputItemToInteractions`. */
@@ -189,6 +212,7 @@ const inputItemToInteractions = (
   item: Json,
   namesByCallId: Map<string, string>,
   forAntigravity: boolean,
+  replayDevin: boolean,
   drops: UserTurnDrops,
 ): JsonObject | undefined => {
   const type = getStr(item, "type");
@@ -219,7 +243,7 @@ const inputItemToInteractions = (
     case "custom_tool_call_output":
       return functionOutputToInteractions(item, namesByCallId, forAntigravity);
     case "reasoning":
-      return reasoningToInteractions(item);
+      return reasoningToInteractions(item, replayDevin);
     case "input_text":
     case "output_text":
     case "text":
@@ -259,6 +283,7 @@ const setInput = (
   out: JsonObject,
   input: Json,
   forAntigravity: boolean,
+  replayDevin: boolean,
   drops: UserTurnDrops,
 ): void => {
   const namesByCallId = new Map<string, string>();
@@ -268,12 +293,24 @@ const setInput = (
     items.push(textStep("user_input", input));
   } else if (isArr(input)) {
     for (const item of input) {
-      const converted = inputItemToInteractions(item, namesByCallId, forAntigravity, drops);
+      const converted = inputItemToInteractions(
+        item,
+        namesByCallId,
+        forAntigravity,
+        replayDevin,
+        drops,
+      );
 
       if (converted !== undefined) items.push(converted);
     }
   } else if (isJsonObject(input)) {
-    const converted = inputItemToInteractions(input, namesByCallId, forAntigravity, drops);
+    const converted = inputItemToInteractions(
+      input,
+      namesByCallId,
+      forAntigravity,
+      replayDevin,
+      drops,
+    );
 
     if (converted !== undefined) items.push(converted);
   }
@@ -351,6 +388,7 @@ export const convertOpenAIResponsesRequestToInteractions = (
   modelName: string,
   body: Json,
   stream: boolean,
+  options?: TranslateRequestOptions,
 ): Json => {
   const drops = new UserTurnDrops();
   const root = body;
@@ -385,7 +423,8 @@ export const convertOpenAIResponsesRequestToInteractions = (
   const forDevin = isDevinModel(model) || !forAntigravity;
   const input = get(root, "input");
 
-  if (input !== undefined) setInput(out, input, forAntigravity, drops);
+  if (input !== undefined)
+    setInput(out, input, forAntigravity, options?.devinReasoningReplay === true, drops);
   appendTools(out, root, forAntigravity, forDevin);
 
   const toolChoice = get(root, "tool_choice");

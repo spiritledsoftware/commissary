@@ -56,6 +56,42 @@ interface ToolSlot {
   invalidArgs: string;
 }
 
+/**
+ * `HasPatchActivity` (Go `DevinApplyPatchDiagnostics`): whether a tool call without a name, or one of the declared
+ * apply_patch tool, was observed. Only then is an abnormal end the sanitised apply_patch failure.
+ */
+class PatchActivity {
+  readonly #names: string[] = [];
+  readonly #byId = new Map<string, number>();
+  #last = -1;
+
+  constructor(readonly tool: DevinApplyPatchTool | undefined) {}
+
+  observe(call: DevinToolCallDelta): void {
+    if (this.tool?.requested !== true) return;
+    const id = encodeToolCallId(call.id);
+    let key = id === "" ? this.#last : (this.#byId.get(id) ?? -1);
+
+    if (key < 0) {
+      if (this.#names.length >= MAX_DEVIN_TOOL_CALLS) return;
+      key = this.#names.length;
+      this.#names.push("");
+
+      if (id !== "") this.#byId.set(id, key);
+    }
+
+    this.#last = key;
+
+    if (call.name !== "") this.#names[key] = call.name;
+  }
+
+  get observed(): boolean {
+    const tool = this.tool;
+
+    return tool !== undefined && this.#names.some((name) => name === "" || tool.isTool(name));
+  }
+}
+
 /** Streaming TextDecoder per text kind: multi-byte characters split across frames are re-joined (`UTF8SplitBuffer`). */
 class Utf8Stream {
   readonly #decoder = new TextDecoder();
@@ -69,10 +105,13 @@ interface StopCompletion {
   readonly finishReason: string;
 }
 
+/** The stop reason of a response the content filter ended: never an empty completion. */
+export const STOP_REASON_CONTENT_FILTER = 11;
+
 const COMPLETION_BY_STOP_REASON = new Map<number, StopCompletion>([
   [1, { status: "incomplete", finishReason: "length" }],
   [3, { status: "incomplete", finishReason: "length" }],
-  [11, { status: "incomplete", finishReason: "content_filter" }],
+  [STOP_REASON_CONTENT_FILTER, { status: "incomplete", finishReason: "content_filter" }],
 ]);
 
 const usageObject = (usage: DevinUsage | undefined): Event => {
@@ -97,6 +136,69 @@ const foldUsage = (current: DevinUsage | undefined, frame: DevinFrame): DevinUsa
   return usage;
 };
 
+/**
+ * What a Devin response produced so far, shared by the stream and the non-stream paths: the folded usage, the last
+ * non-zero stop reason, the signature type, whether any output arrived (Go `hasGeneratedOutput`) and apply_patch
+ * activity (Go `HasPatchActivity`).
+ */
+export class DevinOutput {
+  #usage: DevinUsage | undefined;
+  #lastStopReason = 0;
+  #signatureType = "";
+  #generated = false;
+  readonly #patchActivity: PatchActivity;
+
+  constructor(applyPatch?: DevinApplyPatchTool) {
+    this.#patchActivity = new PatchActivity(applyPatch);
+  }
+
+  observe(frame: DevinFrame): void {
+    if (frame.stopReason !== 0) this.#lastStopReason = frame.stopReason;
+    this.#usage = foldUsage(this.#usage, frame);
+
+    if (frame.deltaSignatureType !== "") this.#signatureType = frame.deltaSignatureType;
+
+    if (
+      frame.content.length > 0 ||
+      frame.thinking.length > 0 ||
+      frame.deltaSignature.length > 0 ||
+      frame.toolCalls.length > 0
+    ) {
+      this.#generated = true;
+    }
+
+    for (const call of frame.toolCalls) this.#patchActivity.observe(call);
+  }
+
+  get usage(): DevinUsage | undefined {
+    return this.#usage;
+  }
+
+  get lastStopReason(): number {
+    return this.#lastStopReason;
+  }
+
+  /** The latest signature type a frame carried (`""` when none did). */
+  get signatureType(): string {
+    return this.#signatureType;
+  }
+
+  /** A tool call of the declared apply_patch tool (or one without a name) was observed. */
+  get patchActivity(): boolean {
+    return this.#patchActivity.observed;
+  }
+
+  /** No text, thinking, signature or tool call arrived and no output token was counted. */
+  producedNothing(): boolean {
+    return !this.#generated && (this.#usage === undefined || this.#usage.completionTokens === 0);
+  }
+
+  /** `isDevinEmptyCompletion`: a clean end that produced nothing, unless the content filter stopped it. */
+  isEmptyCompletion(): boolean {
+    return this.#lastStopReason !== STOP_REASON_CONTENT_FILTER && this.producedNothing();
+  }
+}
+
 export class DevinStreamAssembler {
   readonly interactionId: string;
   #out: string[] = [];
@@ -111,13 +213,12 @@ export class DevinStreamAssembler {
   #activeSlot: ToolSlot | undefined;
   readonly #thinking = new Utf8Stream();
   readonly #content = new Utf8Stream();
-  #usage: DevinUsage | undefined;
-  #lastStopReason = 0;
   #pending: Array<() => void> = [];
   #deferredThoughtStops: number[] = [];
   readonly #responseSignatures = new Map<number, string>();
   #postToolContent: string[] = [];
   #sawEos = false;
+  readonly output: DevinOutput;
   readonly #applyPatch: DevinApplyPatchTool | undefined;
 
   constructor(
@@ -128,6 +229,7 @@ export class DevinStreamAssembler {
   ) {
     this.interactionId = interactionId;
     this.#applyPatch = applyPatch;
+    this.output = new DevinOutput(applyPatch);
   }
 
   /** Text may stream independently of queued thoughts/tools only for OpenAI formats. */
@@ -136,7 +238,7 @@ export class DevinStreamAssembler {
   }
 
   get usage(): DevinUsage | undefined {
-    return this.#usage;
+    return this.output.usage;
   }
 
   get sawEos(): boolean {
@@ -388,8 +490,7 @@ export class DevinStreamAssembler {
 
   /** Feeds one decoded frame; returns the Interactions events it produced. */
   push(frame: DevinFrame): string[] {
-    if (frame.stopReason !== 0) this.#lastStopReason = frame.stopReason;
-    this.#usage = foldUsage(this.#usage, frame);
+    this.output.observe(frame);
 
     if (frame.thinking.length > 0) {
       if (this.#pending.length > 0) this.#flushPending();
@@ -420,8 +521,24 @@ export class DevinStreamAssembler {
       }
     }
 
-    if (frame.deltaSignature.length > 0) {
-      if (this.#thoughtStepIndex === -1 && !this.#contentStarted) {
+    const responses = this.responseFormat === Formats.OpenAIResponse;
+
+    // Responses may receive the signature type in a frame of its own, after the signature.
+    const lateType =
+      responses &&
+      frame.deltaSignatureType !== "" &&
+      this.#thoughtStepIndex >= 0 &&
+      (this.#responseSignatures.get(this.#thoughtStepIndex) ?? "") !== "";
+
+    if (frame.deltaSignature.length > 0 || lateType) {
+      if (this.#thoughtStepIndex === -1 && (!this.#contentStarted || responses)) {
+        // A signature-only thought can follow an already open message.
+        if (this.#contentStarted) {
+          this.#stepStop(this.#stepIndex);
+          this.#contentStarted = false;
+          this.#stepIndex++;
+        }
+
         this.#thoughtStepIndex = this.#stepIndex;
         this.#emit({ event_type: "step.start", index: this.#stepIndex, step: { type: "thought" } });
         this.#thoughtStarted = true;
@@ -429,16 +546,18 @@ export class DevinStreamAssembler {
 
       const target = this.#thoughtStepIndex < 0 ? 0 : this.#thoughtStepIndex;
       let signature = new TextDecoder().decode(frame.deltaSignature);
+      let signatureType = frame.deltaSignatureType;
 
-      if (this.responseFormat === Formats.OpenAIResponse) {
+      if (responses) {
         // The Responses translator accepts complete signatures, not fragments.
         signature = (this.#responseSignatures.get(target) ?? "") + signature;
         this.#responseSignatures.set(target, signature);
+        signatureType = this.output.signatureType;
       }
 
       const delta: Event = { type: "thought_signature", signature };
 
-      if (frame.deltaSignatureType !== "") delta["signature_type"] = frame.deltaSignatureType;
+      if (signatureType !== "") delta["signature_type"] = signatureType;
       this.#emit({ event_type: "step.delta", index: target, delta });
     }
 
@@ -520,8 +639,14 @@ export class DevinStreamAssembler {
     return this.#drain();
   }
 
-  /** The body could not be read to the end (`stream_read_error`) or ended without EOS (`stream_truncated`). */
-  abort(code: "stream_read_error" | "stream_truncated", message: string): string[] {
+  /**
+   * The body could not be read to the end (`stream_read_error`), ended without EOS (`stream_truncated`) or ended cleanly
+   * without any output (`empty_completion`).
+   */
+  abort(
+    code: "stream_read_error" | "stream_truncated" | "empty_completion",
+    message: string,
+  ): string[] {
     this.#closeOpenSteps();
     this.#emit({ event_type: "response.failed", error: { message, code } });
 
@@ -532,7 +657,7 @@ export class DevinStreamAssembler {
   complete(): string[] {
     this.#sawEos = true;
     this.#closeOpenSteps();
-    const completion = COMPLETION_BY_STOP_REASON.get(this.#lastStopReason);
+    const completion = COMPLETION_BY_STOP_REASON.get(this.output.lastStopReason);
 
     const interaction: Event = {
       id: this.interactionId,
@@ -541,7 +666,7 @@ export class DevinStreamAssembler {
     };
 
     if (completion !== undefined) interaction["finish_reason"] = completion.finishReason;
-    interaction["usage"] = usageObject(this.#usage);
+    interaction["usage"] = usageObject(this.output.usage);
     this.#emit({ event_type: "interaction.completed", interaction });
 
     return this.#drain();
@@ -584,7 +709,11 @@ const concat = (parts: ReadonlyArray<Uint8Array>): string => {
 
 /** `consumeDevinFramesToInteractions` over already decoded frames (the caller validated the trailer). */
 export class DevinAggregator {
-  constructor(readonly applyPatch?: DevinApplyPatchTool) {}
+  readonly output: DevinOutput;
+
+  constructor(readonly applyPatch?: DevinApplyPatchTool) {
+    this.output = new DevinOutput(applyPatch);
+  }
 
   #thinking: Uint8Array[] = [];
   #signature: Uint8Array[] = [];
@@ -593,19 +722,16 @@ export class DevinAggregator {
   #tools: ToolBuilder[] = [];
   readonly #toolIndexById = new Map<string, number>();
   #lastTool = -1;
-  #usage: DevinUsage | undefined;
-  #lastStopReason = 0;
   readonly unknownFields = new Set<number>();
 
   get usage(): DevinUsage | undefined {
-    return this.#usage;
+    return this.output.usage;
   }
 
   push(frame: DevinFrame): void {
-    if (frame.stopReason !== 0) this.#lastStopReason = frame.stopReason;
+    this.output.observe(frame);
 
     for (const field of frame.unknownFields) this.unknownFields.add(field);
-    this.#usage = foldUsage(this.#usage, frame);
 
     if (frame.deltaSignature.length > 0) this.#signature.push(frame.deltaSignature);
 
@@ -654,7 +780,7 @@ export class DevinAggregator {
   }
 
   finish(model: string, interactionId: string = newInteractionId()): DevinAggregate {
-    const completion = COMPLETION_BY_STOP_REASON.get(this.#lastStopReason);
+    const completion = COMPLETION_BY_STOP_REASON.get(this.output.lastStopReason);
 
     const out: JsonObject = {
       id: interactionId,
@@ -675,6 +801,8 @@ export class DevinAggregator {
       if (this.#signature.length > 0) {
         thought["signature"] = signature;
         thought["thought_signature"] = signature;
+
+        if (this.output.signatureType !== "") thought["signature_type"] = this.output.signatureType;
       }
 
       steps.push(thought);
@@ -731,8 +859,8 @@ export class DevinAggregator {
     }
 
     out["steps"] = steps;
-    out["usage"] = usageObject(this.#usage);
+    out["usage"] = usageObject(this.output.usage);
 
-    return { interaction: out, usage: this.#usage, invalidJsonToolNames };
+    return { interaction: out, usage: this.output.usage, invalidJsonToolNames };
   }
 }

@@ -1,11 +1,13 @@
 /**
  * GPT/Codex reasoning signature validation.
  *
- * Go source: internal/signature/gpt_validation.go (`InspectGPTReasoningSignature`, `IsValidGPTReasoningSignature`).
+ * Go source: internal/signature/gpt_validation.go (`InspectGPTReasoningSignature`, `IsValidGPTReasoningSignature`,
+ * `IsDevinOpenAIReasoningSignature`).
  * This is only the Fernet-like outer transport shape of `encrypted_content`; it does not prove decryptability. A router
  * such as OpenRouter may append `.<alphanumeric suffix>` to the native value (Go be9fbd94); it is reported, not validated
  * as part of the Fernet token.
  */
+import { isJsonArray, isJsonObject, tryParseJson } from "@commissary/json";
 import { splitRouterSuffix } from "./router-suffix.ts";
 
 const MAX_GPT_REASONING_SIGNATURE_LEN = 32 * 1024 * 1024;
@@ -78,3 +80,27 @@ export const inspectGptReasoningSignature = (
 /** `IsValidGPTReasoningSignature`: Fernet-like outer format check of Codex `encrypted_content`. */
 export const isValidGptReasoningSignature = (raw: string): boolean =>
   inspectGptReasoningSignature(raw) !== undefined;
+
+/**
+ * `IsDevinOpenAIReasoningSignature`: Devin's serialized list of GPT reasoning items (`[{"type":"reasoning",
+ * "encrypted_content":"gAAAA…"}, …]`), each carrying a valid `encrypted_content`. The list itself is not a GPT token.
+ */
+export const isDevinOpenAIReasoningSignature = (raw: string): boolean => {
+  if (raw.length > MAX_GPT_REASONING_SIGNATURE_LEN) return false;
+  const trimmed = raw.trim();
+
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return false;
+  const items = tryParseJson(trimmed);
+
+  return (
+    isJsonArray(items) &&
+    items.length > 0 &&
+    items.every(
+      (item) =>
+        isJsonObject(item) &&
+        item["type"] === "reasoning" &&
+        typeof item["encrypted_content"] === "string" &&
+        isValidGptReasoningSignature(item["encrypted_content"]),
+    )
+  );
+};

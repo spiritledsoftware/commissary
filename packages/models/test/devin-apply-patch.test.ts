@@ -74,12 +74,13 @@ const devinCredential = () =>
 const executor = makeDevinExecutor();
 
 describe("Devin apply_patch guards", () => {
-  it("answers a failed non-stream request of a patch-declaring client with the sanitised gateway error", async () => {
+  it("answers a failed non-stream request with the sanitised gateway error once apply_patch activity was seen", async () => {
     const message = "Invalid apply_patch tool arguments received from upstream.";
+    const quota = '{"error":{"code":"resource_exhausted","message":"quota secret"}}';
 
     for (const response of [
-      body(trailer('{"error":{"code":"resource_exhausted","message":"quota secret"}}')),
-      body(textFrame("partial")), // no EOS trailer
+      body(toolFrame('{"input":"*** Begin'), trailer(quota)),
+      body(toolFrame('{"input":"*** Begin')), // no EOS trailer
     ]) {
       const h = await harness(devinCredential(), () => response.clone());
 
@@ -92,18 +93,27 @@ describe("Devin apply_patch guards", () => {
       expect(error.message).toBe(message);
     }
 
-    // Without the declaration the upstream error is kept.
-    const h = await harness(devinCredential(), () =>
-      body(trailer('{"error":{"code":"resource_exhausted","message":"quota secret"}}')),
-    );
+    // Without apply_patch activity (CLIProxyAPI a9e3ddcf), or without the declaration, the upstream error is kept.
+    for (const declared of [true, false]) {
+      const h = await harness(devinCredential(), () => body(trailer(quota)));
 
-    const plain = await runFail(
-      executor.execute(h.context, request(false), responsesOptions(false)),
+      const plain = await runFail(
+        executor.execute(h.context, request(declared), responsesOptions(false)),
+        h.layers,
+      );
+
+      expect(plain.status).toBe(429);
+      expect(plain.message).toContain("quota secret");
+    }
+
+    const h = await harness(devinCredential(), () => body(textFrame("partial")));
+
+    const truncated = await runFail(
+      executor.execute(h.context, request(true), responsesOptions(false)),
       h.layers,
     );
 
-    expect(plain.status).toBe(429);
-    expect(plain.message).toContain("quota secret");
+    expect(truncated).toMatchObject({ status: 502, code: "stream_truncated" });
   });
 
   it("rejects a non-stream apply_patch call whose arguments never became valid JSON", async () => {
