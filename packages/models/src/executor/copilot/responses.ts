@@ -14,12 +14,20 @@ import { Formats } from "@commissary/translation/formats";
 import { prepareResponsesRequest } from "../helps/responses-request.ts";
 import type { ResponsesSseInput } from "../helps/responses-sse.ts";
 import { checkStreamMode, type CopilotAttempt, seedDefaults, send, str } from "./attempt.ts";
-import { copilotResponseError, normalizeCopilotResponses } from "./request.ts";
+import {
+  copilotDefaultSummary,
+  copilotResponseError,
+  normalizeCopilotResponses,
+} from "./request.ts";
 import { COPILOT_PROVIDER } from "./routes.ts";
 
 const STALL_MESSAGE = "copilot: upstream stream ended before a terminal event";
 
-/** Go's `copilotResponses` registry covers OpenAI and Claude clients; the rest keep the attempt's translators. */
+/**
+ * Go's `copilotResponses` registry covers OpenAI and Claude clients; the rest keep the attempt's translators. Like Go,
+ * those two clients ignore an injected `CopilotExecutorOptions.translators` on this route: the standard conversions
+ * are part of the route, not a translator choice.
+ */
 const responsesRegistry = (attempt: CopilotAttempt): TranslatorRegistry =>
   attempt.options.sourceFormat === Formats.OpenAI || attempt.options.sourceFormat === Formats.Claude
     ? standardResponsesTranslators
@@ -38,6 +46,7 @@ export const prepareResponses = (attempt: CopilotAttempt, stream: boolean) => {
       provider: COPILOT_PROVIDER,
       payloadProtocol: Formats.OpenAIResponse,
       signatureTargetModel: () => route.model,
+      defaultSummary: copilotDefaultSummary(route),
       seedDefaults: (body: Json) => {
         // Upstream always streams, so the non-streaming output limit never applies here.
         if (isJsonObject(body)) seedDefaults(attempt, body, true);

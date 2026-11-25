@@ -26,7 +26,7 @@ import {
 import { ApplyPatchResponsesState, normalizeApplyPatchResponses } from "./apply-patch-responses.ts";
 import { stripCodexOnlyIncludes } from "./codex-include.ts";
 import { finalizePayload } from "./payload.ts";
-import { parseSuffix } from "@commissary/translation/thinking";
+import { parseSuffix, type SummaryConfig } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
 import {
   type ExecutionContext,
@@ -58,6 +58,8 @@ export interface ResponsesShaping {
    * profile's effort).
    */
   readonly seedDefaults?: (body: Json) => Json;
+  /** The provider's summary default when the request names none (`ThinkingRequest.defaultSummary`). */
+  readonly defaultSummary?: (body: Json) => SummaryConfig | undefined;
   /** Provider tool preparation, run after the reasoning sanitising (Meta: web_search sanitising, muse namespace). */
   readonly prepareTools?: (body: Json) => Json;
   /**
@@ -170,6 +172,7 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     configurationUpdatesChanged: translated.configurationUpdatesChanged === true,
     modelInfo: request.modelInfo,
     lookupModelInfo: request.modelLookup,
+    ...(shaping.defaultSummary === undefined ? {} : { defaultSummary: shaping.defaultSummary }),
   });
 
   body = setIfDifferent(body, "model", baseModel);

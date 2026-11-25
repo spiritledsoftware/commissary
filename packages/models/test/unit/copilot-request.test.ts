@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { JsonObject } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import {
+  copilotDefaultSummary,
   copilotHeaders,
   copilotResponseError,
   copilotTurnIds,
@@ -141,6 +142,19 @@ describe("seedCopilotDefaults", () => {
       upstreamStream: true,
     });
     expect(body).toEqual({ max_tokens: 8192, thinking: { type: "enabled", budget_tokens: 1024 } });
+  });
+});
+
+describe("copilotDefaultSummary", () => {
+  it("turns summaries on for a model with a default effort or budget", () => {
+    expect(copilotDefaultSummary(route("grok-4.7"))({})).toEqual({
+      mode: "enabled",
+      detail: "auto",
+    });
+    expect(
+      copilotDefaultSummary(route("claude-haiku-4.5"))({ thinking: { type: "enabled" } }),
+    ).toEqual({ mode: "enabled", detail: "" });
+    expect(copilotDefaultSummary(route("claude-sonnet-5.5"))({})).toBeUndefined();
   });
 });
 

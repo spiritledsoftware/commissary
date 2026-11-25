@@ -19,6 +19,7 @@ import {
 } from "@commissary/json";
 import { isClaudeCodeAttributionSystemText } from "@commissary/translation";
 import { type Format, Formats } from "@commissary/translation/formats";
+import type { SummaryConfig } from "@commissary/translation/thinking";
 import { COPILOT_USER_AGENT } from "../../oauth/flows/copilot.ts";
 import { ExecutionError } from "../errors.ts";
 import { uuidV5 } from "../helps/uuid.ts";
@@ -131,6 +132,31 @@ export const seedCopilotDefaults = (body: JsonObject, input: SeedInput): void =>
       }
   }
 };
+
+/**
+ * The CLI's reasoning summaries for a model with a default effort or budget, when the request names none: `auto` on
+ * Responses, on for Messages with thinking on (Go `ApplyCopilotThinking`).
+ */
+export const copilotDefaultSummary =
+  (route: CopilotRoute) =>
+  (body: Json): SummaryConfig | undefined => {
+    if (route.defaultEffort === undefined && route.defaultBudget <= 0) return undefined;
+
+    switch (route.format) {
+      case Formats.OpenAIResponse:
+        return { mode: "enabled", detail: "auto" };
+      case Formats.Claude: {
+        const mode = text(get(body, "thinking.type"));
+
+        return mode === "adaptive" || mode === "enabled"
+          ? { mode: "enabled", detail: "" }
+          : undefined;
+      }
+
+      default:
+        return undefined;
+    }
+  };
 
 /**
  * `flattenCopilotPlainTextContent`: plain `{type:"text",text}` parts as one string (several only for assistant turns).

@@ -514,6 +514,7 @@ describe("Copilot Responses route", () => {
       stream: true,
       temperature: 0.2,
       top_p: 0.9,
+      max_completion_tokens: 2048,
       messages: USER,
     });
 
@@ -524,7 +525,10 @@ describe("Copilot Responses route", () => {
       model: "grok-4.7",
       temperature: 0.2,
       top_p: 0.9,
-      reasoning: { effort: "high" },
+      // 01b24f1f: the client's output limit goes up on standard Responses.
+      max_output_tokens: 2048,
+      // The CLI turns summaries on for a model with a default effort (Go `ApplyCopilotThinking`).
+      reasoning: { effort: "high", summary: "auto" },
     });
 
     const claude = await post("/v1/messages", {
@@ -541,7 +545,8 @@ describe("Copilot Responses route", () => {
     expect(lastCall().body).toMatchObject({
       temperature: 0.5,
       top_p: 0.8,
-      reasoning: { effort: "high" },
+      max_output_tokens: 256,
+      reasoning: { effort: "high", summary: "auto" },
     });
   });
 

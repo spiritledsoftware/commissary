@@ -2977,7 +2977,8 @@ Copilot credential (_Provider OAuth logins_) serves the Copilot CLI's preset mod
 - **Requests** (`request.ts`, `attempt.ts`, one file per route: `chat.ts`, `messages.ts`, `responses.ts`): the client request
   is translated to the route's protocol (OpenAI and Claude clients of a Responses route to standard Responses, without the
   Codex wire defaults: `standardResponsesTranslators`, Go `CopilotTranslationRegistry`, `7ae771fc`; their `temperature` and
-  `top_p` pass through), then the CLI defaults, the thinking pipeline that validates them, Copilot's protocol fixes (`NormalizeCopilotRequest`: plain-text assistant history flattened to a string for
+  `top_p` pass through, and their output limit as `max_output_tokens`, `01b24f1f`), then the CLI defaults (with reasoning
+  summaries on for a model with a default effort, Go `ApplyCopilotThinking`), the thinking pipeline that validates them, Copilot's protocol fixes (`NormalizeCopilotRequest`: plain-text assistant history flattened to a string for
   every client, `9abeef8c`/`f911b453`; a leading system prompt moved to `instructions` or kept as `system` input, the model's
   CLI choice) and the payload rules last. A request only goes to the credential's `base_url`, re-checked with
   `isTrustedCopilotApi` before each send, with the CLI's identity headers (`Copilot-Integration-Id`, `Editor-Version`,

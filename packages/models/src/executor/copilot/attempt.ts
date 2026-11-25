@@ -43,6 +43,7 @@ import {
   type StreamResult,
 } from "../types.ts";
 import {
+  copilotDefaultSummary,
   copilotHeaders,
   copilotResponseError,
   copilotTurnIds,
@@ -230,6 +231,7 @@ export const translateForCopilot = Effect.fnUntraced(function* (
     configurationUpdatesChanged: translated.configurationUpdatesChanged === true,
     modelInfo: request.modelInfo,
     lookupModelInfo: request.modelLookup,
+    defaultSummary: copilotDefaultSummary(route),
   });
 
   return { body: yield* asObject(applied), original };

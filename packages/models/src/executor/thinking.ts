@@ -57,6 +57,11 @@ export interface ThinkingRequest {
   readonly modelInfo?: ThinkingModelInfo | null | undefined;
   /** `registry.LookupModelInfo` for everything but `modelInfo` (summary visibility, cross-model rules). */
   readonly lookupModelInfo?: ModelInfoLookup | undefined;
+  /**
+   * The provider's summary default when neither the request nor its translation names one (Copilot: the CLI turns
+   * summaries on for a model with a default effort, Go `ApplyCopilotThinking`). Reads the body before resolution.
+   */
+  readonly defaultSummary?: (body: Json) => SummaryConfig | undefined;
 }
 
 const lowerFormat = (format: string): string => format.trim().toLowerCase();
@@ -91,6 +96,20 @@ const translatedSummaryConfig = (
     return UNSPECIFIED_SUMMARY;
 
   return current;
+};
+
+/** The translated summary intent, else the provider's default. */
+const summaryConfigOf = (
+  translators: TranslatorRegistry,
+  request: ThinkingRequest,
+  source: Json | undefined,
+  originalSource: Json | undefined,
+): SummaryConfig => {
+  const translated = translatedSummaryConfig(translators, request, source, originalSource);
+
+  if (translated.mode !== "unspecified" || request.defaultSummary === undefined) return translated;
+
+  return request.defaultSummary(request.body) ?? translated;
 };
 
 /** `shouldReconcileClaudeOpenAICompatToolCallReasoning`: a Claude client talking to a compat Chat Completions model. */
@@ -168,7 +187,7 @@ export function makeLiveThinking(translators: TranslatorRegistry) {
         toFormat: request.to,
         providerKey: request.provider,
         sourceBody: source,
-        summaryConfig: translatedSummaryConfig(translators, request, source, originalSource),
+        summaryConfig: summaryConfigOf(translators, request, source, originalSource),
         ...(request.configurationUpdatesChanged === true ? { normalizedUpdatesChanged: true } : {}),
         ...(request.modelInfo === undefined ? {} : { modelInfo: request.modelInfo }),
         ...(request.lookupModelInfo === undefined
