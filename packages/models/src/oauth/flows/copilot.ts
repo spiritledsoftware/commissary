@@ -102,7 +102,7 @@ const formPost = (url: string, params: Record<string, string>) =>
 /** A 2xx JSON object, else a failure in Go's `copilot: upstream HTTP <status>` / invalid JSON wording. */
 const jsonReply = (reply: HttpReply): Effect.Effect<JsonObject, FlowFailure> => {
   if (reply.status < 200 || reply.status >= 300)
-    return Effect.fail(flowFailure(`copilot: upstream HTTP ${reply.status}`));
+    return Effect.fail(flowFailure(`copilot: upstream HTTP ${reply.status}`, reply.status));
   const parsed = parseJsonObject(reply.text);
 
   return parsed === undefined

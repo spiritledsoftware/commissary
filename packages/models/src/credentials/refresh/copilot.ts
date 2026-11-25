@@ -14,13 +14,6 @@ import { refreshError } from "./error.ts";
 import { rfc3339, str } from "./http.ts";
 import type { RefreshContext, RefreshProtocolEffect } from "./types.ts";
 
-/** The upstream status of an exchange failure (`copilot: upstream HTTP <status>`), when it names one. */
-const statusOf = (message: string): number | undefined => {
-  const match = /upstream HTTP (\d{3})/.exec(message);
-
-  return match === null ? undefined : Number(match[1]);
-};
-
 export const refreshCopilot = (context: RefreshContext): RefreshProtocolEffect =>
   Effect.gen(function* () {
     const metadata: JsonObject = { ...context.metadata };
@@ -38,7 +31,7 @@ export const refreshCopilot = (context: RefreshContext): RefreshProtocolEffect =
         refreshError({
           message: `token refresh failed: ${failure.message}`,
           // A 401 (revoked GitHub token) is terminal for the manager: only a new sign-in helps.
-          status: statusOf(failure.message),
+          status: failure.status,
         }),
       ),
     );
