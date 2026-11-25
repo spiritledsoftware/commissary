@@ -19,8 +19,17 @@ import {
   alignClaudeToolResults,
   claudeMessageSystemReminderText,
 } from "../../common/claude-messages.ts";
+import {
+  claudeDocumentTextBlock,
+  expandClaudeContentDocument,
+} from "../../common/claude-documents.ts";
 import { exists, isArr, isObj, str } from "../../common/gjson.ts";
-import { UserTurnDrops } from "../../common/parts.ts";
+import { isHttpUrl, UserTurnDrops } from "../../common/parts.ts";
+import {
+  claudeMaxTokens,
+  claudeOutputJsonSchema,
+  claudeStopSequences,
+} from "../../common/request.ts";
 import { firstNonBlankString } from "../../gemini/interactions/common.ts";
 
 /** `ConvertClaudeRequestToInteractions`. */
@@ -56,6 +65,7 @@ const convert = (
   else if (stream) out.stream = true;
   copySystem(out, root);
   copyGenerationConfig(out, root);
+  copyOutputFormat(out, root);
   const drops = new UserTurnDrops();
   appendMessages(out, get(root, "messages"), preserveEmptyThinkingBlocks, drops);
   copyTools(out, root);
@@ -103,12 +113,29 @@ const copyField = (out: JsonObject, root: Json, from: string, to: string): void 
 };
 
 const copyGenerationConfig = (out: JsonObject, root: Json): void => {
-  copyField(out, root, "max_tokens", "generation_config.max_output_tokens");
+  // Only a numeric max_tokens and the non-empty string stop sequences are forwarded (Go ac415c08, 62c419e0).
+  const maxTokens = claudeMaxTokens(get(root, "max_tokens"));
+
+  if (maxTokens !== undefined) set(out, "generation_config.max_output_tokens", maxTokens);
   copyField(out, root, "temperature", "generation_config.temperature");
   copyField(out, root, "top_p", "generation_config.top_p");
-  copyField(out, root, "stop_sequences", "generation_config.stop_sequences");
+  const stopSequences = claudeStopSequences(get(root, "stop_sequences"));
+
+  if (stopSequences !== undefined) set(out, "generation_config.stop_sequences", stopSequences);
   copyThinking(out, root);
   copyToolChoice(out, get(root, "tool_choice"));
+};
+
+/** `copyClaudeOutputFormatToInteractionsDoc`: a json_schema output format as a JSON `response_format`. */
+const copyOutputFormat = (out: JsonObject, root: Json): void => {
+  const schema = claudeOutputJsonSchema(get(root, "output_config.format"));
+
+  if (schema !== undefined)
+    out.response_format = {
+      type: "text",
+      mime_type: "application/json",
+      schema: cloneJson(schema),
+    };
 };
 
 const copyThinking = (out: JsonObject, root: Json): void => {
@@ -301,13 +328,36 @@ const appendMessage = (
       case "image":
       case "document":
       case "container_upload": {
-        const media = mediaPart(part, partType);
-
-        if (media !== undefined) {
+        const emitMedia = (media: JsonObject): void => {
           flushReminders();
           stepContent.push(media);
           sendable++;
-        } else if (role === "user") drops.drop(partType);
+        };
+
+        if (partType === "document") {
+          const emitText = (text: string): void => emitMedia({ type: "text", text });
+          const docText = claudeDocumentTextBlock(part);
+
+          if (docText !== undefined) {
+            emitText(docText);
+            break;
+          }
+
+          const expanded = expandClaudeContentDocument(
+            part,
+            emitText,
+            (image) => mediaPart(image, "image"),
+            emitMedia,
+            role === "user" ? () => drops.drop("image") : undefined,
+          );
+
+          if (expanded) break;
+        }
+
+        const media = mediaPart(part, partType);
+
+        if (media !== undefined) emitMedia(media);
+        else if (role === "user") drops.drop(partType);
         break;
       }
 
@@ -340,15 +390,30 @@ const appendMessage = (
   return sendable;
 };
 
-/** `claudeMediaPartToInteractions`: only inline base64 data can be forwarded. */
+/** `claudeMediaPartToInteractions`: inline base64 data, or an http(s) URL as `uri`. */
 const mediaPart = (part: Json | undefined, partType: string): JsonObject | undefined => {
   const source = get(part, "source");
+  const sourceType = str(get(source, "type"));
   let mimeType = str(get(source, "media_type"));
+
+  if (mimeType === "") mimeType = str(get(part, "mime_type"));
+
+  if (sourceType === "url") {
+    const uri = str(get(source, "url")).trim();
+
+    if (!isHttpUrl(uri)) return undefined;
+    const media: JsonObject = { type: partType, uri };
+
+    if (mimeType !== "") media.mime_type = mimeType;
+    else if (partType === "document") media.mime_type = "application/pdf";
+
+    return media;
+  }
+
+  if (sourceType !== "" && sourceType !== "base64") return undefined;
   let data = str(get(source, "data"));
 
   if (data === "") data = str(get(part, "data"));
-
-  if (mimeType === "") mimeType = str(get(part, "mime_type"));
 
   if (mimeType === "" || data === "") return undefined;
 

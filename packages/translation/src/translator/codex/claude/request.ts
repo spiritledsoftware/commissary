@@ -30,6 +30,10 @@ import {
   claudeMessageSystemReminderText,
   isClaudeCodeAttributionSystemText,
 } from "../../common/claude-messages.ts";
+import {
+  claudeDocumentTextBlock,
+  expandClaudeContentDocument,
+} from "../../common/claude-documents.ts";
 import { isHttpUrl, UserTurnDrops } from "../../common/parts.ts";
 import {
   hasUnsupportedUnicodePropertyEscape,
@@ -453,34 +457,74 @@ const claudeImageInputPart = (source: Json | undefined): JsonObject | undefined 
   return part;
 };
 
-/** `claudeDocumentDataURL`: an inline PDF as a data URL; anything else is not representable. */
-const claudeDocumentDataUrl = (part: Json): string | undefined => {
+/**
+ * `claudeDocumentInputFile`: an inline PDF as `file_data`, or an http(s) URL as `file_url`, named by the block's
+ * `filename` or `title`; anything else is not representable.
+ */
+const claudeDocumentInputFile = (part: Json): JsonObject | undefined => {
   const source = get(part, "source");
+  let filename = asString(get(part, "filename")).trim();
 
-  if (asString(get(source, "type")) !== "base64") return undefined;
-  const mediaType = asString(get(source, "media_type")).trim();
+  if (filename === "") filename = asString(get(part, "title")).trim();
 
-  if (mediaType.toLowerCase() !== "application/pdf") return undefined;
-  let data = asString(get(source, "data"));
+  switch (asString(get(source, "type"))) {
+    case "base64": {
+      const mediaType = asString(get(source, "media_type")).trim();
 
-  if (data === "") data = asString(get(source, "base64"));
+      if (mediaType.toLowerCase() !== "application/pdf") return undefined;
+      let data = asString(get(source, "data"));
 
-  return data === "" ? undefined : `data:${mediaType};base64,${data}`;
+      if (data === "") data = asString(get(source, "base64"));
+
+      if (data === "") return undefined;
+
+      return {
+        type: "input_file",
+        file_data: `data:${mediaType};base64,${data}`,
+        filename: filename === "" ? "document.pdf" : filename,
+      };
+    }
+
+    case "url": {
+      const fileUrl = asString(get(source, "url")).trim();
+
+      if (!isHttpUrl(fileUrl)) return undefined;
+      const part: JsonObject = { type: "input_file", file_url: fileUrl };
+
+      if (filename !== "") part["filename"] = filename;
+
+      return part;
+    }
+
+    default:
+      return undefined;
+  }
 };
 
-const toolResultImagePart = (source: Json): JsonObject | undefined => {
-  let data = asString(get(source, "data"));
+const inputTextPart = (text: string): JsonObject => ({ type: "input_text", text });
 
-  if (data === "") data = asString(get(source, "base64"));
+/**
+ * `codexToolResultDocumentParts`: a tool_result document as Codex parts: text, expanded content, an input file, or a
+ * placeholder.
+ */
+const toolResultDocumentParts = (part: Json): JsonObject[] => {
+  const docText = claudeDocumentTextBlock(part);
 
-  if (data === "") return undefined;
-  let mediaType = asString(get(source, "media_type"));
+  if (docText !== undefined) return [inputTextPart(docText)];
+  const items: JsonObject[] = [];
 
-  if (mediaType === "") mediaType = asString(get(source, "mime_type"));
+  if (
+    expandClaudeContentDocument(
+      part,
+      (text) => items.push(inputTextPart(text)),
+      (image) => claudeImageInputPart(get(image, "source")),
+      (image) => items.push(image),
+    )
+  ) {
+    return items;
+  }
 
-  if (mediaType === "") mediaType = "application/octet-stream";
-
-  return { type: "input_image", image_url: `data:${mediaType};base64,${data}` };
+  return [claudeDocumentInputFile(part) ?? inputTextPart("[Unsupported document content]")];
 };
 
 /** `ConvertClaudeRequestToCodex`. Throws `UnsupportedPartError` when a user turn is left with nothing to send. */
@@ -832,14 +876,33 @@ const convertClaudeRequest = (
             case "container_upload": {
               flushTurnDiscoveredTools();
               flushReminders();
-              const dataUrl = claudeDocumentDataUrl(part);
 
-              if (dataUrl !== undefined) {
-                contentItems.push({
-                  type: "input_file",
-                  file_data: dataUrl,
-                  filename: "document.pdf",
-                });
+              if (contentType === "document") {
+                const docText = claudeDocumentTextBlock(part);
+
+                if (docText !== undefined) {
+                  appendTextContent(docText);
+                  break;
+                }
+
+                const expanded = expandClaudeContentDocument(
+                  part,
+                  appendTextContent,
+                  (image) => claudeImageInputPart(get(image, "source")),
+                  (image) => {
+                    contentItems.push(image);
+                    bufferedSendable++;
+                  },
+                  messageRole === "user" ? () => drops.drop("image") : undefined,
+                );
+
+                if (expanded) break;
+              }
+
+              const filePart = claudeDocumentInputFile(part);
+
+              if (filePart !== undefined) {
+                contentItems.push(filePart);
                 bufferedSendable++;
               } else if (messageRole === "user") {
                 drops.drop(contentType);
@@ -860,7 +923,8 @@ const convertClaudeRequest = (
                 type: "function_call",
                 call_id: shortenCodexCallIdIfNeeded(id),
                 name: toolNameMap.get(name) ?? shortenNameIfNeeded(name),
-                arguments: input === undefined ? "" : JSON.stringify(input),
+                // A missing input becomes an empty object (Go d2b7dbbd).
+                arguments: input === undefined ? "{}" : JSON.stringify(input),
               });
               break;
             }
@@ -896,14 +960,17 @@ const convertClaudeRequest = (
                   const entryType = asString(get(entry, "type"));
 
                   if (entryType === "image") {
-                    const source = get(entry, "source");
-                    const image = source === undefined ? undefined : toolResultImagePart(source);
+                    const image = claudeImageInputPart(get(entry, "source"));
 
                     if (image !== undefined) {
                       items.push(image);
                       hasRichItems = true;
                     }
 
+                    rewritten?.push(entry);
+                  } else if (entryType === "document") {
+                    items.push(...toolResultDocumentParts(entry));
+                    hasRichItems = true;
                     rewritten?.push(entry);
                   } else if (entryType === "text") {
                     items.push({ type: "input_text", text: asString(get(entry, "text")) });
@@ -934,6 +1001,11 @@ const convertClaudeRequest = (
                 else if (rewritten !== undefined && rewritten.length === content.length)
                   output["output"] = JSON.stringify(rewritten);
                 else output["output"] = asString(content);
+              } else if (isJsonObject(content) && asString(get(content, "type")) === "image") {
+                const image = claudeImageInputPart(get(content, "source"));
+                output["output"] = image !== undefined ? [image] : asString(content);
+              } else if (isJsonObject(content) && asString(get(content, "type")) === "document") {
+                output["output"] = toolResultDocumentParts(content);
               } else {
                 output["output"] = asString(content);
               }
