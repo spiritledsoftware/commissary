@@ -471,7 +471,7 @@ const buildSystemOneConfigModels = (
 
 // --- filters and rewrites ------------------------------------------------------------------------------------------
 
-/** `applyExcludedModels`: case-insensitive wildcard patterns against the lower-cased id. */
+/** `applyExcludedModels`: case-insensitive wildcard patterns against the lower-cased id or published route's source. */
 export const applyExcludedModels = (
   models: ReadonlyArray<ModelInfo>,
   excluded: ReadonlyArray<string>,
@@ -486,8 +486,13 @@ export const applyExcludedModels = (
 
   return models.filter((model) => {
     const id = model.id.trim().toLowerCase();
+    const source = (model.sourceModelId ?? "").trim().toLowerCase();
 
-    return !patterns.some((pattern) => matchWildcard(pattern, id));
+    return !patterns.some(
+      (pattern) =>
+        matchWildcard(pattern, id) ||
+        (source !== "" && source !== id && matchWildcard(pattern, source)),
+    );
   });
 };
 
@@ -503,6 +508,16 @@ export const applyModelPrefixes = (
   const out: ModelInfo[] = [];
   const seen = new Set<string>();
 
+  // f89d408e: a published name can already carry the credential prefix (an alias `team-a/sonnet`); that route keeps
+  // its name when an optional prefixed copy would take it.
+  const explicitNames = new Set(
+    forceModelPrefix
+      ? []
+      : models.flatMap((model) =>
+          model.sourceModelId !== undefined && model.sourceModelId !== "" ? [model.id.trim()] : [],
+        ),
+  );
+
   const add = (model: ModelInfo): void => {
     const id = model.id.trim();
 
@@ -517,8 +532,11 @@ export const applyModelPrefixes = (
     if (baseId === "") continue;
 
     if (!forceModelPrefix || trimmed === baseId) add(model);
+    const prefixedId = `${trimmed}/${baseId}`;
+
+    if (explicitNames.has(prefixedId)) continue;
     const clone: Types.Mutable<ModelInfo> = cloneModelInfo(model);
-    clone.id = `${trimmed}/${baseId}`;
+    clone.id = prefixedId;
 
     if (clone.metadataModelId === undefined || clone.metadataModelId === "")
       clone.metadataModelId = baseId;
@@ -675,14 +693,25 @@ export const applyOAuthModelAliasEntries = (
   return out;
 };
 
-/** `config.ResolveOAuthModelSetting`: an alias match beats a name match; later entries win. */
+/**
+ * `config.ResolveOAuthModelSetting`: an alias match beats a name match; later entries win. A published route's names
+ * include its source (`copilot/gpt-6-sol`) and the source's native id (`gpt-6-sol`, Go's `MetadataModelID` there), so
+ * its aliases and prefixed copies share the source's settings (f89d408e).
+ */
 const resolveSetting = (
   settings: ReadonlyArray<OAuthModelSetting>,
   model: ModelInfo,
 ): OAuthModelSetting | undefined => {
   const id = model.id.trim().toLowerCase();
-  const metaId = (model.metadataModelId ?? "").trim().toLowerCase();
-  const name = (model.name ?? "").trim().toLowerCase();
+  const source = (model.sourceModelId ?? "").trim().toLowerCase();
+
+  const names = [
+    (model.metadataModelId ?? "").trim().toLowerCase(),
+    (model.name ?? "").trim().toLowerCase(),
+    source,
+    source.slice(source.indexOf("/") + 1),
+  ].filter((candidate) => candidate !== "");
+
   let aliasMatch: OAuthModelSetting | undefined;
   let nameMatch: OAuthModelSetting | undefined;
 
@@ -695,9 +724,7 @@ const resolveSetting = (
     if (entryAlias !== "" && id !== "" && id === entryAlias) aliasMatch = entry;
     else if (
       (entryAlias === "" || entryAlias === id) &&
-      (id === entryName ||
-        (metaId !== "" && metaId === entryName) ||
-        (name !== "" && name === entryName))
+      (id === entryName || names.includes(entryName))
     ) {
       nameMatch = entry;
     }
@@ -718,6 +745,33 @@ const applyOAuthSettings = (
   });
 
 // --- assembly ------------------------------------------------------------------------------------------------------
+
+/**
+ * `applyModelNamespace` and `setCopilotModelDisplayName` (f89d408e): Copilot's and Devin's catalog models publish as
+ * `<provider>/<native id>`, their source, before exclusions, OAuth aliases and settings, so all of those name the
+ * qualified id. Devin's catalog additions already carry the `devin/` prefix; Copilot's are native.
+ */
+const publishModels = (provider: string, models: ReadonlyArray<ModelInfo>): ModelInfo[] => {
+  const prefix = `${provider}/`;
+
+  return models.map((model) => {
+    const trimmed = model.id.trim();
+
+    const native = trimmed.toLowerCase().startsWith(prefix)
+      ? trimmed.slice(prefix.length)
+      : trimmed;
+
+    const id = `${prefix}${native}`;
+    const published: Types.Mutable<ModelInfo> = { ...model, id, sourceModelId: id };
+
+    if (provider === "copilot") {
+      const displayName = (model.displayName ?? "").trim() || native;
+      published.displayName = `${displayName.endsWith(" (Copilot)") ? displayName.slice(0, -" (Copilot)".length) : displayName} (Copilot)`;
+    }
+
+    return published;
+  });
+};
 
 const CODEX_TIERS = new Map<string, Section>([
   ["pro", "codex-pro"],
@@ -786,9 +840,15 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
         excluded,
       );
     case "devin":
-      return applyExcludedModels(sectionModels(catalogs, "devin"), excluded);
+      return applyExcludedModels(
+        publishModels("devin", sectionModels(catalogs, "devin")),
+        excluded,
+      );
     case "copilot":
-      return applyExcludedModels(sectionModels(catalogs, "copilot"), excluded);
+      return applyExcludedModels(
+        publishModels("copilot", sectionModels(catalogs, "copilot")),
+        excluded,
+      );
     case "meta":
       return applyExcludedModels(
         configured.length > 0
