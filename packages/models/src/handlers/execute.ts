@@ -25,8 +25,8 @@ import { CurrentOrg } from "@commissary/core";
 import {
   type Attempt,
   attemptOptions,
+  cancelledAttemptError,
   conduct,
-  lifecycleError,
   pickRequestOf,
   type Prepared,
   retrySettings,
@@ -349,6 +349,20 @@ const withStreamHeaders = (error: ExecutionError, headers: Headers): ExecutionEr
 };
 
 /**
+ * The error a finished stream reports for its attempt (Go `wrapStreamResult`): none for a stream that ended cleanly,
+ * the stream's own error otherwise; a stream the client cancelled reports what {@link cancelledAttemptError} keeps of
+ * it (CLIProxyAPI 3ad507bf), so a cancelled stream never records a success, and a plain cancellation no failure.
+ */
+export const streamExitError = (exit: Exit.Exit<unknown, unknown>): ExecutionError | undefined => {
+  if (Exit.isSuccess(exit)) return undefined;
+  const failure = toExecutionError(exit.cause);
+
+  return failure === undefined || Cause.hasInterrupts(exit.cause)
+    ? cancelledAttemptError(exit.cause)
+    : failure;
+};
+
+/**
  * One streaming attempt: opens the stream and waits for the first payload. Failures before it are failovers; after it
  * the stream is handed to the client and the attempt is reported when the stream ends (Go `wrapStreamResult`).
  */
@@ -398,14 +412,9 @@ const runStreamAttempt = (prepared: Prepared, attempt: Attempt) =>
       Stream.fromPull(Effect.succeed(pull)),
     ).pipe(
       Stream.map((text) => (target === "" ? text : rewriteStreamChunk(text, target))),
-      Stream.onExit((exit) => {
-        const failure = Exit.isFailure(exit) ? toExecutionError(exit.cause) : undefined;
-        const interrupted = Exit.isFailure(exit) && failure === undefined;
-
-        return attempt
-          .finish(interrupted ? lifecycleError() : failure, result.headers)
-          .pipe(Effect.provideContext(services));
-      }),
+      Stream.onExit((exit) =>
+        attempt.finish(streamExitError(exit), result.headers).pipe(Effect.provideContext(services)),
+      ),
     );
 
     return {

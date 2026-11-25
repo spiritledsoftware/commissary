@@ -16,7 +16,7 @@
  * upstream attempts per request (each costs subrequests: pick, fetch, report) and cooldown waits of at most
  * {@link MAX_COOLDOWN_WAIT_MS}; a longer recovery is answered with the last error plus `Retry-After`.
  */
-import { Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
+import { Cause, Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
 import type { Config } from "../config/schema.ts";
 import type { RetryPlan } from "../credentials/selection/retry.ts";
 import {
@@ -277,6 +277,24 @@ export const lifecycleError = (): ExecutionError =>
     code: "connection_lifecycle",
     message: "client closed request",
   });
+
+/**
+ * What an attempt the client cancelled reports (CLIProxyAPI 3ad507bf, `recordCanceledUpstreamCooldown`): an upstream
+ * error that carries a `Retry-After` keeps the cooldown the upstream asked for, although the client went away
+ * meanwhile (often because of that very error); a request-scoped error is reported as it is (it cools nothing);
+ * anything else, a plain cancellation included, is the client's abort and never a credential failure.
+ */
+export const cancelledAttemptError = (cause: Cause.Cause<unknown>): ExecutionError => {
+  const failure = cause.reasons.find(Cause.isFailReason)?.error;
+
+  if (
+    failure instanceof ExecutionError &&
+    (failure.retryAfterMs !== undefined || failure.requestScoped === true)
+  )
+    return failure;
+
+  return lifecycleError();
+};
 
 const authNotFound = (): ExecutionError =>
   new ExecutionError({ status: 503, code: "auth_not_found", message: "no auth available" });
@@ -661,7 +679,13 @@ export const conduct = <T, R>(
                   return run(attempt);
                 },
                 { retry: attempt.restart },
-              ).pipe(Effect.onInterrupt(() => attempt.finish(lifecycleError()))),
+              ).pipe(
+                Effect.onError((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? attempt.finish(cancelledAttemptError(cause)).pipe(Effect.asVoid)
+                    : Effect.void,
+                ),
+              ),
             );
 
             if (Result.isSuccess(result))
