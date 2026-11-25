@@ -3374,6 +3374,17 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   non-stream bodies count as complete without a `finishReason`, and explicit session alias headers key the ledger before the
   derived id. The Go fallback to the request's API key for caller isolation is not needed: the ledger is always
   namespaced by `metadata.callerScope`.
+- **Translators at `dd543d09` (SPI-1420)**: every request translator ends in Antigravity's native wire format
+  (`antigravity/common/request-format.ts`, Go `38067a29`: camelCase media fields, a text-only system instruction joined into one
+  user part, a lone string tool `result` sent as `output`). OpenAI chat requests are an envelope transform like Responses (native
+  web search needs the resolved model info); chat streams announce a `willContinue` call once and stream its arguments into one
+  object. Go's `partialArgs` assembly is not ported (see "Gemini responses" above). Recovering a thinking signature from the cache
+  needs a cache installed for the attempt (`signatureCacheScoped`, the translator half of Go `85225381`): an unscoped call
+  recovers nothing; the per-credential cache scope and the non-stream cache writes belong to the executor. Unlike the Gemini API
+  route, the Antigravity Claude translator does not turn a no-output `MALFORMED_FUNCTION_CALL` into an `api_error` (the C6
+  refusal above stands); it only skips empty function calls (Go `f663935d`). Go's pending filter-frame commits for Antigravity
+  (`c2dcf748`, `5ddbfbaf`) have nothing to apply to, as for Gemini. The schema cleaners drop `minProperties`/`maxProperties`
+  (kept as description hints) and `prefixItems` (Go `65ba7863`) for Gemini too, since the cleaner is shared.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
