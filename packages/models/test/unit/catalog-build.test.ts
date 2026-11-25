@@ -412,8 +412,11 @@ describe("bundled thinking facts of Claude-protocol models", () => {
 describe("coverage of what the Go server serves", () => {
   const served = goServed as Record<string, ReadonlyArray<{ readonly id: string }>>;
   const catalogs = embeddedCatalogs();
-  /** The sections the Go server never had: System One's providers (ADR 0032). */
-  const NOT_IN_GO: ReadonlySet<Section> = new Set(["typesafe", "subq", "opencode-zen"]);
+  /**
+   * The sections the Go server did not have when the catalog moved: System One's providers (ADR 0032) and Copilot
+   * (added upstream later, 7ae771fc/d059cf28).
+   */
+  const NOT_IN_GO: ReadonlySet<Section> = new Set(["typesafe", "subq", "opencode-zen", "copilot"]);
   const goSections = SECTIONS.filter((section) => !NOT_IN_GO.has(section));
 
   it("every section serves every model id Go served when the catalog moved to models.dev", () => {

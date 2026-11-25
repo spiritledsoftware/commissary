@@ -134,6 +134,8 @@ export const ADDITION_PROVIDERS = [
   "antigravity",
   "xai",
   "devin",
+  // GitHub Copilot's presets (Go `internal/registry/models/models.json` `copilot`): private ids, additions entirely.
+  "copilot",
   "meta",
   // System One providers (ADR 0032): catalog additions entirely, models.dev lists none of their models.
   "typesafe",

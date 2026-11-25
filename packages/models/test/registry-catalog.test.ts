@@ -106,6 +106,16 @@ describe("static lookups", () => {
     expect(lookupStaticModelInfo(catalogs, "")).toBeUndefined();
   });
 
+  // cbfc90ad: Copilot's presets are in the static lookup, by channel and among every section.
+  it("finds Copilot's presets", () => {
+    expect(lookupStaticModelInfoByChannel(catalogs, "claude-sonnet-5.5", "copilot")).toMatchObject({
+      type: "copilot",
+      thinking: { levels: ["low", "medium", "high", "xhigh", "max"] },
+    });
+    expect(lookupStaticModelInfo(catalogs, "mai-code-2")?.ownedBy).toBe("copilot");
+    expect(staticModelsByChannel(catalogs, "copilot")?.length).toBe(catalogs.models.copilot.length);
+  });
+
   it("dated and bracketed Claude variants share their catalog entry", () => {
     for (const id of [
       "claude-sonnet-5-5[1m]",

@@ -787,6 +787,8 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
       );
     case "devin":
       return applyExcludedModels(sectionModels(catalogs, "devin"), excluded);
+    case "copilot":
+      return applyExcludedModels(sectionModels(catalogs, "copilot"), excluded);
     case "meta":
       return applyExcludedModels(
         configured.length > 0
