@@ -456,8 +456,7 @@ export const makeXaiWebsocketStream =
       ).pipe(
         Stream.ensuring(
           Effect.gen(function* () {
-            if (sessionId !== undefined && state !== undefined)
-              idStates.release(sessionId, state, yield* Clock.currentTimeMillis);
+            if (state !== undefined) idStates.release(state, yield* Clock.currentTimeMillis);
           }),
         ),
       );

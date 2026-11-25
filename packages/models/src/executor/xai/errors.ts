@@ -293,6 +293,38 @@ const STATUS_PATHS = [
   "body.error.status",
 ];
 
+/** Codes of a 403 (`xaiTerminalFailureStatus`; `permission_denied:` / `permission-denied:` prefixes too). */
+const FORBIDDEN_CODES: ReadonlySet<string> = new Set([
+  "forbidden",
+  "permission_denied",
+  "permission-denied",
+]);
+
+/** Code fragments of an exhausted quota (429). */
+const EXHAUSTED_CODE_PARTS: ReadonlyArray<string> = [
+  "free-usage-exhausted",
+  "resource_exhausted",
+  "resource-exhausted",
+];
+
+/** Error types of a request fault (400); policy blocks are 400s through `isPolicyBlockCode`. */
+const BAD_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  "invalid_request_error",
+  "invalid_request",
+  "bad_request_error",
+  "image_generation_user_error",
+]);
+
+/** Error codes of a request fault (400). */
+const BAD_REQUEST_CODES: ReadonlySet<string> = new Set([
+  "invalid_value",
+  "invalid_request_error",
+  "invalid_argument",
+  "invalid-argument",
+  "context_length_exceeded",
+  "context_too_large",
+]);
+
 /** `xaiTerminalFailureStatus`: an explicit status, else one mapped from the error's type, code and message. */
 const terminalFailureStatus = (event: Json | undefined, doc: JsonObject): number => {
   for (const path of STATUS_PATHS) {
@@ -324,7 +356,7 @@ const terminalFailureStatus = (event: Json | undefined, doc: JsonObject): number
 
   if (
     type === "permission_error" ||
-    ["forbidden", "permission_denied", "permission-denied"].includes(code) ||
+    FORBIDDEN_CODES.has(code) ||
     code.startsWith("permission_denied:") ||
     code.startsWith("permission-denied:")
   )
@@ -336,31 +368,13 @@ const terminalFailureStatus = (event: Json | undefined, doc: JsonObject): number
     type === "rate_limit_error" ||
     code === "rate_limit_exceeded" ||
     code === "rate_limit" ||
-    ["free-usage-exhausted", "resource_exhausted", "resource-exhausted"].some((part) =>
-      code.includes(part),
-    ) ||
+    EXHAUSTED_CODE_PARTS.some((part) => code.includes(part)) ||
     message.includes("free-usage-exhausted") ||
     message.includes("included free usage")
   )
     return 429;
 
-  if (
-    isPolicyBlockCode(code) ||
-    [
-      "invalid_request_error",
-      "invalid_request",
-      "bad_request_error",
-      "image_generation_user_error",
-    ].includes(type) ||
-    [
-      "invalid_value",
-      "invalid_request_error",
-      "invalid_argument",
-      "invalid-argument",
-      "context_length_exceeded",
-      "context_too_large",
-    ].includes(code)
-  )
+  if (isPolicyBlockCode(code) || BAD_REQUEST_TYPES.has(type) || BAD_REQUEST_CODES.has(code))
     return 400;
 
   if (

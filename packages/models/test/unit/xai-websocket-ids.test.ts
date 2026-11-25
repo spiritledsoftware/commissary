@@ -45,7 +45,7 @@ describe("XaiIdStateStore", () => {
     expect(store.get("other", 2 * TTL)).toBeDefined();
     expect(store.size).toBe(2);
 
-    if (state !== undefined) store.release("s1", state, 2 * TTL);
+    if (state !== undefined) store.release(state, 2 * TTL);
     expect(store.get("s1", 3 * TTL - 1)).toBe(state);
   });
 
@@ -54,7 +54,7 @@ describe("XaiIdStateStore", () => {
     const state = store.acquire("s1", 0);
     store.delete("s1");
 
-    if (state !== undefined) store.release("s1", state, 1);
+    if (state !== undefined) store.release(state, 1);
     expect(store.size).toBe(0);
   });
 

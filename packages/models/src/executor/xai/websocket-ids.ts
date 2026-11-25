@@ -109,12 +109,10 @@ interface StoredIdState {
 export class XaiIdStateStore {
   private readonly states = new Map<string, StoredIdState>();
 
-  constructor(private readonly idleTtlMs = XAI_ID_STATE_IDLE_TTL_MS) {}
-
   /** `evictExpiredLocked`: drops idle states from the least recently used end; one still fresh ends the scan. */
   private evictExpired(nowMs: number): void {
     for (const [id, entry] of this.states) {
-      if (nowMs - entry.lastUsedMs < this.idleTtlMs) break;
+      if (nowMs - entry.lastUsedMs < XAI_ID_STATE_IDLE_TTL_MS) break;
 
       if (entry.inFlight === 0) this.states.delete(id);
     }
@@ -126,47 +124,49 @@ export class XaiIdStateStore {
     this.states.set(id, entry);
   }
 
-  /** `getOrCreateLocked`: the session's state (a fresh one after 24 h idle), marked as used now. */
-  private entry(id: string, nowMs: number): StoredIdState {
+  /**
+   * `getOrCreateLocked`: the session's state (a fresh one after 24 h idle), marked as used now and, with `hold`, in
+   * flight until `release`. A blank session id has no state.
+   */
+  private use(sessionId: string, nowMs: number, hold: boolean): XaiIdState | undefined {
+    const id = sessionId.trim();
+
+    if (id === "") return undefined;
     this.evictExpired(nowMs);
     const current = this.states.get(id);
 
     const entry =
-      current !== undefined && (current.inFlight > 0 || nowMs - current.lastUsedMs < this.idleTtlMs)
+      current !== undefined &&
+      (current.inFlight > 0 || nowMs - current.lastUsedMs < XAI_ID_STATE_IDLE_TTL_MS)
         ? current
         : { state: new XaiIdState(), lastUsedMs: nowMs, inFlight: 0 };
 
     this.touch(id, entry, nowMs);
 
-    return entry;
-  }
-
-  get(sessionId: string, nowMs: number): XaiIdState | undefined {
-    const id = sessionId.trim();
-
-    return id === "" ? undefined : this.entry(id, nowMs).state;
-  }
-
-  /** `acquireXAIWebsocketIDState`: the state, held in flight (never evicted) until `release`. */
-  acquire(sessionId: string, nowMs: number): XaiIdState | undefined {
-    const id = sessionId.trim();
-
-    if (id === "") return undefined;
-    const entry = this.entry(id, nowMs);
-    entry.inFlight++;
+    if (hold) entry.inFlight++;
 
     return entry.state;
   }
 
-  /** `releaseXAIWebsocketIDState`: ends one in-flight use; the state counts as used now. */
-  release(sessionId: string, state: XaiIdState, nowMs: number): void {
-    const id = sessionId.trim();
-    const entry = this.states.get(id);
+  get(sessionId: string, nowMs: number): XaiIdState | undefined {
+    return this.use(sessionId, nowMs, false);
+  }
 
-    if (entry === undefined || entry.state !== state) return;
+  /** `acquireXAIWebsocketIDState`: the state, held in flight (never evicted) until `release`. */
+  acquire(sessionId: string, nowMs: number): XaiIdState | undefined {
+    return this.use(sessionId, nowMs, true);
+  }
 
-    if (entry.inFlight > 0) entry.inFlight--;
-    this.touch(id, entry, nowMs);
+  /** `releaseXAIWebsocketIDState`: ends one in-flight use of `state`; the state counts as used now. */
+  release(state: XaiIdState, nowMs: number): void {
+    for (const [id, entry] of this.states) {
+      if (entry.state !== state) continue;
+
+      if (entry.inFlight > 0) entry.inFlight--;
+      this.touch(id, entry, nowMs);
+      break;
+    }
+
     this.evictExpired(nowMs);
   }
 

@@ -26,6 +26,7 @@ import {
   type ResponseContext,
   type TranslatorRegistry,
 } from "@commissary/translation";
+import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 import { responseModelOf } from "../../usage/record.ts";
 import { isResponsesTokenEvent } from "../../usage/ttft.ts";
 import {
@@ -46,7 +47,6 @@ import type {
 import { APPLY_PATCH_UPSTREAM_ERROR_MESSAGE } from "./apply-patch-responses.ts";
 import type { ResponsesPrepared } from "./responses-request.ts";
 import { ResponsesStreamOutputTracker } from "./responses-synthesis.ts";
-import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 
 interface StepResult {
   readonly chunks: ReadonlyArray<string>;
