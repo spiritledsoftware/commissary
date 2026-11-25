@@ -18,7 +18,7 @@ import {
   moveBlankPartCacheControl,
 } from "../../../common/cache-control.ts";
 import { ClaudeMessageAccumulator } from "../../../common/claude-messages.ts";
-import { buildClaudeStructuredOutputInstruction } from "../../../common/claude-system.ts";
+import { applyClaudeStructuredOutput } from "../../../common/claude-system.ts";
 import { deriveClaudeUserID } from "../../../common/claude-user-id.ts";
 import {
   defaultClaudeMaxTokensForModel,
@@ -276,7 +276,11 @@ const convertRequest = (
     messageBlocks = accumulator.messages();
   }
 
-  const formatInstruction = buildClaudeStructuredOutputInstruction(get(root, "response_format"));
+  const formatInstruction = applyClaudeStructuredOutput(
+    out,
+    modelName,
+    get(root, "response_format"),
+  );
 
   if (formatInstruction !== "") systemBlocks.push({ type: "text", text: formatInstruction });
 
