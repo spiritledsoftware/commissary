@@ -187,6 +187,7 @@ describe("streamed arguments are reassembled (9d60b36f)", () => {
   });
 
   // Commissary counts the buffer in UTF-16 code units where Go counts bytes; the ASCII padding makes them equal.
+  // It parses about 56 MiB of fragments, which can take over 5 s on a shared CI runner, so it gets 30 s.
   it("rejects a call past the shared 50 MiB argument budget and releases its buffer", () => {
     const send = stream();
 
@@ -217,5 +218,5 @@ describe("streamed arguments are reassembled (9d60b36f)", () => {
     // This fragment only fits if step 1's buffer was released.
     send(delta0);
     expect(send(argumentsDelta(0, '"}'))).toHaveLength(1);
-  });
+  }, 30_000);
 });
