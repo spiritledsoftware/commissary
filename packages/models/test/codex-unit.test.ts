@@ -5,7 +5,9 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
+import { bootstrapOverloadError } from "../src/executor/codex/bootstrap.ts";
 import {
+  codexResponseEventType,
   codexTerminalFailure,
   newCodexStatusError,
   parseCodexRetryAfterMs,
@@ -718,6 +720,160 @@ describe("helpers", () => {
         { modelLevelCooling: false, nowMs: now },
       ),
     ).toBeUndefined();
+  });
+
+  describe("error relay (20df0c25, 80e8350c, 5a373ede, 7dd360d9, deacbf21, 1f76e479)", () => {
+    const options = { modelLevelCooling: false, nowMs: Date.parse("2026-01-01T00:00:00Z") };
+
+    it("recognises untyped error envelopes but keeps explicit types authoritative", () => {
+      expect(codexResponseEventType({ error: "boom" })).toBe("error");
+      expect(codexResponseEventType({ body: { error: { message: "x" } } })).toBe("error");
+      expect(codexResponseEventType({ code: "c", message: "m" })).toBe("error");
+      expect(codexResponseEventType({ error: "  " })).toBe("");
+      expect(codexResponseEventType({ type: "response.metadata", error: { message: "x" } })).toBe(
+        "response.metadata",
+      );
+      expect(codexTerminalFailure({ type: "response.metadata", error: "x" }, options)).toBe(
+        undefined,
+      );
+    });
+
+    it("keeps string errors, body errors and the event's status", () => {
+      const scalar = codexTerminalFailure(
+        { error: "upstream exploded", sequence_number: 3 },
+        options,
+      );
+
+      expect(JSON.parse(scalar!.body)).toEqual({
+        error: { message: "upstream exploded" },
+        sequence_number: 3,
+      });
+
+      const wrapped = codexTerminalFailure(
+        { status: 503, body: { error: { type: "server_error", message: "busy" } } },
+        options,
+      );
+
+      expect(wrapped?.error.status).toBe(503);
+      expect(JSON.parse(wrapped!.body)).toMatchObject({ status: 503, error: { message: "busy" } });
+      // A null error falls through to the next layout.
+      expect(
+        JSON.parse(
+          codexTerminalFailure(
+            { type: "response.failed", response: { error: null }, error: { message: "y" } },
+            options,
+          )!.body,
+        ),
+      ).toMatchObject({ error: { message: "y" } });
+    });
+
+    it("classifies policy blocks as 400 with the official copy", () => {
+      const bio = codexTerminalFailure({ type: "error", error: { code: "bio_policy" } }, options);
+
+      expect(bio?.error.status).toBe(400);
+      expect(JSON.parse(bio!.body)).toMatchObject({
+        error: { message: "This content was flagged for possible biological risk." },
+      });
+
+      const ws = parseCodexWebsocketError(
+        { type: "error", status: 400, error: { code: "misalignment_policy_violation" } },
+        options,
+      );
+
+      expect(JSON.parse(ws!.body)).toMatchObject({
+        type: "error",
+        error: { message: "This request was blocked due to a misalignment policy violation." },
+      });
+    });
+
+    it("keeps the Retry-After header of a terminal overload event", () => {
+      const failure = codexTerminalFailure(
+        {
+          type: "error",
+          headers: { "Retry-After": "45" },
+          error: { type: "service_unavailable_error", code: "server_is_overloaded", message: "x" },
+        },
+        options,
+      );
+
+      expect(failure?.error).toMatchObject({ retryAfterMs: 45_000 });
+    });
+
+    it("reads WebSocket statuses and headers nested in the error, the outer header winning", () => {
+      const nested = parseCodexWebsocketError(
+        {
+          type: "error",
+          headers: { "Retry-After": "" },
+          error: {
+            status: 503,
+            message: "overloaded",
+            headers: { "Retry-After": "60", "X-Request-Id": "abc" },
+          },
+        },
+        options,
+      );
+
+      expect(nested?.error.status).toBe(503);
+      expect(nested?.error.retryAfterMs).toBeUndefined();
+      expect(nested?.error.headers).toEqual({ "x-request-id": "abc" });
+
+      const inner = parseCodexWebsocketError(
+        { type: "error", error: { status: 503, headers: { "Retry-After": "60" } } },
+        options,
+      );
+
+      expect(inner?.error).toMatchObject({ status: 503, retryAfterMs: 60_000 });
+    });
+
+    it("infers the status of a status-less WebSocket error that carries headers", () => {
+      const overloaded = parseCodexWebsocketError(
+        {
+          type: "error",
+          headers: { "retry-after": "30" },
+          error: { type: "service_unavailable_error", code: "server_is_overloaded", message: "x" },
+        },
+        options,
+      );
+
+      expect(overloaded?.error).toMatchObject({ status: 503, retryAfterMs: 30_000 });
+      // Without headers and a status the frame is not a parseable upstream error.
+      expect(
+        parseCodexWebsocketError({ type: "error", error: { message: "x" } }, options),
+      ).toBeUndefined();
+    });
+
+    it("wraps a string WebSocket error and keeps its sequence number", () => {
+      const parsed = parseCodexWebsocketError(
+        { status: 502, sequence_number: 9, error: "bad gateway upstream" },
+        options,
+      );
+
+      expect(JSON.parse(parsed!.body)).toEqual({
+        type: "error",
+        status: 502,
+        sequence_number: 9,
+        error: { message: "bad gateway upstream" },
+      });
+    });
+
+    it("keeps a 429's own hint over the bootstrap 503 and carries other hints onto it", () => {
+      const hinted = newCodexStatusError(429, '{"error":{"message":"x"}}', {
+        ...options,
+        headers: { "retry-after": "12" },
+      });
+
+      expect(bootstrapOverloadError("{}", options.nowMs, hinted)).toBe(hinted);
+
+      const overloaded = newCodexStatusError(503, '{"error":{"message":"x"}}', {
+        ...options,
+        headers: { "retry-after": "7" },
+      });
+
+      expect(bootstrapOverloadError("{}", options.nowMs, overloaded)).toMatchObject({
+        status: 503,
+        retryAfterMs: 7_000,
+      });
+    });
   });
 
   it("adds missing Responses usage details to JSON and SSE payloads but not to compactions", () => {

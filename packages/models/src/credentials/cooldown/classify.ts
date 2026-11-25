@@ -3,7 +3,8 @@
  *
  * Go source: sdk/cliproxy/auth/conductor_cooldown.go (isModelSupportError, isInvalidGrantError,
  * isCloudflareChallengeError, shouldSkipCredentialCooldown, isConnectionLifecycleError, isTransientTransportError,
- * isRequestInvalidError, isExplicitModelNotFoundError, ...), internal/clienterror/client_error.go (IsRequestFault),
+ * isRequestInvalidError, isExplicitModelNotFoundError, ...), internal/clienterror/client_error.go (IsRequestFault,
+ * IsOpenAIPolicyBlockError),
  * sdk/cliproxy/auth/conductor_selection.go (isCredentialRetryRoundStatus). Docs: credentials.md §8.3-8.4.
  *
  * Errors are described by {@link ClassifiableError}: `status` is the upstream HTTP status (0 when the failure happened
@@ -44,6 +45,11 @@ const lower = (text: string): string => text.trim().toLowerCase();
 
 const REQUEST_FAULT_CODES = new Set([
   "cyber_policy",
+  "cyber_policy_violation",
+  "bio_policy",
+  "misalignment_policy_violation",
+  "content_policy_violation",
+  "image_content_policy_violation",
   "context_length_exceeded",
   "message_too_big",
   "string_above_max_length",
@@ -61,8 +67,20 @@ const REQUEST_FAULT_TYPES = new Set([
   "invalid_prompt",
 ]);
 
+/** `unwrapKnownErrorWrapper`: the body behind a `responses stream terminated after ...:` prefix (Go 1f76e479). */
+const unwrapKnownErrorWrapper = (raw: string): string => {
+  const trimmed = raw.trim();
+  const prefix = "responses stream terminated after ";
+
+  if (!trimmed.toLowerCase().startsWith(prefix)) return trimmed;
+  const rest = trimmed.slice(prefix.length);
+  const colon = rest.indexOf(":");
+
+  return colon >= 0 ? rest.slice(colon + 1).trim() : trimmed;
+};
+
 const parseJsonObject = (text: string): JsonObject | undefined => {
-  const trimmed = text.trim();
+  const trimmed = unwrapKnownErrorWrapper(text);
 
   if (trimmed === "" || (trimmed[0] !== "{" && trimmed[0] !== "[")) return undefined;
   const parsed = tryParseJson(trimmed);
@@ -110,6 +128,57 @@ const hasBodyValue = (
   const root = parseJsonObject(body);
 
   return root !== undefined && paths.some((path) => accept(lower(stringAt(root, path))));
+};
+
+const POLICY_BLOCK_PREFIXES = [
+  "this content was flagged for possible biological risk.",
+  "this content was flagged for possible cybersecurity risk.",
+  "this request has been flagged for possible cybersecurity risk.",
+  "this request was blocked due to a misalignment policy violation.",
+  "invalid prompt: we've limited access to this content for safety reasons.",
+];
+
+const hasPolicyBlockPrefix = (text: string): boolean => {
+  const value = lower(text);
+
+  return POLICY_BLOCK_PREFIXES.some((prefix) => value.startsWith(prefix));
+};
+
+const IGNORED_TOP_LEVEL_TYPES = new Set(["error", "response.failed", "response.error"]);
+
+/**
+ * `IsOpenAIPolicyBlockError` (Go 1f76e479): an OpenAI/Codex biological, cybersecurity or safety block, recognised by
+ * its official message. A structured error whose code or type is not a request fault is never one, so a prompt that
+ * merely echoes the text does not match; a plain-text body matches by its prefix.
+ */
+const isOpenAIPolicyBlock = (body: string): boolean => {
+  const root = parseJsonObject(body);
+
+  if (root === undefined) {
+    const text = unwrapKnownErrorWrapper(body);
+
+    return text !== "" && !isJsonText(text) && hasPolicyBlockPrefix(text);
+  }
+
+  for (const prefix of ["error.", "response.error.", "body.error.", ""]) {
+    const code = lower(stringAt(root, `${prefix}code`));
+    let type = lower(stringAt(root, `${prefix}type`));
+
+    if (prefix === "" && IGNORED_TOP_LEVEL_TYPES.has(type)) type = "";
+    const message = stringAt(root, `${prefix}message`).trim();
+
+    if (code === "" && type === "" && message === "") continue;
+
+    if (
+      (code !== "" && !REQUEST_FAULT_CODES.has(code)) ||
+      (type !== "" && !REQUEST_FAULT_TYPES.has(type))
+    )
+      return false;
+
+    if (hasPolicyBlockPrefix(message)) return true;
+  }
+
+  return false;
 };
 
 /** `IsItemNotPersisted`: Responses items referenced although `store` was false. */
@@ -208,7 +277,7 @@ export const isRequestFault = (status: number, body: string): boolean => {
 
   if (hasBodyValue(body, TYPE_PATHS, (value) => REQUEST_FAULT_TYPES.has(value))) return true;
 
-  if (isItemNotPersisted(body)) return true;
+  if (isItemNotPersisted(body) || isOpenAIPolicyBlock(body)) return true;
 
   return status === 400 || status === 409 || status === 413 || status === 422;
 };

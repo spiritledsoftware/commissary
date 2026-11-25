@@ -848,6 +848,15 @@ Core contracts every provider slice implements (Go references in each module hea
   rewrites (`context_too_large`, `thinking_signature_invalid`, `previous_response_not_found`, `auth_unavailable`),
   in-stream `error`/`response.failed` mapping, empty `response.incomplete` -> request-scoped 502, missing terminal ->
   request-scoped 408. 401 refresh/retry is done by the conductor (`withCredentialRefresh`), not by the executor.
+  An untyped envelope that carries `error`, `body.error` or `response.error` (object or non-blank string) or a top-level
+  `code` and `message` counts as an `error` event; an explicit type is authoritative (`codexResponseEventType`, Go `20df0c25`).
+  Policy blocks (`bio_policy`, `cyber_policy[_violation]`, `misalignment_policy_violation`, `invalid_prompt`,
+  `[image_]content_policy_violation`) are 400 request faults, a code-only one gets the official copy as its message
+  (Go `1f76e479`). The headers an error event carries (`headers`, then `body.`, `error.`, `body.error.`, `response.error.`
+  `headers`, the outer name winning) travel with the error, and `Retry-After` is a hint on 429, 408, 500, 502-504 and
+  520-526 (Go `7dd360d9`, `deacbf21`); a WebSocket error frame without a status but with headers gets the status its
+  error implies. Commissary has no SIWC route, refresh journal or nil credential, so Go `d71e9dcd`, `1f5bf2a5` and
+  `335b6987` have no counterpart.
 - **Reasoning replay** (`replay.ts`): Claude-format callers get cached encrypted reasoning/tool calls re-inserted by
   anchor matching. The store is an interface; the default keeps one entry per model in the `SessionState` DO of the session
   (TTL 1 h, appends are compare-and-swap read-modify-writes, session keys are isolated per caller scope), with a per-isolate

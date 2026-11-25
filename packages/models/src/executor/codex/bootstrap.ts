@@ -11,7 +11,7 @@
  * the attempt before the client sees anything and the conductor retries it on another credential.
  */
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
-import type { ExecutionError } from "../errors.ts";
+import { type ExecutionError, withErrorFields } from "../errors.ts";
 import { isCodexTransientCapacityError, newCodexStatusError } from "./errors.ts";
 
 /** Upstream lines held back at most (the SSE executor charges one unit per line). */
@@ -193,9 +193,22 @@ export const isOverloadBootstrapFailure = (bodyText: string): boolean => {
   );
 };
 
-/** `newCodexBootstrapOverloadErr`: a buffered overload rejection with its real status (503). */
-export const bootstrapOverloadError = (body: string, nowMs: number): ExecutionError =>
-  newCodexStatusError(503, body, { modelLevelCooling: false, nowMs });
+/**
+ * `newCodexBootstrapOverloadErrWithRetryAfter`: a buffered overload rejection with its real status (503), keeping the
+ * failure's own cooldown hint (Go deacbf21). A 429 failure that already carries a hint fails over as is.
+ */
+export const bootstrapOverloadError = (
+  body: string,
+  nowMs: number,
+  failure?: ExecutionError,
+): ExecutionError => {
+  if (failure?.status === 429 && failure.retryAfterMs !== undefined) return failure;
+  const error = newCodexStatusError(503, body, { modelLevelCooling: false, nowMs });
+
+  return failure?.retryAfterMs === undefined
+    ? error
+    : withErrorFields(error, { retryAfterMs: failure.retryAfterMs });
+};
 
 /** `grokbuild.IsGrokClientHeaders`: the User-Agent names a Grok client. */
 export const isGrokClientHeaders = (headers: Headers): boolean => {

@@ -141,6 +141,12 @@ export const responsesStreamErrorText = (text: string, status: number): string =
       errorNode = isJsonObject(response) ? response["error"] : undefined;
     }
 
+    // A body-wrapped error (Go 1f76e479).
+    if (!isJsonObject(errorNode)) {
+      const body = root["body"];
+      errorNode = isJsonObject(body) ? body["error"] : undefined;
+    }
+
     if (isJsonObject(errorNode)) {
       const sequenceNumber = root["sequence_number"];
 
@@ -404,12 +410,44 @@ const terminate = (frame: string): string => {
   return frame.endsWith("\n") ? `${frame}\n` : `${frame}\n\n`;
 };
 
-const payloadHasError = (payload: Json): boolean => {
+/** `responsesSSETypeDenotesError`: an event or payload type that names an error. */
+const typeDenotesError = (eventType: string): boolean => {
+  const type = eventType.trim().toLowerCase();
+
+  return (
+    type !== "" &&
+    (ERROR_EVENTS.has(type) ||
+      type === "invalid_request" ||
+      type.endsWith("_error") ||
+      type.endsWith(".error"))
+  );
+};
+
+/** `responsesSSECanInferBodyError`: an explicit non-error event or payload type is authoritative (Go 5a373ede). */
+const canInferBodyError = (streamEvent: string, payloadType: string): boolean =>
+  (streamEvent.trim() === "" || typeDenotesError(streamEvent)) &&
+  (payloadType.trim() === "" || typeDenotesError(payloadType));
+
+/**
+ * `responsesSSEPayloadHasErrorForEvent`: `error` / `response.error`, a `body.error` (Go 20df0c25) unless the frame's
+ * event or payload type says it is something else (`response.metadata` may carry one), or a top-level code and message.
+ */
+const payloadHasError = (streamEvent: string, payload: Json): boolean => {
   for (const path of ["error", "response.error"]) {
     const value = get(payload, path);
 
     if (value !== undefined && value !== null) return true;
   }
+
+  const bodyError = get(payload, "body.error");
+
+  if (
+    bodyError !== undefined &&
+    bodyError !== null &&
+    !(typeof bodyError === "string" && bodyError.trim() === "") &&
+    canInferBodyError(streamEvent, asString(get(payload, "type")))
+  )
+    return true;
 
   return get(payload, "code") !== undefined && get(payload, "message") !== undefined;
 };
@@ -422,6 +460,10 @@ const payloadErrorStatus = (payload: Json): number => {
     "error.status_code",
     "response.error.status",
     "response.error.status_code",
+    "body.status",
+    "body.status_code",
+    "body.error.status",
+    "body.error.status_code",
   ]) {
     const candidate = asInt(get(payload, path));
 
@@ -431,14 +473,31 @@ const payloadErrorStatus = (payload: Json): number => {
   return payloadErrorStatusFromType(payload);
 };
 
-/** `responsesSSEPayloadErrorStatus` (8fb60326): the status implied by the error's type/code when none is given. */
-const payloadErrorStatusFromType = (payload: Json): number => {
-  const field = (path: string): string => asString(get(payload, path)).trim();
+/** Event types that are not an error's own type. */
+const EVENT_TYPES = new Set(["error", "response.failed", "response.error"]);
 
-  return statusFromErrorTypeAndCode(
-    field("error.type") || field("response.error.type"),
-    field("error.code") || field("response.error.code"),
-  );
+/**
+ * `responsesSSEPayloadErrorStatus` (8fb60326, 1f76e479): the status implied by the error's type/code when none is
+ * given, read from `error`, `response.error`, `body.error` or the payload itself.
+ */
+const payloadErrorStatusFromType = (payload: Json): number => {
+  const first = (paths: readonly string[], skip?: ReadonlySet<string>): string => {
+    for (const path of paths) {
+      const value = asString(get(payload, path)).trim().toLowerCase();
+
+      if (value !== "" && skip?.has(value) !== true) return value;
+    }
+
+    return "";
+  };
+
+  const type = first(["error.type", "response.error.type", "body.error.type", "type"], EVENT_TYPES);
+  const code = first(["error.code", "response.error.code", "body.error.code", "code"]);
+
+  const status = statusFromErrorTypeAndCode(type, code);
+
+  // The handler's table also reads the `invalid_request` type as a request fault (its last 400 group).
+  return status === 502 && type === "invalid_request" ? 400 : status;
 };
 
 /** `responsesAnnotateImageGenerationComplexityPayload`: the first of `error` / `response.error` that needs guidance. */
@@ -578,7 +637,7 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
     if (shouldFilterPrivateEvent(streamEvent, payloadType)) return "";
     dataFrames++;
 
-    if (ERROR_EVENTS.has(payloadType) || payloadHasError(payload)) {
+    if (ERROR_EVENTS.has(payloadType) || payloadHasError(streamEvent, payload)) {
       if (payloadType !== "") lastEvent = sanitizeEventName(payloadType);
 
       return repairErrorPayload(payload);

@@ -247,6 +247,53 @@ export const classifyCodexStatusError = (status: number, bodyText: string): stri
   });
 };
 
+/** `shouldParseCodexRetryAfterHeader`: the statuses whose `Retry-After` header is a cooldown hint. */
+export const shouldParseCodexRetryAfterHeader = (status: number): boolean =>
+  status === 429 ||
+  status === 408 ||
+  status === 500 ||
+  status === 502 ||
+  status === 503 ||
+  status === 504 ||
+  (status >= 520 && status <= 526);
+
+const ERROR_HEADER_PATHS = [
+  "headers",
+  "body.headers",
+  "error.headers",
+  "body.error.headers",
+  "response.error.headers",
+] as const;
+
+/**
+ * `parseCodexWebsocketErrorHeaders`: the headers an error event carries, lowercased. The outer objects win (Go
+ * 5a373ede): a name seen once shadows every nested value, even when its own value is blank or not a scalar.
+ */
+export const codexErrorEventHeaders = (
+  event: Json | undefined,
+): Record<string, string> | undefined => {
+  const out: Record<string, string> = {};
+  const seen = new Set<string>();
+
+  for (const path of ERROR_HEADER_PATHS) {
+    const headers = get(event, path);
+
+    if (!isJsonObject(headers)) continue;
+
+    for (const [key, value] of Object.entries(headers)) {
+      const name = key.trim().toLowerCase();
+
+      if (name === "" || seen.has(name)) continue;
+      seen.add(name);
+
+      if (typeof value === "string" && value.trim() !== "") out[name] = value.trim();
+      else if (typeof value === "number" || typeof value === "boolean") out[name] = String(value);
+    }
+  }
+
+  return Object.keys(out).length === 0 ? undefined : out;
+};
+
 /** `newCodexStatusErrWithCooling`. `headers` are the upstream response headers (exposed with passthrough-headers). */
 export const newCodexStatusError = (
   status: number,
@@ -265,11 +312,12 @@ export const newCodexStatusError = (
   if (transientCapacity || isUsageLimit) code = 429;
   const body = classifyCodexStatusError(code, bodyText);
 
-  // A usage_limit_reached body reset describes quota recovery and wins over the generic header; every other 429
-  // honours the upstream `Retry-After` so per-turn admission limits cool until their real deadline.
+  // A usage_limit_reached body reset describes quota recovery and wins over the generic header; other 429s and the
+  // recoverable transient statuses honour the upstream `Retry-After` so capacity rejections cool until their real
+  // deadline (Go 7dd360d9).
   const retryAfterMs =
     parseCodexRetryAfterMs(code, body, options.nowMs) ??
-    (code === 429
+    (shouldParseCodexRetryAfterHeader(code)
       ? parseRetryAfterMs(options.headers?.["retry-after"] ?? null, options.nowMs)
       : undefined);
 
@@ -287,10 +335,46 @@ export const newCodexStatusError = (
 // Terminal failures delivered inside the stream
 // ---------------------------------------------------------------------------------------------------------------
 
+/**
+ * `CodexResponseEventType` (Go 20df0c25): the event's `type`, or `error` for an untyped envelope that carries an error
+ * (`error`, `body.error` or `response.error` as an object or a non-blank string, or a top-level `code` and `message`).
+ * An explicit type stays authoritative, so output and metadata events are never mistaken for failures.
+ */
+export const codexResponseEventType = (event: Json | undefined): string => {
+  const type = asString(get(event, "type")).trim();
+
+  if (type !== "" || !isJsonObject(event)) return type;
+
+  for (const path of ["error", "body.error", "response.error"]) {
+    const node = get(event, path);
+
+    if (isJsonObject(node) || (typeof node === "string" && node.trim() !== "")) return "error";
+  }
+
+  return str(event, "code") !== "" && str(event, "message") !== "" ? "error" : "";
+};
+
+/** `codexPolicyFallbackMessage` (Go 1f76e479): the message of a policy block that names only its code. */
+export const codexPolicyFallbackMessage = (code: string): string => {
+  switch (code.trim().toLowerCase()) {
+    case "bio_policy":
+      return "This content was flagged for possible biological risk.";
+    case "cyber_policy":
+    case "cyber_policy_violation":
+      return "This request has been flagged for possible cybersecurity risk.";
+    case "misalignment_policy_violation":
+      return "This request was blocked due to a misalignment policy violation.";
+    case "invalid_prompt":
+      return "Invalid request.";
+    default:
+      return code;
+  }
+};
+
 const terminalErrorBody = (event: Json | undefined, path: string): JsonObject | undefined => {
   const errorResult = get(event, path);
 
-  if (errorResult === undefined) return undefined;
+  if (errorResult === undefined || errorResult === null) return undefined;
   let body: Json = { error: {} };
 
   if (typeof errorResult === "object" && errorResult !== null) {
@@ -310,7 +394,7 @@ const terminalErrorBody = (event: Json | undefined, path: string): JsonObject | 
   if (str(body, "error.message") === "") {
     const code = str(body, "error.code");
 
-    if (code !== "") body = set(body, "error.message", code);
+    if (code !== "") body = set(body, "error.message", codexPolicyFallbackMessage(code));
   }
 
   if (str(body, "error.message") === "") {
@@ -326,7 +410,8 @@ const terminalErrorBody = (event: Json | undefined, path: string): JsonObject | 
   return isJsonObject(body) ? body : undefined;
 };
 
-const terminalTopLevelErrorBody = (event: Json | undefined): JsonObject | undefined => {
+/** `codexTerminalTopLevelErrorBody`: an error built from the event's top-level `message`/`code`/`error_type`/`param`. */
+export const codexTopLevelErrorBody = (event: Json | undefined): JsonObject | undefined => {
   const message = str(event, "message");
   const code = str(event, "code");
   const type = str(event, "error_type");
@@ -344,29 +429,52 @@ const terminalTopLevelErrorBody = (event: Json | undefined): JsonObject | undefi
   if (param !== "") body = set(body, "error.param", param);
 
   if (str(body, "error.message") === "") {
-    if (code !== "") body = set(body, "error.message", code);
+    if (code !== "") body = set(body, "error.message", codexPolicyFallbackMessage(code));
     else if (type !== "") body = set(body, "error.message", type);
   }
 
   return isJsonObject(body) ? body : undefined;
 };
 
-/** `codexTerminalFailureBody`: the normalised body of an `error` / `response.failed` event. */
+/**
+ * `codexTerminalFailureBody`: the normalised body of an `error` / `response.failed` event (an untyped error envelope
+ * counts as `error`). The event's own HTTP status, when it carries one, is kept as `status` (Go 80e8350c).
+ */
 export const codexTerminalFailureBody = (event: Json | undefined): JsonObject | undefined => {
-  let body: JsonObject | undefined;
+  const eventType = codexResponseEventType(event);
+  let paths: readonly string[];
 
-  switch (asString(get(event, "type"))) {
+  switch (eventType) {
     case "error":
-      body = terminalErrorBody(event, "error") ?? terminalTopLevelErrorBody(event);
+      paths = ["error", "body.error", "response.error"];
       break;
     case "response.failed":
-      body = terminalErrorBody(event, "response.error") ?? terminalErrorBody(event, "error");
+      paths = ["response.error", "error", "body.error"];
       break;
     default:
       return undefined;
   }
 
+  let body: JsonObject | undefined;
+
+  for (const path of paths) {
+    body = terminalErrorBody(event, path);
+
+    if (body !== undefined) break;
+  }
+
+  if (body === undefined && eventType === "error") body = codexTopLevelErrorBody(event);
   body ??= { error: { message: "upstream stream failed without error details" } };
+
+  for (const path of ["status_code", "status", "body.status_code", "body.status"]) {
+    const status = asInt(get(event, path));
+
+    if (status >= 400 && status <= 599) {
+      set(body, "status", status);
+      break;
+    }
+  }
+
   const sequence = get(event, "sequence_number");
 
   if (sequence !== undefined) set(body, "sequence_number", asInt(sequence));
@@ -375,8 +483,8 @@ export const codexTerminalFailureBody = (event: Json | undefined): JsonObject | 
 };
 
 /** `codexTerminalFailureStatus`. */
-const terminalFailureStatus = (body: Json): number => {
-  for (const path of ["error.status_code", "error.status"]) {
+export const codexTerminalFailureStatus = (body: Json): number => {
+  for (const path of ["error.status_code", "error.status", "status_code", "status"]) {
     const status = asInt(get(body, path));
 
     if (status >= 400 && status <= 599) return status;
@@ -388,7 +496,7 @@ const terminalFailureStatus = (body: Json): number => {
   return statusFromErrorTypeAndCode(type, code);
 };
 
-const errorIsContextLength = (body: Json): boolean => {
+export const codexErrorIsContextLength = (body: Json): boolean => {
   const code = str(body, "error.code").toLowerCase();
   const message = str(body, "error.message").toLowerCase();
 
@@ -402,7 +510,7 @@ const errorIsContextLength = (body: Json): boolean => {
 };
 
 const streamErrShouldHandle = (body: Json): boolean => {
-  if (errorIsContextLength(body)) return true;
+  if (codexErrorIsContextLength(body)) return true;
   const text = JSON.stringify(body);
 
   if (isCodexUsageLimitError(text) || isCodexTransientCapacityError(text)) return true;
@@ -425,9 +533,17 @@ export const codexTerminalFailure = (
 
   if (body === undefined) return undefined;
   const text = JSON.stringify(body);
-  const status = streamErrShouldHandle(body) ? 400 : terminalFailureStatus(body);
+  const status = streamErrShouldHandle(body) ? 400 : codexTerminalFailureStatus(body);
+  // The event's own headers (Retry-After on an overload) travel with the error (Go 7dd360d9, deacbf21).
+  const headers = codexErrorEventHeaders(event);
 
-  return { error: newCodexStatusError(status, text, options), body: text };
+  return {
+    error: newCodexStatusError(status, text, {
+      ...options,
+      ...(headers !== undefined ? { headers } : {}),
+    }),
+    body: text,
+  };
 };
 
 /** True when the failure body asks to clear the reasoning replay cache. */

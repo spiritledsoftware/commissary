@@ -7,12 +7,23 @@
  */
 import { asString, get, type Json } from "@commissary/json";
 
+/** Policy blocks: request faults the caller must change, never retried elsewhere (Go 1f76e479). */
+const POLICY_BLOCK_CODES = new Set([
+  "cyber_policy",
+  "cyber_policy_violation",
+  "bio_policy",
+  "misalignment_policy_violation",
+  "invalid_prompt",
+  "content_policy_violation",
+  "image_content_policy_violation",
+]);
+
 /** The HTTP status implied by an upstream error's `type` and `code` (502 when neither is recognised). */
 export const statusFromErrorTypeAndCode = (rawType: string, rawCode: string): number => {
   const type = rawType.trim().toLowerCase();
   const code = rawCode.trim().toLowerCase();
 
-  if (code === "cyber_policy") return 400;
+  if (POLICY_BLOCK_CODES.has(code)) return 400;
 
   if (type === "not_found_error" || code === "not_found" || code === "model_not_found") return 404;
 

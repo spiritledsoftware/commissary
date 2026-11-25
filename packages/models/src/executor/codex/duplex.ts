@@ -64,7 +64,11 @@ import {
   type Turn,
   withAbandoned,
 } from "../websocket/session.ts";
-import { codexTerminalFailure, isThinkingSignatureInvalid } from "./errors.ts";
+import {
+  codexResponseEventType,
+  codexTerminalFailure,
+  isThinkingSignatureInvalid,
+} from "./errors.ts";
 import type { PreparedRequest } from "./executor.ts";
 import {
   ensureResponsesUsageDetails,
@@ -547,10 +551,21 @@ export const startCodexDuplex = (
             return;
           }
 
-          const text = read.success;
+          let text = read.success;
           const nowMs = yield* Clock.currentTimeMillis;
-          const event = tryParseJson(text);
-          const eventType = asString(get(event, "type"));
+          let event = tryParseJson(text);
+          const eventType = codexResponseEventType(event);
+
+          // An untyped error envelope is relayed as an `error` event (Go 20df0c25).
+          if (
+            eventType === "error" &&
+            isJsonObject(event) &&
+            asString(event["type"]).trim() === ""
+          ) {
+            event = { ...event, type: "error" };
+            text = JSON.stringify(event);
+          }
+
           const establishing = firstResponse && eventType === "response.created";
 
           if (eventType === "response.created") {

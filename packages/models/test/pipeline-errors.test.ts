@@ -234,6 +234,36 @@ describe("Responses stream error chunks", () => {
     expect(nested.code).toBe("context_length_exceeded");
   });
 
+  it("keeps string, body-wrapped and policy errors (Go 80e8350c, 1f76e479)", () => {
+    expect(
+      JSON.parse(responsesStreamErrorChunk(502, '{"error":"upstream exploded"}', 0)).error,
+    ).toEqual({
+      type: "server_error",
+      code: "internal_server_error",
+      message: "upstream exploded",
+      param: null,
+    });
+    expect(
+      JSON.parse(responsesStreamErrorChunk(503, '{"body":{"error":{"message":"busy"}}}', 0)).error,
+    ).toEqual({ message: "busy" });
+    expect(
+      JSON.parse(responsesStreamErrorChunk(400, '{"error":{"code":"bio_policy"}}', 0)).error,
+    ).toEqual({
+      code: "bio_policy",
+      message: "This content was flagged for possible biological risk.",
+    });
+    expect(
+      JSON.parse(
+        responsesStreamFailedChunk(400, '{"type":"response.failed","code":"cyber_policy"}', 0),
+      ).response.error,
+    ).toEqual({
+      type: "invalid_request_error",
+      code: "cyber_policy",
+      message: "This request has been flagged for possible cybersecurity risk.",
+      param: null,
+    });
+  });
+
   it("builds response.failed events", () => {
     expect(responsesStreamFailedChunk(502, "gone", 0)).toBe(
       '{"type":"response.failed","sequence_number":0,"response":{"status":"failed","error":{"type":"server_error","code":"internal_server_error","message":"gone","param":null}}}',

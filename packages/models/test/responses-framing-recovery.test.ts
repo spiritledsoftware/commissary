@@ -318,3 +318,31 @@ describe("recovery of JSON split across chunk boundaries", () => {
     });
   }
 });
+
+describe("error inference from frames (CLIProxyAPI 20df0c25, 5a373ede, 1f76e479)", () => {
+  it("does not rewrite a typed non-error frame that carries body.error", () => {
+    const metadata =
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi","body":{"error":{"message":"x"}}}\n\n';
+
+    const got = run([metadata, COMPLETED]);
+
+    expect(got).not.toContain("event: error");
+    expect(got).toContain('"delta":"hi"');
+  });
+
+  it("rewrites an untyped body-wrapped error with its nested status", () => {
+    const got = run([
+      'data: {"body":{"status":503,"error":{"type":"server_error","message":"busy"}}}\n\n',
+    ]);
+
+    expect(got).toContain("event: error");
+    expect(got).toContain('"message":"busy"');
+  });
+
+  it("reports a policy block as a request fault", () => {
+    const got = run(['data: {"type":"error","error":{"code":"bio_policy"}}\n\n'], true);
+
+    expect(got).toContain("event: response.failed");
+    expect(got).toContain("This content was flagged for possible biological risk.");
+  });
+});
