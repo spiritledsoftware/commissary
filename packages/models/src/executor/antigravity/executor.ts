@@ -300,11 +300,7 @@ export const makeAntigravityExecutor = (
       kv: orgKvIfBound(env, org),
       deploymentKv: deploymentKvIfBound(env),
       signatures: orgSignatureCache(org),
-      signatureScope: antigravitySignatureScope(
-        context.credential.id,
-        context.credential.metadata,
-        project,
-      ),
+      signatureScope: antigravitySignatureScope(context.credential.id, context.credential.metadata),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
       accessToken,

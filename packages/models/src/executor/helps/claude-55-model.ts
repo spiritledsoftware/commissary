@@ -1,10 +1,9 @@
 /**
- * The Claude 5.5 model patterns of the forced tool-choice rewrite (`claude-tool-choice.ts`) and the Antigravity
- * structured-output prompt (`antigravity/structured-output.ts`): the two models that reject forced tool use.
+ * The Claude 5.5 model pattern of the forced tool-choice rewrite (`claude-tool-choice.ts`): the two models that reject
+ * forced tool use. Antigravity's wider pattern lives in `antigravity/structured-output.ts`.
  *
- * Go source: internal/runtime/executor/helps/claude_tool_choice.go (`claude55Model`, CLIProxyAPI 1d45a5f3) and
- * antigravity_structured_output.go (`antigravityClaude55Model`, c813f779). Haiku 5.5 is deliberately outside both, as in
- * Go.
+ * Go source: internal/runtime/executor/helps/claude_tool_choice.go (`claude55Model`, CLIProxyAPI 1d45a5f3). Haiku 5.5 is
+ * deliberately outside it, as in Go.
  */
 import { parseSuffix } from "@commissary/translation/thinking";
 
@@ -15,11 +14,3 @@ const CLAUDE_55_MODEL =
 /** The model (thinking `(suffix)` removed, lower case) is Claude Opus 5.5 or Sonnet 5.5. */
 export const isClaude55Model = (model: string): boolean =>
   CLAUDE_55_MODEL.test(parseSuffix(model.trim()).modelName.toLowerCase());
-
-/** `antigravityClaude55Model`: Antigravity also routes the `-low`, `-medium` and `-max` effort variants (c813f779). */
-const ANTIGRAVITY_CLAUDE_55_MODEL =
-  /^claude-(?:opus|sonnet)-5-5(?:-(?:low|medium|high|max|reasoning))?(?:-[0-9]{8})?(?:\[[^[\]]+\])?$/;
-
-/** The Antigravity model (thinking `(suffix)` removed, lower case) is Claude Opus 5.5 or Sonnet 5.5, any effort. */
-export const isAntigravityClaude55Model = (model: string): boolean =>
-  ANTIGRAVITY_CLAUDE_55_MODEL.test(parseSuffix(model.trim()).modelName.toLowerCase());

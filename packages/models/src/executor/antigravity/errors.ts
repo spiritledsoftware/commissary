@@ -26,13 +26,13 @@ export interface Antigravity429Decision {
 }
 
 /**
- * `decideAntigravity429WithHeaders`: the retry delay comes from the body, else the `Retry-After` header (CLIProxyAPI
- * 84b838e1; a mid-stream error frame has no headers).
+ * The 429 decision table: the retry delay comes from the body, else the `Retry-After` header (CLIProxyAPI 84b838e1; a
+ * mid-stream error frame has no headers). `now` is the caller's clock reading, for an HTTP-date header.
  */
 export const decideAntigravity429 = (
   body: string,
-  headers?: Headers,
-  now: number = Date.now(),
+  headers: Headers | undefined,
+  now: number,
 ): Antigravity429Decision => {
   const retryAfterMs = parseGoogleRetryDelayWithHeadersMs(headers, body, now);
 
@@ -104,7 +104,7 @@ export const antigravityStatusError = (
   status: number,
   body: string,
   headers: Headers,
-  now: number = Date.now(),
+  now: number,
 ): ExecutionError => {
   const retryAfterMs =
     status === 429 || status === 503

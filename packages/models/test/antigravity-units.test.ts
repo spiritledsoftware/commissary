@@ -1438,29 +1438,29 @@ describe("claude web search grounding", () => {
 
 // CLIProxyAPI 85225381, 06225fcf (antigravitySignatureCacheScope): one credential's signatures stay its own.
 describe("antigravity signature scope", () => {
-  const grant = { refresh_token: "1//refresh", access_token: "ya29.first" };
+  const grant = { refresh_token: "1//refresh", access_token: "ya29.first", project_id: "proj" };
 
-  it("keys the scope by credential, grant and project, and keeps it across an access-token refresh", () => {
-    const scope = antigravitySignatureScope("cred-a", grant, "proj");
+  it("keys the scope by credential, grant and stored project, and keeps it across an access-token refresh", () => {
+    const scope = antigravitySignatureScope("cred-a", grant);
     expect(scope).toContain("id:cred-a");
     expect(scope).not.toContain("1//refresh");
-    expect(
-      antigravitySignatureScope("cred-a", { ...grant, access_token: "ya29.next" }, "proj"),
-    ).toBe(scope);
-    expect(antigravitySignatureScope("cred-b", grant, "proj")).not.toBe(scope);
-    expect(antigravitySignatureScope("cred-a", grant, "other")).not.toBe(scope);
-    expect(
-      antigravitySignatureScope("cred-a", { ...grant, refresh_token: "1//relogin" }, "proj"),
-    ).not.toBe(scope);
+    expect(antigravitySignatureScope("cred-a", { ...grant, access_token: "ya29.next" })).toBe(
+      scope,
+    );
+    expect(antigravitySignatureScope("cred-b", grant)).not.toBe(scope);
+    expect(antigravitySignatureScope("cred-a", { ...grant, project_id: "other" })).not.toBe(scope);
+    expect(antigravitySignatureScope("cred-a", { ...grant, refresh_token: "1//relogin" })).not.toBe(
+      scope,
+    );
     // Without a refresh token the access token is the grant; without either there is no scope.
-    expect(antigravitySignatureScope("cred-a", { access_token: "ya29.x" }, "proj")).not.toBe("");
-    expect(antigravitySignatureScope("cred-a", {}, "proj")).toBe("");
+    expect(antigravitySignatureScope("cred-a", { access_token: "ya29.x" })).not.toBe("");
+    expect(antigravitySignatureScope("cred-a", {})).toBe("");
   });
 
   it("isolates two credentials in one org cache and fails closed without a scope", async () => {
     const base = new MemorySignatureCache();
-    const a = scopedSignatureCache(base, antigravitySignatureScope("cred-a", grant, "proj"));
-    const b = scopedSignatureCache(base, antigravitySignatureScope("cred-b", grant, "proj"));
+    const a = scopedSignatureCache(base, antigravitySignatureScope("cred-a", grant));
+    const b = scopedSignatureCache(base, antigravitySignatureScope("cred-b", grant));
     const none = scopedSignatureCache(base, "");
 
     expect(a.set("claude-x", "thought", LONG_SIGNATURE)).toBe(true);
@@ -1476,10 +1476,10 @@ describe("antigravity signature scope", () => {
     expect(store.entries.size).toBe(1);
     expect(store.entries.has(signatureStoreKey("claude-x", "thought"))).toBe(false);
     const fresh = new MemorySignatureCache();
-    const scopeB = antigravitySignatureScope("cred-b", grant, "proj");
+    const scopeB = antigravitySignatureScope("cred-b", grant);
     await prefetchSignatures(fresh, store, "claude-x", [scopedSignatureText(scopeB, "thought")]);
     expect(fresh.size).toBe(0);
-    const scopeA = antigravitySignatureScope("cred-a", grant, "proj");
+    const scopeA = antigravitySignatureScope("cred-a", grant);
     await prefetchSignatures(fresh, store, "claude-x", [scopedSignatureText(scopeA, "thought")]);
     expect(scopedSignatureCache(fresh, scopeA).get("claude-x", "thought")).toBe(LONG_SIGNATURE);
   });

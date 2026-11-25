@@ -9,35 +9,31 @@
  * alone (the access token without one), which a refresh keeps and a new login replaces, so no refresh step has to carry
  * it. The scope goes into the text key of the org's cache, which also scopes the `CACHE` KV entries.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "@commissary/core";
 import type { JsonObject } from "@commissary/json";
 import type { MemorySignatureCache, SignatureCache } from "@commissary/translation/signature";
+import { metadataString } from "../gemini/targets.ts";
 
-const digest = (value: string): string =>
-  createHash("sha256").update(value, "utf8").digest("hex").slice(0, 16);
-
-const metadataString = (metadata: JsonObject, key: string): string => {
-  const value = metadata[key];
-
-  return typeof value === "string" ? value.trim() : "";
-};
+const digest = (value: string): string => sha256Hex(value).slice(0, 16);
 
 /**
- * `antigravitySignatureCacheScope`: the credential id, its grant (refresh token, else access token) and the attempt's
- * project. Empty
- * without a token, and an empty scope recovers and records nothing (Go `RequireSignatureCacheScope`).
+ * `antigravitySignatureCacheScope`: the credential id, its grant (refresh token, else access token) and its stored
+ * `project_id`, as Go reads it from the credential's metadata (a project discovered during the attempt joins the scope
+ * once it is stored). Empty without a token, and an empty scope recovers and records nothing (Go
+ * `RequireSignatureCacheScope`).
  */
-export const antigravitySignatureScope = (
-  credentialId: string,
-  metadata: JsonObject,
-  project: string,
-): string => {
+export const antigravitySignatureScope = (credentialId: string, metadata: JsonObject): string => {
   const grant =
     metadataString(metadata, "refresh_token") || metadataString(metadata, "access_token");
 
   if (grant === "") return "";
+  const project = metadataString(metadata, "project_id");
 
-  return [`id:${credentialId.trim()}`, `grant:${digest(grant)}`, project.trim()].join("\0");
+  return [
+    `id:${credentialId.trim()}`,
+    `grant:${digest(grant)}`,
+    ...(project === "" ? [] : [project]),
+  ].join("\0");
 };
 
 /** The key of `text` within `scope`: the scope digest goes in front, so neither the map nor KV can mix scopes. */

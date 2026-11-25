@@ -994,7 +994,7 @@ describe("antigravity executor: signature cache per credential", () => {
     const cache = orgSignatureCache(GLOBAL_ORG);
 
     const scope = (id: string) =>
-      antigravitySignatureScope(id, { access_token: "ya29.token" }, "proj-1");
+      antigravitySignatureScope(id, { access_token: "ya29.token", project_id: "proj-1" });
 
     expect(cache.has("claude-sonnet-4-5", scopedSignatureText(scope(owner.id), thinking))).toBe(
       true,

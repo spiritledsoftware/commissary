@@ -1,7 +1,8 @@
 /**
  * Claude 5.5 structured output on Antigravity: the schema becomes prompt text.
  *
- * Go source: internal/runtime/executor/helps/antigravity_structured_output.go (`PrepareAntigravityClaudeStructuredOutput`),
+ * Go source: internal/runtime/executor/helps/antigravity_structured_output.go (`PrepareAntigravityClaudeStructuredOutput`,
+ * `antigravityClaude55Model`),
  * called from antigravity_executor_request.go (`buildRequest`) and antigravity_executor_tokens.go (CLIProxyAPI 1d45a5f3).
  *
  * Opus 5.5 and Sonnet 5.5 reject the forced tool use behind a native response schema, so the schema moves into the
@@ -13,7 +14,18 @@ import {
   buildClaudeStructuredOutputInstruction,
   normalizeJsonSchemaNumericConstraints,
 } from "@commissary/translation";
-import { isAntigravityClaude55Model } from "../helps/claude-55-model.ts";
+import { parseSuffix } from "@commissary/translation/thinking";
+
+/**
+ * `antigravityClaude55Model`: Opus/Sonnet 5.5, with the `-low`, `-medium`, `-high`, `-max` and `-reasoning` effort
+ * variants Antigravity routes (c813f779), an 8-digit date and a `[context]` suffix.
+ */
+const ANTIGRAVITY_CLAUDE_55_MODEL =
+  /^claude-(?:opus|sonnet)-5-5(?:-(?:low|medium|high|max|reasoning))?(?:-[0-9]{8})?(?:\[[^[\]]+\])?$/;
+
+/** The Antigravity model (thinking `(suffix)` removed, lower case) is Claude Opus 5.5 or Sonnet 5.5, any effort. */
+export const isAntigravityClaude55Model = (model: string): boolean =>
+  ANTIGRAVITY_CLAUDE_55_MODEL.test(parseSuffix(model.trim()).modelName.toLowerCase());
 
 const CONTAINERS = ["request.generationConfig", "request.generation_config"] as const;
 
