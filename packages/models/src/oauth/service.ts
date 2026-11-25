@@ -79,6 +79,8 @@ export interface OAuthServiceOptions {
   readonly sink: CredentialSink;
   /** `META_MINT_URL` override of the Meta key-mint endpoint. */
   readonly metaMintUrl?: string | undefined;
+  /** `oauth.providers.claude.oauth-include-create-api-key` at login start; absent = on. */
+  readonly claudeIncludeCreateApiKey?: (() => boolean) | undefined;
 }
 
 const FINISH_OUTCOMES = { ok: "completed", wait: "cancelled", error: "failed" } as const;
@@ -119,6 +121,7 @@ export const makeOAuthService = ({
   sessions,
   sink,
   metaMintUrl,
+  claudeIncludeCreateApiKey,
 }: OAuthServiceOptions): OAuthService => {
   const startCallback = (
     flow: CallbackFlow,
@@ -277,7 +280,11 @@ export const makeOAuthService = ({
 
         switch (provider) {
           case "claude":
-            return yield* startCallback(claudeFlow(), now, owner);
+            return yield* startCallback(
+              claudeFlow(claudeIncludeCreateApiKey?.() ?? true),
+              now,
+              owner,
+            );
           case "antigravity":
             return yield* startCallback(antigravityFlow(), now, owner);
           case "devin":

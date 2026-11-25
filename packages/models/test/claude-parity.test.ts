@@ -11,6 +11,7 @@ import {
 } from "../src/executor/claude/reconcile.ts";
 import { makeMemoryDeviceProfileStore } from "../src/executor/claude/device-profile.ts";
 import { makeMemoryToolAliasStore } from "../src/executor/claude/thread.ts";
+import { makeMemoryAdvisorOwnerStore } from "../src/executor/claude/advisor-owners.ts";
 import { makeMemoryContinuityStore } from "../src/executor/claude/continuity.ts";
 import fixtures from "./fixtures/claude-profile.json";
 import { rebuildMidSystemMessagesToTopLevel } from "../src/executor/claude/mid-system.ts";
@@ -545,10 +546,76 @@ describe("Thread continuation alias state", () => {
     });
   });
 
+  // Go: claude_executor_thread_beta_test.go (02ec93d0), narrowed: the snapshot replays on the same credential only.
+  it("sends a continuation the betas its previous message was accepted with", async () => {
+    const executor = makeClaudeExecutor({
+      continuity: makeMemoryContinuityStore(),
+      toolAliases: makeMemoryToolAliasStore(),
+      advisorOwners: makeMemoryAdvisorOwnerStore(),
+      deviceProfiles: makeMemoryDeviceProfileStore(),
+    });
+
+    const h = await harness(oauth, () => ok({ id: `msg_${h.calls.length}` }));
+    const other = await harness(credential("claude", { ...oauth, id: "claude-2" }), () => ok());
+
+    const opts = (betas?: string) =>
+      options({
+        sourceFormat: "claude",
+        headers: new Headers({
+          "user-agent": "my-app/1.0",
+          ...(betas === undefined ? {} : { "anthropic-beta": betas }),
+        }),
+      });
+
+    await execute(
+      executor,
+      h,
+      { model: "claude-sonnet-4-5", payload: json(createBody) },
+      opts("thread-capability-2026-01-01"),
+    );
+
+    const created = h.calls[0]?.headers["anthropic-beta"] ?? "";
+
+    expect(created).toContain("thread-capability-2026-01-01");
+
+    const continuation = (extra: Record<string, unknown> = {}) =>
+      json({
+        model: "claude-sonnet-4-5",
+        max_tokens: 64,
+        thread: { type: "continue", previous_message_id: "msg_1" },
+        tools: [{ name: "Read", input_schema: { type: "object" } }],
+        messages: [{ role: "user", content: "and then?" }],
+        ...extra,
+      });
+
+    await execute(executor, h, { model: "claude-sonnet-4-5", payload: continuation() }, opts());
+    expect(h.calls[1]?.headers["anthropic-beta"]).toBe(created);
+
+    // A beta the turn's own body needs is added to the snapshot.
+    const advisor = {
+      tools: [{ type: "advisor_20260301", name: "advisor", model: "claude-opus-5-5" }],
+    };
+
+    await execute(
+      executor,
+      h,
+      { model: "claude-sonnet-4-5", payload: continuation(advisor) },
+      opts(),
+    );
+    expect(h.calls[2]?.headers["anthropic-beta"]?.split(",")).toEqual(
+      expect.arrayContaining([...created.split(","), "advisor-tool-2026-03-01"]),
+    );
+
+    // Another credential does not inherit the profile.
+    await execute(executor, other, { model: "claude-sonnet-4-5", payload: continuation() }, opts());
+    expect(other.calls[0]?.headers["anthropic-beta"]).not.toContain("thread-capability-2026-01-01");
+  });
+
   it("a continuation of an unknown message is a request-scoped 404 (…MissingContinuationState…)", async () => {
     const executor = makeClaudeExecutor({
       continuity: makeMemoryContinuityStore(),
       toolAliases: makeMemoryToolAliasStore(),
+      advisorOwners: makeMemoryAdvisorOwnerStore(),
       deviceProfiles: makeMemoryDeviceProfileStore(),
     });
 

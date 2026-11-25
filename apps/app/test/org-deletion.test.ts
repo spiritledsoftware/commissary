@@ -21,6 +21,7 @@ import { Effect } from "effect";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
 import { orgDeletionStep } from "@commissary/models/management";
 import {
+  ADVISOR_OWNER_STORE,
   GEMINI_REPLAY_STORE,
   insertUsageRecord,
   resetUsageDb,
@@ -155,8 +156,14 @@ const newOrg = async (): Promise<Org> => {
   return org;
 };
 
-/** The replay stores whose instances the org's deletion must find: Codex's and the Gemini API and Vertex ledgers (#376). */
-const SESSION_STORES = ["replay", GEMINI_REPLAY_STORE, VERTEX_REPLAY_STORE] as const;
+/** The SessionState stores whose instances the org's deletion must find: Codex's replay, the Gemini API and Vertex
+ * ledgers (#376) and the Claude advisor owners. */
+const SESSION_STORES = [
+  "replay",
+  GEMINI_REPLAY_STORE,
+  VERTEX_REPLAY_STORE,
+  ADVISOR_OWNER_STORE,
+] as const;
 
 const sessionName = (org: Org, store: string = "replay") =>
   addressName({ store: orgScopedName(org.id, store), scope: "s", session: "1" });

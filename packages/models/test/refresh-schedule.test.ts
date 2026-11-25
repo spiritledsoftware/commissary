@@ -273,6 +273,48 @@ describe("refresh failure transitions", () => {
     expect(later.state.nextRefreshAfter).toBe(T0 + 5 * MIN);
   });
 
+  // Go: conductor_refresh_disabled_test.go (0bfb3d01).
+  it("an expired Claude refresh token is terminal, a generic invalid_grant keeps backing off", () => {
+    const message =
+      'token refresh failed with status 400: {"error":"invalid_grant","error_description":"Refresh token expired"}';
+
+    const serving = applyRefreshFailure(emptyState(), {
+      ...base,
+      message,
+      status: 400,
+      hasValidAccessToken: true,
+    });
+
+    expect(serving.schedule).toBe("unschedule");
+    expect(serving.state).toMatchObject({
+      unavailable: false,
+      nextRefreshAfter: 0,
+      lastError: { code: "refresh_token_expired" },
+    });
+    const credential = subject("claude", { refresh_token: "r", expired: iso(T0 - HOUR) });
+
+    expect(nextRefreshCheckAt(T0, credential, serving.state)).toBeUndefined();
+
+    const spent = applyRefreshFailure(emptyState(), { ...base, message, status: 400 });
+
+    expect(spent.schedule).toBe("unschedule");
+    expect(spent.state).toMatchObject({
+      unavailable: true,
+      status: "error",
+      lastError: { code: "refresh_token_expired", httpStatus: 401 },
+    });
+    expect(applyRefreshFailure(spent.state, { ...base, status: 500 }).state).toBe(spent.state);
+
+    const generic = applyRefreshFailure(emptyState(), {
+      ...base,
+      message: 'status 400: {"error":"invalid_grant"}',
+      status: 400,
+    });
+
+    expect(generic.schedule).toBe("reschedule");
+    expect(generic.state.refreshFailures).toBe(1);
+  });
+
   it("disabled credentials: invalid_grant unschedules, other errors retry in 5 minutes", () => {
     const grant = applyRefreshFailure(emptyState(), {
       ...base,

@@ -11,6 +11,7 @@ import type { Json, JsonObject } from "@commissary/json";
 import { accessTokenOf, expirationFromMetadata, parseJwtExp, parseTimeValue } from "../expiry.ts";
 import type { CredentialState } from "../model.ts";
 import { hasUnauthorizedFailure } from "../selection/availability.ts";
+import { REFRESH_TOKEN_EXPIRED } from "./error.ts";
 
 const MINUTE = 60_000;
 
@@ -151,12 +152,17 @@ export const lastRefreshAt = (subject: RefreshSubject): number | undefined => {
   return undefined;
 };
 
-/** Failures after which scheduling stops until the credential changes (terminal 401, disabled + invalid_grant). */
+/**
+ * Failures after which scheduling stops until the credential changes (terminal 401, an expired refresh token, disabled +
+ * invalid_grant).
+ */
 export const isTerminalRefreshState = (state: CredentialState, disabled: boolean): boolean => {
   if (hasUnauthorizedFailure(state)) return true;
   const error = state.lastError;
 
   if (error === undefined) return false;
+
+  if (error.code === REFRESH_TOKEN_EXPIRED) return true;
   const isDisabled = disabled || state.status === "disabled";
 
   return (

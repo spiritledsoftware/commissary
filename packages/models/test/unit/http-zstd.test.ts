@@ -1,7 +1,12 @@
 // Bounded zstd request-body decoding (src/http/zstd.ts, src/http/body.ts): decompression bombs answer
 // 413 instead of exhausting the isolate's memory.
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vite-plus/test";
-import { decodeRequestBody, RequestBodyTooLargeError } from "../../src/http/body.ts";
+import {
+  decodeRequestBody,
+  RequestBodyDecodeError,
+  RequestBodyTooLargeError,
+} from "../../src/http/body.ts";
 import { DecodedBodyTooLargeError, inflateZstd } from "../../src/http/zstd.ts";
 import {
   concatBytes,
@@ -64,5 +69,27 @@ describe("decodeRequestBody limit", () => {
     expect(decodeRequestBody(zstdFrame([{ raw: '{"a":1}' }]), "zstd", 1024)).toBe('{"a":1}');
     // A raw JSON body sent with a zstd header is still accepted (Go fallback).
     expect(decodeRequestBody(new TextEncoder().encode('{"a":1}'), "zstd", 4)).toBe('{"a":1}');
+  });
+});
+
+describe("decodeRequestBody gzip (6e7a1b29)", () => {
+  const json = '{"model":"claude-sonnet-4-5","n":1}';
+
+  it("decodes gzip and x-gzip, also inside an encoding list", () => {
+    expect(decodeRequestBody(gzipSync(json), "gzip")).toBe(json);
+    expect(decodeRequestBody(gzipSync(json), " X-GZIP ")).toBe(json);
+    expect(decodeRequestBody(zstdFrame([{ raw: json }]), "zstd")).toBe(json);
+    expect(decodeRequestBody(gzipSync(gzipSync(json)), "gzip, gzip")).toBe(json);
+  });
+
+  it("bounds the decoded size and rejects corrupt gzip", () => {
+    expect(() => decodeRequestBody(gzipSync("a".repeat(4096)), "gzip", 1024)).toThrow(
+      RequestBodyTooLargeError,
+    );
+    expect(() => decodeRequestBody(Uint8Array.of(0x1f, 0x8b, 0x08, 0x00), "gzip")).toThrow(
+      RequestBodyDecodeError,
+    );
+    // A raw JSON body sent with a gzip header is still accepted.
+    expect(decodeRequestBody(new TextEncoder().encode(json), "gzip")).toBe(json);
   });
 });

@@ -201,6 +201,14 @@ const COPY = {
     "Let Codex search deferred tools on Claude",
     "Off by default. Only Anthropic's own API, or a Claude key marked for it, gets the search; other Claude keys leave it out. Turning it on also changes which Codex models offer search.",
   ),
+  "upstream.claude.server-side-fallback": flag(
+    "Let Anthropic retry a refused Opus or Fable request on an earlier model",
+    "Off by default. When on, a cloaked Claude Opus 5.5 or Fable 5.1 request without fallbacks of its own asks Anthropic to answer a refusal with the model before it; the answer reports the model that served it.",
+  ),
+  "oauth.providers.claude.oauth-include-create-api-key": flag(
+    "Ask new Claude logins for the API key scope",
+    "On by default, like Claude Code: a new login also asks for org:create_api_key. Turn it off to ask only for the user scopes; claude.ai may then refuse the login. Token refreshes are unaffected.",
+  ),
   "upstream.claude.disable-cloaking-model-list": flag(
     "List Claude's own model ids instead of cloaked ones",
   ),

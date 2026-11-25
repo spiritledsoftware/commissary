@@ -36,6 +36,7 @@ import {
   makeMemoryAntigravityState,
   ModelRegistry,
   GEMINI_REPLAY_STORE,
+  ADVISOR_OWNER_STORE,
   ModelRegistryLive,
   orgAuthIndexer,
   orgSignatureCache,
@@ -455,10 +456,12 @@ const STORES: ReadonlyArray<StoreCase> = [
     read: async (org, name) => (await oauthGrants().keyIds(org.id, name)).at(0),
   }),
 
-  // SessionState: the Codex replay store, and the Gemini API and Vertex reasoning-replay ledgers (#376), one case per store.
+  // SessionState: the Codex replay store, the Gemini API and Vertex reasoning-replay ledgers (#376) and the Claude advisor
+  // owners, one case per store.
   storeCase("session state", sessionStateStore("codex-replay")),
   storeCase("session state: Gemini API reasoning replay", sessionStateStore(GEMINI_REPLAY_STORE)),
   storeCase("session state: Vertex reasoning replay", sessionStateStore(VERTEX_REPLAY_STORE)),
+  storeCase("session state: Claude advisor owners", sessionStateStore(ADVISOR_OWNER_STORE)),
 
   // Worker caches: the per-isolate ones that hold org data.
   storeCase("worker cache: signatures", {

@@ -3,7 +3,8 @@
  *
  * Go source: sdk/cliproxy/auth/conductor_cooldown.go (MarkResult, applyAuthFailureState, updateAggregatedAvailability,
  * quotaCooldownAfterFailure, nextQuotaCooldown, recoverableFailureRetryAfterWithHint, existingModelState, ensureModelState,
- * isModelStateActiveCooldown, isAuthActiveCooldown, the execution-sequence guard of CLIProxyAPI 35af74f9), quota_signals.go.
+ * isModelStateActiveCooldown, isAuthActiveCooldown, the execution-sequence guard of CLIProxyAPI 35af74f9, the retained
+ * Claude cooldown signals of cb70eacf), quota_signals.go.
  * Docs: credentials.md §8.1-8.2.
  *
  * Pure: `markResult` takes the previous {@link CredentialState}, the clock and the settings and returns the next
@@ -34,6 +35,7 @@ import {
   isModelSupportError,
   shouldSkipCredentialCooldown,
 } from "./classify.ts";
+import { rejectedSignalsForCooldown } from "./claude-unified.ts";
 import { observeResponseHeaders } from "./quota-signals.ts";
 import { recordRecentRequest } from "./recent-requests.ts";
 
@@ -226,9 +228,13 @@ export const coolingDisabledFor = (
 
 // --- state helpers --------------------------------------------------------------------------------------------------
 
+/** `applyCooldownFields`: a recorded cooldown is evaluated, with the Claude signals it carries (none by default). */
 const applyCooldownFields = (
   target: DraftQuota,
-  fields: Pick<QuotaState, "exceeded" | "nextRecoverAt" | "backoffLevel"> & { reason?: string },
+  fields: Pick<QuotaState, "exceeded" | "nextRecoverAt" | "backoffLevel"> & {
+    reason?: string;
+    cooldownSignals?: Readonly<Record<string, string>> | undefined;
+  },
 ): void => {
   target.exceeded = fields.exceeded;
 
@@ -236,6 +242,41 @@ const applyCooldownFields = (
   else target.reason = fields.reason;
   target.nextRecoverAt = fields.nextRecoverAt;
   target.backoffLevel = fields.backoffLevel;
+  setCooldownSignals(target, fields.cooldownSignals);
+
+  if (fields.exceeded) target.cooldownEvaluated = true;
+  else delete target.cooldownEvaluated;
+};
+
+const setCooldownSignals = (
+  target: DraftQuota,
+  signals: Readonly<Record<string, string>> | undefined,
+): void => {
+  if (signals === undefined || Object.keys(signals).length === 0) delete target.cooldownSignals;
+  else target.cooldownSignals = { ...signals };
+};
+
+/**
+ * The Claude signals of a 429 cooldown (cb70eacf): a kept earlier window keeps its signals; otherwise the response's
+ * rejected unified headers, else the earlier window's when the deadline did not move.
+ */
+const cooldownSignalsFor = (
+  kept: boolean,
+  previous: {
+    readonly active: boolean;
+    readonly recoverAt: number;
+    readonly signals?: Readonly<Record<string, string>> | undefined;
+  },
+  next: number,
+  provider: string,
+  headers: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> | undefined => {
+  if (kept) return previous.signals;
+
+  return (
+    rejectedSignalsForCooldown(provider, headers) ??
+    (previous.active && previous.recoverAt === next ? previous.signals : undefined)
+  );
 };
 
 const ensureModelState = (state: Draft, model: string): DraftModel => {
@@ -394,6 +435,8 @@ const applyCredentialFailure = (
   disableCooling: boolean,
   settings: CooldownSettings,
   credentialScoped: boolean,
+  provider: string,
+  headers: Readonly<Record<string, string>> | undefined,
 ): void => {
   const previous = state.nextRetryAfter;
 
@@ -456,6 +499,18 @@ const applyCredentialFailure = (
             : now + NOT_FOUND_COOLDOWN_MS;
         break;
       case 429: {
+        const prior = {
+          active: state.quota.exceeded && state.quota.nextRecoverAt > now,
+          recoverAt: state.quota.nextRecoverAt,
+          signals: state.quota.cooldownSignals,
+        };
+
+        const kept =
+          !disableCooling &&
+          prior.active &&
+          (retryAfterMs === undefined ||
+            prior.recoverAt > now + Math.max(retryAfterMs, MIN_QUOTA_COOLDOWN_MS));
+
         state.statusMessage = "quota exhausted";
         state.quota.exceeded = true;
         state.quota.reason = "quota";
@@ -476,6 +531,15 @@ const applyCredentialFailure = (
 
         state.quota.nextRecoverAt = next;
         state.nextRetryAfter = next;
+
+        if (!disableCooling) {
+          state.quota.cooldownEvaluated = true;
+          setCooldownSignals(
+            state.quota,
+            cooldownSignalsFor(kept, prior, state.quota.nextRecoverAt, provider, headers),
+          );
+        }
+
         break;
       }
 
@@ -766,6 +830,7 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
                 now,
                 disableCooling,
                 wasTerminalUnauthorized,
+                input.credential.provider,
               );
 
               // A credential-scoped 429 cools every model of the credential at once.
@@ -840,6 +905,8 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         disableCooling,
         settings,
         result.credentialScoped === true,
+        input.credential.provider,
+        result.headers,
       );
       cooledCredential = !shouldSkipCredentialCooldown(classified);
     }
@@ -873,9 +940,24 @@ const applyQuotaFailure = (
   now: number,
   disableCooling: boolean,
   wasTerminalUnauthorized: boolean,
+  provider: string,
 ): void => {
   const credentialScope = result.credentialScoped === true;
   const authQuotaActive = state.quota.exceeded && state.quota.reason === "credential_quota";
+
+  const priorModel = {
+    active: model.quota.exceeded && model.quota.nextRecoverAt > now,
+    recoverAt: model.quota.nextRecoverAt,
+    signals: model.quota.cooldownSignals,
+  };
+
+  const priorCredential = {
+    active: authQuotaActive && state.quota.nextRecoverAt > now,
+    recoverAt: state.quota.nextRecoverAt,
+    signals: state.quota.cooldownSignals,
+  };
+
+  let keptModelWindow = false;
   let next = 0;
   let credentialNext = 0;
   let backoffLevel = model.quota.backoffLevel;
@@ -897,7 +979,15 @@ const applyQuotaFailure = (
 
     credentialNext = next;
 
-    if (model.quota.exceeded && model.quota.nextRecoverAt > next) next = model.quota.nextRecoverAt;
+    if (
+      priorModel.active &&
+      (priorModel.recoverAt > next || (!credentialScope && retryAfterMs === undefined))
+    ) {
+      next = priorModel.recoverAt;
+      keptModelWindow = true;
+    } else if (model.quota.exceeded && model.quota.nextRecoverAt > next) {
+      next = model.quota.nextRecoverAt;
+    }
   }
 
   model.nextRetryAfter = next;
@@ -906,19 +996,29 @@ const applyQuotaFailure = (
     reason: "quota",
     nextRecoverAt: next,
     backoffLevel,
+    cooldownSignals: disableCooling
+      ? undefined
+      : cooldownSignalsFor(keptModelWindow, priorModel, next, provider, result.headers),
   });
 
   if (!credentialScope || disableCooling) return;
+
+  const credentialSignals = cooldownSignalsFor(
+    priorCredential.active &&
+      (priorCredential.recoverAt > credentialNext || retryAfterMs === undefined),
+    priorCredential,
+    credentialNext,
+    provider,
+    result.headers,
+  );
 
   for (const other of Object.values(state.modelStates)) {
     if (other === model) continue;
     other.unavailable = true;
     other.status = "error";
 
-    const otherQuotaNext =
-      other.quota.exceeded && other.quota.nextRecoverAt > credentialNext
-        ? other.quota.nextRecoverAt
-        : credentialNext;
+    const keepsOwn = other.quota.exceeded && other.quota.nextRecoverAt > credentialNext;
+    const otherQuotaNext = keepsOwn ? other.quota.nextRecoverAt : credentialNext;
 
     // Propagation only extends a sibling's still-live deadline; it never shortens one.
     const otherRetryAfter =
@@ -932,6 +1032,7 @@ const applyQuotaFailure = (
       reason: "credential_quota",
       nextRecoverAt: otherQuotaNext,
       backoffLevel,
+      cooldownSignals: keepsOwn ? other.quota.cooldownSignals : credentialSignals,
     });
   }
 
@@ -946,5 +1047,7 @@ const applyQuotaFailure = (
     state.quota.nextRecoverAt = authNext;
     state.quota.backoffLevel = backoffLevel;
     state.nextRetryAfter = authNext;
+    setCooldownSignals(state.quota, credentialSignals);
+    state.quota.cooldownEvaluated = true;
   }
 };

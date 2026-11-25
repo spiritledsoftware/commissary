@@ -50,7 +50,7 @@ export interface RequestBody {
   readonly json: Json | undefined;
 }
 
-/** Reads and decodes (`Content-Encoding: zstd`) the request body. */
+/** Reads and decodes (`Content-Encoding`: zstd, gzip) the request body. */
 export const readRequestBody = (
   request: HttpServerRequest.HttpServerRequest,
   options: { readonly decode: boolean } = { decode: true },

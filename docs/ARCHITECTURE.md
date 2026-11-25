@@ -622,6 +622,11 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
     cooling one wins). Spellings stored before this change are not merged. Go also migrates alias cooldowns to the resolved
     upstream key when the OAuth model aliases change; Commissary does not (its state key is the resolved selection model of
     each pick).
+  - Claude unified quotas (`cooldown/claude-unified.ts`, CLIProxyAPI cb70eacf): a Claude 429 keeps its rejected
+    `Anthropic-Ratelimit-Unified-*` headers on the cooldown, and a local `model_cooldown` 429 where every candidate cools
+    on a Claude quota answers them again, their resets aligned with `Retry-After`. Differences from Go: no
+    credential-quota shadow state, the reporting model's quota is not moved to the credential's recovery time, and the
+    cooldown of a pooled upstream model (an alias pool) carries no unified headers.
 - **Retry planning** (`selection/retry.ts`, `retryAllowed` + `closestCooldownWait`): per-credential `request_retry`,
   `max-retry-interval`, the 10 s floor for an already-attempted 429 credential. `PickRequest.retryRound`/`requestRetry`
   make credentials with an exhausted budget age out of later rounds. Alias pools count as available when any upstream model
@@ -720,8 +725,8 @@ Core contracts every provider slice implements (Go references in each module hea
   `/v1/messages` and whose OpenAI models append `/chat/completions` to the same base URL (pi's `opencode-go` catalog)
   then needs a single base URL. The aliases are in `CLIENT_API_PREFIXES` (`core/http/client-api.ts`). `GET /models` is not
   aliased, because it is a control panel page.
-  Request bodies (`handlers/request.ts`, `models/http/body.ts`) decode `Content-Encoding: zstd` with a 32 MiB cap on the
-  decoded size (`models/http/zstd.ts`: frame windows/content sizes are checked before fzstd allocates, the streaming decoder stops past the
+  Request bodies (`handlers/request.ts`, `models/http/body.ts`) decode `Content-Encoding: zstd`, and `gzip`/`x-gzip`
+  (CLIProxyAPI 6e7a1b29; the decoded body is forwarded without the header), with a 32 MiB cap on the decoded size (`models/http/zstd.ts`: frame windows/content sizes are checked before fzstd allocates, the streaming decoder stops past the
   cap); a larger body answers 413 (deviation: Go reads it unbounded).
 - **Conductor** (`handlers/conductor.ts`, port of `conductor_execution.go`/`conductor_stream.go`): `conduct(prepared, run)`
   runs retry rounds. A round picks credentials one after another (`excludedIds` grows, no sleeping) until one succeeds, a
@@ -1399,6 +1404,12 @@ Port of `auto_refresh_loop.go` + `conductor_refresh.go` + the per-provider `Refr
   (`CredentialPool` `decorate` hook), and `ensureFresh` mints on a miss (concurrent callers share one mint). An executor
   therefore does: `if (!snapshot.metadata.access_token) snapshot = (await controlPlane.ensureFresh(id)).credential`.
 
+An expired refresh token (Anthropic's `invalid_grant` "Refresh token expired", CLIProxyAPI 0bfb3d01) is terminal:
+refreshes stop until a new login (`lastError.code` `refresh_token_expired`). As in Go (`conductor_lifecycle.go`
+`canServeWithAccessToken`), a still valid access token keeps serving; without one the credential is unauthorized.
+Commissary has no `RequiresSignIn` flag of its own (the terminal state is the error code) and recognises only this terminal
+grant message, not Go's whole list.
+
 Deviations from Go: credentials without a refresh token are never scheduled (Go loops every 30 s on an unchanged auth);
 Codex keeps `email`/`plan_type` when the new `id_token` lacks them; a cached xAI `token_endpoint` must be an https x.ai
 URL; Kimi/Claude device/uTLS headers are constants/subsets; Devin's metadata refresh (protobuf quota probe, never
@@ -1566,6 +1577,26 @@ Deviations from Go (all deliberate, documented in code headers):
 - **Thread continuation** (`thread.ts`): `thread.type = "continue"` requests without `tools` restore the MCP tool aliases saved
   for `message:<previous_message_id>` / `message:<new id>` (SessionState DO per caller scope, 1024 entries, 7 d TTL; Go: executor
   memory); an unknown previous message is the request-scoped 404 `not_found_error`.
+- **Server-side fallback** (`cloaking.ts`, CLIProxyAPI fa11a573): opt-in like Go, by `upstream.claude.server-side-fallback`
+  (default `false`, in `SETTINGS_TREE` and the Settings page). On, a cloaked Opus 5.5 or Fable 5.1 request without
+  `fallbacks` of its own (not a probe or helper) asks for `claude-opus-4-8` or `claude-opus-5`. The usage record and the
+  OpenAI translators report the model that served the answer and the fallback hop
+  (`translation/translator/common/claude-fallback.ts`).
+- **Advisor blocks after a credential rebind** (`advisor-owners.ts`, store `claude-advisor-owner`; Go
+  `helps/claude_advisor_state.go`, CLIProxyAPI 91a3f455): the credential that minted each advisor `tool_use_id` (from the
+  response, or a request's unknown ids once the upstream accepts it) is recorded first-writer-wins with a sliding 24 h
+  expiry, and Messages and `count_tokens` requests drop another credential's advisor blocks, and the turns they leave empty,
+  before cloaking. Differences from Go: one `SessionState` instance per org, caller and provider instead of process
+  memory plus an optional KV; every lookup slides the expiry; the owner is a hash of the credential id.
+- **Thread beta profiles** (`thread.ts`, CLIProxyAPI 02ec93d0, narrowed): the `message:<id>` record of an accepted
+  Thread message also keeps the `Anthropic-Beta` header it was sent with and the credential (a hash) that sent it, and a
+  `thread.type = "continue"` turn on that credential sends the snapshot again, plus the betas its own final body needs
+  (fast mode, advisor tool, binding controls, 1 h cache TTL). Left out of Go's version: the policy fingerprint
+  (header-default strip/append, custom beta headers, uncloak) and payload-rule `betas` tracking, and the 409 that Go
+  answers on a conflict or an unknown profile (an unknown or other-credential profile sends the turn's own betas); the
+  credential pin of a continuation (a continuation stays on its credential only through session affinity); Go's
+  per-turn beta gating exemption for caller-declared Threads; and holding a stream's terminal events until
+  `message_stop` before the profile is saved (the next turn can arrive before the save and send its own betas).
 - **Post-payload reconcilers** (`reconcile.ts`: Fable 5.1 / Opus 5.5 fallbacks, `thinking.display`, `# Reporting outcomes`
   block, system-turn placement) are ported and tested against the Go cases but, exactly like in Go, not called by the
   executors: payload rules are the final mutation, nothing may rewrite the body after them. `experimental-cch-signing` is

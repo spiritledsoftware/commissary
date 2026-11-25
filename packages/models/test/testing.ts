@@ -42,6 +42,9 @@ export {
   VERTEX_REPLAY_STORE,
 } from "../src/executor/helps/reasoning-replay-ledger.ts";
 
+// The SessionState store of Claude advisor block owners.
+export { ADVISOR_OWNER_STORE } from "../src/executor/claude/advisor-owners.ts";
+
 export { HELD, spendingOrg, spendRows } from "./support/spending-org.ts";
 
 export { resetUsageDb, sampleRecord, statementsOf } from "./support/usage.ts";

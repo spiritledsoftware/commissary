@@ -74,9 +74,19 @@ import { withoutTranslatedDefaultMaxTokens } from "./default-max-tokens.ts";
 import { type DeviceProfileStore, deviceProfileStabilizationEnabled } from "./device-profile.ts";
 import { rebuildMidSystemEnabled, rebuildMidSystemMessagesToTopLevel } from "./mid-system.ts";
 import {
+  type AdvisorOwnerScope,
+  type AdvisorOwnerStore,
+  type AdvisorRequestState,
+  advisorCredentialOwner,
+  prepareAdvisorState,
+} from "./advisor-owners.ts";
+import {
+  replayThreadBetas,
   threadAliasKeys,
   threadContinuationNeedsAliasState,
+  threadContinuationOf,
   threadNotFoundError,
+  type ThreadBetaProfile,
   type ToolAliasStore,
 } from "./thread.ts";
 import {
@@ -133,6 +143,8 @@ export interface PipelineServices {
   readonly deviceProfiles: DeviceProfileStore;
   /** MCP tool aliases of Thread turns (`thread.type = "continue"` without tools). */
   readonly toolAliases: ToolAliasStore;
+  /** Which credential minted each advisor block (`advisor-owners.ts`). */
+  readonly advisorOwners: AdvisorOwnerStore;
   readonly now: () => Date;
   /** Delegating provider profile (Kimi); `undefined` for the Claude provider itself. */
   readonly profile?: ClaudeUpstreamProfile | undefined;
@@ -175,7 +187,16 @@ export interface PreparedClaudeRequest {
   readonly webSearchScope: WebSearchResultScope | undefined;
   /** Thread request (`thread.type` set): the alias keys to save once the upstream message id is known. */
   readonly threadAliasKeys: ((messageId: string) => string[]) | undefined;
+  /** Thread request: the `Anthropic-Beta` profile to save with the new message (02ec93d0). */
+  readonly threadBetas: ThreadBetaProfile | undefined;
+  /** The request's advisor blocks to record as this credential's once the upstream accepts it. */
+  readonly advisor: AdvisorRequestState | undefined;
 }
+
+const advisorScopeOf = (input: PrepareInput): AdvisorOwnerScope => ({
+  callerScope: input.options.metadata.callerScope,
+  provider: input.credential.provider,
+});
 
 const requestScoped = (status: number, message: string): ExecutionError =>
   new ExecutionError({ status, message, requestScoped: true });
@@ -590,6 +611,15 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
   if (rebuildMidSystemEnabled(config, credential)) rebuildMidSystemMessagesToTopLevel(body);
 
+  // Before cloaking, payload rules and signing: a conversation moved from another credential sends none of its advisor
+  // state (91a3f455).
+  const advisor = yield* prepareAdvisorState(
+    services.advisorOwners,
+    advisorScopeOf(input),
+    credential,
+    body,
+  );
+
   // Thread continuation without tool definitions reuses the aliases remembered for the previous message; the state
   // lives in a store, so it is read before the synchronous request shaping.
   const threadBody = body;
@@ -603,6 +633,16 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       : undefined;
 
   const needsAliasState = mcpAlias && threadContinuationNeedsAliasState(threadBody);
+
+  // A `continue` turn sends the betas its previous message was accepted with, on the same credential (02ec93d0).
+  const threadCredential = advisorCredentialOwner(credential);
+  const previousMessageId = threadContinuationOf(threadBody);
+
+  const threadProfile =
+    previousMessageId === "" || threadCredential === ""
+      ? undefined
+      : yield* services.toolAliases.loadBetas(options.metadata.callerScope, previousMessageId);
+
   const stabilizeProfile = deviceProfileStabilizationEnabled(config);
 
   // `cloak_mode: never` keeps the caller's own device headers (headers.ts): the store is not consulted.
@@ -795,6 +835,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     );
 
     const finalBody = payloadBody(rules.payload);
+    advisor?.filterUnknownIds(finalBody);
     const extraBetas = extractAndRemoveBetas(finalBody);
     const midSystemError = validateMidSystemMessageModel(finalBody, confirmed, firstParty);
 
@@ -819,6 +860,13 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       stabilizedProfile,
     });
 
+    if (threadProfile !== undefined && threadProfile.credential === threadCredential) {
+      const betas = replayThreadBetas(threadProfile.betas, finalBody);
+
+      if (betas === "") delete headers["anthropic-beta"];
+      else headers["anthropic-beta"] = betas;
+    }
+
     const bodyText = serializeAndSign(finalBody, cchSigning);
 
     return {
@@ -841,6 +889,11 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
         str(get(translatedRequest, "thread.type")) === ""
           ? undefined
           : (messageId) => threadAliasKeys(translatedRequest, messageId),
+      threadBetas:
+        str(get(translatedRequest, "thread.type")) === ""
+          ? undefined
+          : { betas: headers["anthropic-beta"] ?? "", credential: threadCredential },
+      advisor,
     } satisfies PreparedClaudeRequest;
   });
 });
@@ -917,6 +970,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
   const body: JsonObject = thinkingBody;
 
   if (rebuildMidSystemEnabled(config, credential)) rebuildMidSystemMessagesToTopLevel(body);
+  yield* prepareAdvisorState(services.advisorOwners, advisorScopeOf(input), credential, body);
   const stabilizeProfile = deviceProfileStabilizationEnabled(config);
 
   // `cloak_mode: never` keeps the caller's own device headers (headers.ts): the store is not consulted.

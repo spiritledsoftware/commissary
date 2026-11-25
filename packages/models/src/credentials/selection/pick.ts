@@ -19,6 +19,7 @@ import { type Credential, type CredentialState, executorKey } from "../model.ts"
 import { affinityKey, isSubagentSession, type SessionCache } from "./affinity.ts";
 import { servesMember } from "../ownership.ts";
 import { isBlockedForModel } from "./availability.ts";
+import { type ClaudeCooldown, claudeUnifiedCooldown } from "../cooldown/claude-unified.ts";
 import {
   authNotFound,
   authUnavailable,
@@ -278,6 +279,12 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const available: Candidate[] = [];
   let cooldownCount = 0;
   let earliest = 0;
+  // `claudeCooldownMetadataForAuths`: every candidate a Claude unified-quota cooldown, signals of the earliest.
+  let claudeAll = true;
+
+  let claudeEarliest:
+    | { readonly next: number; readonly id: string; readonly cooldown: ClaudeCooldown }
+    | undefined;
 
   for (const candidate of pool) {
     // A shared credential at its own Spend limit is skipped like an unavailable one, until its period ends.
@@ -285,6 +292,7 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
 
     if (held !== undefined) {
       if (earliest === 0 || held.resetsAt < earliest) earliest = held.resetsAt;
+      claudeAll = false;
       continue;
     }
 
@@ -303,6 +311,25 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
 
     if (block.reason === "cooldown") cooldownCount += 1;
 
+    if (claudeAll) {
+      const cooldown = claudeUnifiedCooldown(
+        executorKey(candidate.entry.credential),
+        candidate.entry.state,
+        candidate.route.selectionModel,
+        now,
+      );
+
+      if (!cooldown.claude) claudeAll = false;
+      else if (
+        block.reason === "cooldown" &&
+        block.next > now &&
+        (claudeEarliest === undefined ||
+          block.next < claudeEarliest.next ||
+          (block.next === claudeEarliest.next && candidate.id < claudeEarliest.id))
+      )
+        claudeEarliest = { next: block.next, id: candidate.id, cooldown };
+    }
+
     if (
       block.reason !== "disabled" &&
       block.next > now &&
@@ -315,7 +342,17 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
     if (cooldownCount === pool.length && earliest !== 0) {
       const provider = providers.size === 1 ? [...providers][0] : "";
 
-      return { ok: false, failure: modelCooldown(request.model, provider ?? "", earliest - now) };
+      const claude = claudeAll ? claudeEarliest?.cooldown : undefined;
+
+      return {
+        ok: false,
+        failure: modelCooldown(
+          request.model,
+          provider ?? "",
+          earliest - now,
+          claude === undefined ? undefined : { signals: claude.signals, now },
+        ),
+      };
     }
 
     return { ok: false, failure: authUnavailable(earliest, now) };

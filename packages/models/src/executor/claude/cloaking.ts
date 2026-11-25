@@ -28,6 +28,7 @@ import {
   usesLegacySystemReminder,
   usesProgressDisplay,
 } from "./classify.ts";
+import { hasAdvisorTool } from "./betas.ts";
 import { type CloakSettings, isMinimalCloak, type WirePolicy } from "./credentials.ts";
 import { type ContinuityState, deterministicPromptId } from "./continuity.ts";
 import { defaultDeviceProfile, cachedSessionId } from "./headers.ts";
@@ -241,6 +242,14 @@ const forwardedBlock = (block: ForwardedBlock, explicit: boolean): JsonObject =>
         block.cacheControl === undefined ? undefined : cloneJson(block.cacheControl),
       )
     : textBlock(block.text, ephemeral());
+
+/**
+ * An advisor tool declared or used in history (`claudeBodyHasAdvisorToolDoc || claudeHistoryHasAdvisorCallOrResultDoc`):
+ * the caller's system stays top level from the first advisor request on, so the conversation prefix stays stable once
+ * the advisor is called (CLIProxyAPI f73b8132).
+ */
+const keepsAdvisorSystemTopLevel = (body: JsonObject): boolean =>
+  hasAdvisorTool(body) || hasAdvisorHistory(body);
 
 const hasAdvisorHistory = (body: JsonObject): boolean => {
   if (!isArr(body.messages)) return false;
@@ -523,8 +532,8 @@ export const applySystemInstructions = (
 };
 
 /**
- * Where the caller's system blocks go once the top-level `system` holds the Claude Code blocks: top level after an
- * advisor turn, a system reminder in the first user turn for models without mid-conversation system turns, top level
+ * Where the caller's system blocks go once the top-level `system` holds the Claude Code blocks: top level with an
+ * advisor tool or turn, a system reminder in the first user turn for models without mid-conversation system turns, top level
  * for a provider key when they would trail the conversation, otherwise mid-conversation `system` turns.
  */
 const placeCallerSystem = (
@@ -537,7 +546,7 @@ const placeCallerSystem = (
 
   if (forwarded.length === 0) return;
 
-  if (hasAdvisorHistory(body)) {
+  if (keepsAdvisorSystemTopLevel(body)) {
     for (const block of forwarded) systemBlocks.push(forwardedBlock(block, explicit));
   } else if (usesLegacySystemReminder(body)) {
     prependSystemReminderBlocks(body, forwarded, explicit);
@@ -578,7 +587,7 @@ export const relocateSystemForCountTokens = (
     return;
   }
 
-  if (hasAdvisorHistory(body)) {
+  if (keepsAdvisorSystemTopLevel(body)) {
     body.system = forwarded.map((block) => forwardedBlock(block, explicit));
 
     return;
@@ -911,13 +920,18 @@ export const applyCloaking = (request: CloakRequest): CloakResult => {
     turnOrigin,
     explicitCacheMode: explicit,
   });
-  const model = str(body.model).trim().toLowerCase();
+  // Cross-model server-side refusal fallbacks only when `upstream.claude.server-side-fallback` opts in (fa11a573).
 
-  if (isOpus55Model(model) && !probeOrHelper && body.fallbacks === undefined)
-    body.fallbacks = [{ model: "claude-opus-4-8" }];
+  if (
+    config.upstream.claude["server-side-fallback"] &&
+    !probeOrHelper &&
+    body.fallbacks === undefined
+  ) {
+    const model = str(body.model).trim().toLowerCase();
 
-  if (isFable51Model(model) && !probeOrHelper && body.fallbacks === undefined)
-    body.fallbacks = [{ model: "claude-opus-5" }];
+    if (isOpus55Model(model)) body.fallbacks = [{ model: "claude-opus-4-8" }];
+    else if (isFable51Model(model)) body.fallbacks = [{ model: "claude-opus-5" }];
+  }
 
   if (!probeOrHelper) applyThinkingDisplay(body);
 

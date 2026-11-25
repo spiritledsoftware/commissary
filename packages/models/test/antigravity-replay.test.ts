@@ -530,6 +530,41 @@ describe("OpenAI chat replay continuity (Go da21f1e5, 80aa2b1d)", () => {
       },
     }) as unknown as Json;
 
+  // Go: antigravity_reasoning_replay_test.go (bba22ed9).
+  it("leaves the Claude Code attribution block out of the system lane", () => {
+    const sessionHeaders = new Headers({ "x-claude-code-session-id": "s-1" });
+
+    const key = (system: Json) =>
+      replaySessionKey(
+        {
+          modelName: MODEL,
+          originalRequest: { system },
+          requestPayload: { system },
+          headers: sessionHeaders,
+          derivedSessionId: "",
+          callerScope: "",
+        },
+        {},
+      );
+
+    const attribution = (cch: string): Json => ({
+      type: "text",
+      text: `x-anthropic-billing-header: cc_version=2.1.321.abc; cc_entrypoint=cli; cch=${cch};`,
+    });
+
+    const main = { type: "text", text: "You are Claude Code." };
+
+    expect(key([attribution("11111"), main])).toBe(key([attribution("22222"), main]));
+    expect(key([attribution("11111"), main])).toBe(key([main]));
+    expect(key([attribution("11111")])).toBe("claude:s-1:agent:main");
+    expect(key("x-anthropic-billing-header: cc_version=2.1.321.abc; cch=1;")).toBe(
+      "claude:s-1:agent:main",
+    );
+    expect(key([main])).toMatch(/^claude:s-1:agent:main:context:[0-9a-f]{32}$/);
+    // A different prompt still has its own lane.
+    expect(key([main])).not.toBe(key([{ type: "text", text: "Generate a title." }]));
+  });
+
   it("keys the ledger by an explicit session alias header before the derived id", () => {
     const key = (headers: Record<string, string>) =>
       replaySessionKey(

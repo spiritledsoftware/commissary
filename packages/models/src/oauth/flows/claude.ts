@@ -96,10 +96,13 @@ const inspectAccount = (accessToken: string, identity: Identity) =>
 /** Go `claude.GenerateState` (ea0b4712): 256 random bits as unpadded base64url, as native Claude Code sends. */
 const generateClaudeState = (): string => base64Url(randomBytes(32));
 
-/** The authorize scope adds the Console scope; the token refresh keeps `CLAUDE_OAUTH_SCOPE` (ea0b4712). */
+/**
+ * The authorize scope adds the Console scope unless `oauth.providers.claude.oauth-include-create-api-key` is off
+ * (`resolveClaudeAuthorizeScope`, d0ee9ca7); the token refresh keeps `CLAUDE_OAUTH_SCOPE` (ea0b4712).
+ */
 const CLAUDE_AUTHORIZE_SCOPE = `org:create_api_key ${CLAUDE_OAUTH_SCOPE}`;
 
-export const claudeFlow = (): CallbackFlow => ({
+export const claudeFlow = (includeCreateApiKey = true): CallbackFlow => ({
   kind: "callback",
   provider: "anthropic",
   timeoutMessage: "Timeout waiting for OAuth callback",
@@ -115,7 +118,7 @@ export const claudeFlow = (): CallbackFlow => ({
         client_id: CLAUDE_CLIENT_ID,
         response_type: "code",
         redirect_uri: CLAUDE_REDIRECT_URI,
-        scope: CLAUDE_AUTHORIZE_SCOPE,
+        scope: includeCreateApiKey ? CLAUDE_AUTHORIZE_SCOPE : CLAUDE_OAUTH_SCOPE,
         code_challenge: pkce.codeChallenge,
         code_challenge_method: "S256",
         state,

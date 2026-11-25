@@ -54,3 +54,17 @@ export const isInvalidGrant = (error: {
 
   return status === 0 || status === 400 || status === 401;
 };
+
+/**
+ * An expired refresh token (`isTerminalRefreshGrantMessage`, `terminalRefreshErrorCode`): Anthropic answers
+ * `{"error":"invalid_grant","error_description":"Refresh token expired"}` (CLIProxyAPI 0bfb3d01). Only a new login
+ * recovers it.
+ */
+export const isRefreshTokenExpired = (message: string): boolean => {
+  const lower = message.toLowerCase();
+
+  return lower.includes("refresh token expired") || lower.includes("refresh_token_expired");
+};
+
+/** `lastError.code` of a refresh that failed on an expired refresh token. */
+export const REFRESH_TOKEN_EXPIRED = "refresh_token_expired";

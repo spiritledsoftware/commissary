@@ -174,6 +174,8 @@ export const PickFailure = Schema.Struct({
   retryAfterSeconds: optional(Schema.Int),
   /** JSON error body for `model_cooldown`, `spend_limit_reached` (`{"error":{"code":"model_cooldown",...}}`) and `model_not_found`. */
   body: optional(Schema.String),
+  /** Extra response headers (a Claude cooldown's `Anthropic-Ratelimit-Unified-*`), sent with `passthrough-headers`. */
+  headers: optional(Schema.Record(Schema.String, Schema.String)),
 });
 
 export type PickFailure = typeof PickFailure.Type;

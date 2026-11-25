@@ -99,6 +99,19 @@ describe("claude login", () => {
     }),
   );
 
+  // Go: oauth_authorize_test.go (d0ee9ca7).
+  it.effect("asks only for the user scopes when oauth-include-create-api-key is off", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const h = makeOAuth(claudeUpstream(), {}, { claudeIncludeCreateApiKey: false });
+      const started = yield* begin(h, "claude");
+
+      expect(query(started.url).scope).toBe(
+        "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+      );
+    }),
+  );
+
   it.effect("exchanges the pasted code, enriches from the profile and writes the Go file", () =>
     Effect.gen(function* () {
       yield* startClock;

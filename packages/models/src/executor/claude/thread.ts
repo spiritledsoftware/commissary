@@ -7,9 +7,16 @@
  * `rememberClaudeOAuthToolAliases`, `claudeThreadNotFoundError`). Go keeps the aliases in executor memory (1024
  * entries, oldest evicted); here they live in the `SessionState` Durable Object, one instance per caller scope with the
  * same 1024-entry bound, and expire after 7 days.
+ *
+ * A Thread's `Anthropic-Beta` profile (CLIProxyAPI 02ec93d0, `helps/claude_thread.go`): the record of each accepted
+ * message also keeps the betas sent with it and the credential that sent them, and a `continue` turn on the same
+ * credential sends that snapshot again (plus any beta its own body requires), so a Thread keeps the capabilities it
+ * started with. Narrower than Go (ARCHITECTURE.md, "Claude provider"): no policy fingerprint or 409 conflict, an unknown
+ * profile sends the turn's own betas, no credential pinning beyond session affinity, and a stream's end is not held
+ * back until `message_stop`.
  */
 import { Effect } from "effect";
-import { type JsonObject, tryParseJson } from "@commissary/json";
+import { get, type JsonObject, tryParseJson } from "@commissary/json";
 import { isArr, isObj, str } from "@commissary/translation";
 import {
   type BackendResolver,
@@ -21,6 +28,14 @@ import {
   type StateOp,
 } from "@commissary/state";
 import { ExecutionError } from "../errors.ts";
+import {
+  BETA,
+  hasAdvisorTool,
+  withAdvisorToolBeta,
+  withExtendedCacheTTLBeta,
+  withThinkingBindingBeta,
+} from "./betas.ts";
+import { payloadHas1hTTL } from "./cache-control.ts";
 
 const STORE_NAME = "claude-tool-aliases";
 
@@ -67,16 +82,63 @@ export const threadContinuationNeedsAliasState = (body: JsonObject): boolean => 
   return !isArr(body.tools) || body.tools.length === 0;
 };
 
+/** The `Anthropic-Beta` header an accepted Thread message was sent with, and the credential (a hash) that sent it. */
+export interface ThreadBetaProfile {
+  readonly betas: string;
+  readonly credential: string;
+}
+
+/** The previous message of a `thread.type = "continue"` turn (empty otherwise). */
+export const threadContinuationOf = (body: JsonObject): string => {
+  const thread = body.thread;
+
+  return isObj(thread) && str(thread.type) === "continue"
+    ? str(thread.previous_message_id).trim()
+    : "";
+};
+
+const withBeta = (betas: string, beta: string): string =>
+  betas
+    .split(",")
+    .map((part) => part.trim())
+    .includes(beta)
+    ? betas
+    : [betas, beta].filter((part) => part.trim() !== "").join(",");
+
+/**
+ * The snapshot replayed for a continuation, with the betas this turn's final body cannot go without (Go answers 409
+ * instead): fast mode, the advisor tool, the binding controls and the 1 h cache TTL.
+ */
+export const replayThreadBetas = (snapshot: string, body: JsonObject): string => {
+  let betas = snapshot;
+
+  if (str(body.speed).trim().toLowerCase() === "fast") betas = withBeta(betas, BETA.fastMode);
+
+  if (hasAdvisorTool(body)) betas = withAdvisorToolBeta(betas);
+
+  if (get(body, "thinking.block_binding") !== undefined) betas = withThinkingBindingBeta(betas);
+
+  if (payloadHas1hTTL(body)) betas = withExtendedCacheTTLBeta(betas);
+
+  return betas;
+};
+
 export interface ToolAliasStore {
   /** The aliases saved for the first of `keys` that exists (`alias -> client tool name`). */
   readonly load: (
     callerScope: string,
     keys: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyMap<string, string> | undefined>;
+  /** The beta profile saved for `message:<messageId>`, if any. */
+  readonly loadBetas: (
+    callerScope: string,
+    messageId: string,
+  ) => Effect.Effect<ThreadBetaProfile | undefined>;
   readonly save: (
     callerScope: string,
     keys: ReadonlyArray<string>,
     aliases: ReadonlyMap<string, string>,
+    profile?: ThreadBetaProfile,
   ) => Effect.Effect<void>;
 }
 
@@ -86,22 +148,35 @@ const addressOf = (callerScope: string): SessionAddress => ({
   session: "state",
 });
 
-const parseAliases = (text: string | undefined): ReadonlyMap<string, string> | undefined => {
+interface ThreadRecord {
+  readonly aliases: ReadonlyMap<string, string>;
+  readonly profile: ThreadBetaProfile | undefined;
+}
+
+const stringEntries = (value: JsonObject): ReadonlyMap<string, string> =>
+  new Map(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+
+/** A record is `{ aliases, betas?, credential? }`; one written before the beta profiles is the bare alias map. */
+const parseRecord = (text: string | undefined): ThreadRecord | undefined => {
   if (text === undefined) return undefined;
+  const parsed = tryParseJson(text);
 
-  try {
-    const parsed = tryParseJson(text);
+  if (!isObj(parsed)) return undefined;
 
-    if (!isObj(parsed)) return undefined;
+  if (!isObj(parsed.aliases)) return { aliases: stringEntries(parsed), profile: undefined };
+  const { betas, credential } = parsed;
 
-    return new Map(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-  } catch {
-    return undefined;
-  }
+  return {
+    aliases: stringEntries(parsed.aliases),
+    profile:
+      typeof betas === "string" && typeof credential === "string"
+        ? { betas, credential }
+        : undefined,
+  };
 };
 
 export const makeSessionStateToolAliasStore = (
@@ -119,19 +194,33 @@ export const makeSessionStateToolAliasStore = (
 
             for (const result of results) {
               if (result.status !== "ok" || result.value === undefined) continue;
-              const aliases = parseAliases(result.value);
+              const record = parseRecord(result.value);
 
-              if (aliases !== undefined) return aliases;
+              if (record !== undefined) return record.aliases;
             }
 
             return undefined;
           }),
         ),
-  save: (callerScope, keys, aliases) => {
+  loadBetas: (callerScope, messageId) =>
+    messageId === ""
+      ? Effect.succeed(undefined)
+      : bestEffort(
+          "claude thread beta load",
+          undefined,
+          Effect.gen(function* () {
+            const [result] = yield* (yield* backend).run(addressOf(callerScope), [
+              { op: "get", key: `message:${messageId}` },
+            ]);
+
+            return result?.status === "ok" ? parseRecord(result.value)?.profile : undefined;
+          }),
+        ),
+  save: (callerScope, keys, aliases, profile) => {
     const targets = keys.filter((key) => key !== "");
 
     if (targets.length === 0) return Effect.void;
-    const value = JSON.stringify(Object.fromEntries(aliases));
+    const value = JSON.stringify({ aliases: Object.fromEntries(aliases), ...profile });
 
     return bestEffort(
       "claude tool alias save",

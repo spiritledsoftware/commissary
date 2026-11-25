@@ -15,6 +15,7 @@ import {
   type Json,
   stableStringify,
 } from "@commissary/json";
+import { isClaudeCodeAttributionSystemText } from "@commissary/translation";
 import { extractSessionInfo } from "../../../handlers/session.ts";
 import { claudeCodeExecutionScope } from "../../codex/replay.ts";
 import { stableSessionId } from "../envelope.ts";
@@ -48,11 +49,31 @@ const stripCacheControl = (value: Json): Json => {
   return value;
 };
 
-/** `antigravityClaudeReplaySystemLane`: a hash of the system prompt without cache markers. */
+/** `antigravityClaudeReplayIsAttributionBlock`. */
+const isAttributionBlock = (value: Json): boolean =>
+  isJsonObject(value) &&
+  value.type === "text" &&
+  typeof value.text === "string" &&
+  isClaudeCodeAttributionSystemText(value.text);
+
+/**
+ * `antigravityClaudeReplaySystemLane`: a hash of the system prompt without cache markers. The Claude Code attribution
+ * block changes on every request (`cch`, `cc_prompt_id`), so it is left out, and a system of only that block has no lane
+ * (CLIProxyAPI bba22ed9).
+ */
 const claudeSystemLane = (payload: Json | undefined): string => {
-  const system = get(payload, "system");
+  let system = get(payload, "system");
 
   if (system === undefined) return "";
+
+  if (typeof system === "string" && isClaudeCodeAttributionSystemText(system)) return "";
+
+  if (isJsonArray(system)) {
+    const kept = system.filter((block) => !isAttributionBlock(block));
+
+    if (kept.length === 0 && system.length > 0) return "";
+    system = kept;
+  }
 
   return createHash("sha256")
     .update(stableStringify(stripCacheControl(system)))

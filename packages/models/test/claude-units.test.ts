@@ -1263,6 +1263,31 @@ describe("history sanitising", () => {
   });
 });
 
+describe("advisor tool models", () => {
+  // Go: claude_issue7591_test.go (8bdffcad).
+  it("strips a thinking suffix from advisor tool models only", () => {
+    const body: JsonObject = {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { type: "advisor_20260301", name: "advisor", model: "claude-opus-4-8(high)" },
+        { type: "Advisor_20260301", name: "second", model: " claude-fable-5-1(16384) " },
+        { type: "advisor_20260301", name: "plain", model: "claude-opus-4-8" },
+        { type: "advisor_20260301", name: "bare", model: "(high)" },
+        { type: "custom", name: "other", model: "claude-opus-4-8(high)" },
+      ],
+    };
+
+    sanitizeForClaudeUpstream(body, "claude-sonnet-4-5", false);
+    expect((body.tools as JsonObject[]).map((tool) => tool.model)).toEqual([
+      "claude-opus-4-8",
+      "claude-fable-5-1",
+      "claude-opus-4-8",
+      "(high)",
+      "claude-opus-4-8(high)",
+    ]);
+  });
+});
+
 describe("commentary marker restore", () => {
   it("turns a marked thinking block into text for a non-Claude upstream model, leaving other signatures alone", () => {
     const body: JsonObject = {
@@ -1444,5 +1469,25 @@ describe("directive-only system turns", () => {
     expect(state.insertedRaw).toEqual([JSON.stringify((after.messages as JsonObject[])[3])]);
     // Nothing was inserted: the caller owns every turn.
     expect(captureSystemPlacement(before, before, true).insertedRaw).toEqual([]);
+  });
+  // Go: claude_executor_test.go (f73b8132).
+  it("keeps the caller system top level from the advisor tool declaration on, in both phases", () => {
+    const advisor = { type: "advisor_20260301", name: "advisor", model: "claude-opus-5-5" };
+    const declared = (): JsonObject => ({ ...withTail(USER("next")), tools: [advisor] });
+
+    const messages = declared();
+    applySystemInstructions(messages, instructions(false));
+    expect(roles(messages)).toEqual(["user", "user"]);
+    expect(JSON.stringify(messages.system)).toContain("caller guidance");
+
+    const count = declared();
+    relocateSystemForCountTokens(count, false, false);
+    expect(roles(count)).toEqual(["user", "user"]);
+    expect(count.system).toMatchObject([{ type: "text", text: "caller guidance" }]);
+
+    // Without the advisor the guidance moves into the conversation.
+    const plain = withTail(USER("next"));
+    applySystemInstructions(plain, instructions(false));
+    expect(roles(plain)).toContain("system");
   });
 });

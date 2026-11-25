@@ -1,11 +1,13 @@
 /**
- * Request body decoding (Codex CLI sends zstd-compressed bodies).
+ * Request body decoding (Codex CLI sends zstd-compressed bodies, some Claude clients gzip).
  *
- * Go source: sdk/api/handlers/request_body.go (ReadRequestBody). `Content-Encoding` lists are decoded right to left;
- * `identity` is skipped; anything other than `zstd` is rejected. When decoding fails but the raw bytes are valid JSON
- * the raw bytes are used. Workers' `DecompressionStream` has no zstd, so the pure-JS `fzstd` decoder is used, bounded
- * to {@link MAX_DECODED_BODY_BYTES} (Workers deviation: Go reads the decoded body without a limit).
+ * Go source: sdk/api/handlers/request_body.go (ReadRequestBody, decodeGzipRequestBody: 6e7a1b29). `Content-Encoding`
+ * lists are decoded right to left; `identity` is skipped; anything other than `zstd`, `gzip` and `x-gzip` is rejected.
+ * When decoding fails but the raw bytes are valid JSON the raw bytes are used. Workers' `DecompressionStream` has no
+ * zstd, so the pure-JS `fzstd` decoder is used; gzip goes through `node:zlib`. Both are bounded to
+ * {@link MAX_DECODED_BODY_BYTES} (Go reads a zstd body without a limit).
  */
+import { gunzipSync } from "node:zlib";
 import { isValidJson } from "@commissary/json";
 import { DecodedBodyTooLargeError, inflateZstd } from "./zstd.ts";
 
@@ -23,6 +25,18 @@ export class RequestBodyTooLargeError extends RequestBodyDecodeError {
 
 const decoder = new TextDecoder();
 
+/** `decodeGzipRequestBody`: at most `limit` decoded bytes. */
+const inflateGzip = (body: Uint8Array, limit: number): Uint8Array => {
+  try {
+    return gunzipSync(body, { maxOutputLength: limit });
+  } catch (cause) {
+    if (cause instanceof RangeError)
+      throw new RequestBodyTooLargeError(`decoded request body exceeds ${limit} bytes`);
+
+    throw new RequestBodyDecodeError(`failed to decode gzip request body: ${String(cause)}`);
+  }
+};
+
 const decodeEncodings = (raw: Uint8Array, encoding: string, limit: number): Uint8Array => {
   let body = raw;
   const parts = encoding.split(",");
@@ -31,6 +45,11 @@ const decodeEncodings = (raw: Uint8Array, encoding: string, limit: number): Uint
     const enc = (parts[i] ?? "").trim().toLowerCase();
 
     if (enc === "" || enc === "identity") continue;
+
+    if (enc === "gzip" || enc === "x-gzip") {
+      body = inflateGzip(body, limit);
+      continue;
+    }
 
     if (enc !== "zstd")
       throw new RequestBodyDecodeError(`unsupported request content encoding: ${enc}`);
