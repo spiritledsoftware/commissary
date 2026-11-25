@@ -1,7 +1,8 @@
 /**
  * OpenAI file content normalisation.
  *
- * Go source: internal/translator/common/file_data.go (NormalizeOpenAIFileData).
+ * Go source: internal/translator/common/file_data.go (NormalizeOpenAIFileData); `inlineDataAsDataUrl` is the data-URL
+ * step of codexContentPartFromGeminiFileData and openAIContentPartFromGeminiFileData (34d8fe0f).
  */
 import { mimeTypeForExtension } from "./mime-types.ts";
 
@@ -47,3 +48,7 @@ export const normalizeOpenAIFileData = (
     ? { mimeType, data: payload }
     : undefined;
 };
+
+/** Gemini inline data as a data URL; data that already is one (any case, leading spaces allowed) stays as it is. */
+export const inlineDataAsDataUrl = (mimeType: string, data: string): string =>
+  data.trim().toLowerCase().startsWith("data:") ? data : `data:${mimeType};base64,${data}`;

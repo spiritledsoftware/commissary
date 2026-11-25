@@ -1,7 +1,9 @@
 /**
- * Gemini part helpers shared by the Gemini response translators.
+ * Payload classification for Gemini response parts, shared by the translators that read Gemini responses.
  *
- * Go source: internal/translator/gemini/common/parts.go.
+ * Go source: internal/translator/gemini/common/parts.go (HasUnsupportedPartPayload), mirrored file for file. The
+ * field accessors and role helpers for Gemini parts, from internal/translator/common/gemini.go, live in
+ * `translator/common/gemini-parts.ts`.
  */
 import { isJsonObject, type Json } from "@commissary/json";
 

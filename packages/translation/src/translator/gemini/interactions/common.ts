@@ -17,7 +17,11 @@ import {
   set,
 } from "@commissary/json";
 import { normalizeOpenAIFileData } from "../../common/file-data.ts";
-import { geminiPartFunctionResponse } from "../../common/gemini-parts.ts";
+import {
+  geminiPartFunctionResponse,
+  geminiResponseHasOnlyResultKey,
+  isEmptyGeminiResponseObject,
+} from "../../common/gemini-parts.ts";
 
 /** `strings.TrimSpace` + first non-empty (returns the trimmed value). */
 export const firstNonEmptyString = (...values: string[]): string => {
@@ -360,9 +364,6 @@ export const geminiThoughtStepJson = (sig: string, text: string): JsonObject => 
   return step;
 };
 
-const isEmptyResponseObject = (value: Json | undefined): boolean =>
-  value === undefined || (isJsonObject(value) && Object.keys(value).length === 0);
-
 /**
  * `setInteractionsResultFromGeminiFunctionResponse`: a function response with media `parts` becomes a content list
  * (its `response` as a leading text item, a lone `result` unwrapped), relaying the media (34d8fe0f); otherwise the
@@ -388,10 +389,8 @@ export const interactionsResultFromGeminiFunctionResponse = (fr: Json): Json | u
   if (nestedItems.length === 0) return response;
   const items: JsonObject[] = [];
 
-  if (!isEmptyResponseObject(response)) {
-    const keys = isJsonObject(response) ? Object.keys(response) : [];
-
-    if (keys.length === 1 && keys[0] === "result") {
+  if (!isEmptyGeminiResponseObject(response)) {
+    if (geminiResponseHasOnlyResultKey(response)) {
       const res = get(response, "result");
 
       if (typeof res === "string") {

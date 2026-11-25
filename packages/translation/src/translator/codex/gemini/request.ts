@@ -26,7 +26,10 @@ import {
   geminiPartFunctionResponse,
   geminiPartsHaveFunctionResponse,
   normalizeGeminiTurnRole,
+  geminiResponseHasOnlyResultKey,
+  isEmptyGeminiResponseObject,
 } from "../../common/gemini-parts.ts";
+import { inlineDataAsDataUrl } from "../../common/file-data.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { buildShortNameMap, shortenNamePlain } from "../claude/request.ts";
 
@@ -113,11 +116,11 @@ const contentPartFromInlineData = (part: Json): JsonObject | undefined => {
   }
 
   // A data URL, as Codex input files need (34d8fe0f); data that already is one stays as it is.
-  const fileData = data.trim().toLowerCase().startsWith("data:")
-    ? data
-    : `data:${mimeType};base64,${data}`;
-
-  return { type: "input_file", file_data: fileData, filename: codexFileNameFromMime(mimeType) };
+  return {
+    type: "input_file",
+    file_data: inlineDataAsDataUrl(mimeType, data),
+    filename: codexFileNameFromMime(mimeType),
+  };
 };
 
 /** Audio a function response returned: Codex tool outputs cannot carry it, so a user message relays it. */
@@ -159,15 +162,6 @@ const toolAudioRelayItems = (groups: ReadonlyArray<ToolAudioGroup>): JsonObject[
   ];
 };
 
-const isEmptyResponseObject = (value: Json | undefined): boolean =>
-  value === undefined || (isJsonObject(value) && Object.keys(value).length === 0);
-
-/** `geminiCodexResponseHasOnlyResultKey`. */
-const responseHasOnlyResultKey = (response: Json | undefined): boolean =>
-  isJsonObject(response) &&
-  Object.keys(response).length === 1 &&
-  Object.keys(response)[0] === "result";
-
 /**
  * `setCodexFunctionCallOutputFromGemini`: a function response with `parts` becomes a content list (its response text
  * first), relaying its media to Codex (34d8fe0f); audio, which a tool output cannot carry, is returned for a user
@@ -176,14 +170,14 @@ const responseHasOnlyResultKey = (response: Json | undefined): boolean =>
 const setFunctionCallOutputFromGemini = (fno: JsonObject, fr: Json): JsonObject[] => {
   const result = get(fr, "response.result");
   const response = get(fr, "response");
-  const onlyResult = result !== undefined && responseHasOnlyResultKey(response);
+  const onlyResult = result !== undefined && geminiResponseHasOnlyResultKey(response);
   let baseText = "";
   let hasBaseText = false;
 
   if (onlyResult) {
     baseText = asString(result);
     hasBaseText = baseText.trim() !== "";
-  } else if (!isEmptyResponseObject(response)) {
+  } else if (!isEmptyGeminiResponseObject(response)) {
     baseText = JSON.stringify(response);
     hasBaseText = true;
   }
@@ -225,7 +219,7 @@ const setFunctionCallOutputFromGemini = (fno: JsonObject, fr: Json): JsonObject[
   }
 
   if (onlyResult) fno["output"] = asString(result);
-  else if (response !== undefined && !isEmptyResponseObject(response))
+  else if (response !== undefined && !isEmptyGeminiResponseObject(response))
     fno["output"] = JSON.stringify(response);
   else if (relayedAudioItems.length > 0)
     fno["output"] = "[Tool returned audio content; the audio follows in the next user message.]";

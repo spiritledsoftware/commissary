@@ -23,6 +23,8 @@ import {
   geminiPartsHaveFunctionResponse,
   isGeminiThoughtPart,
   normalizeGeminiTurnRole,
+  geminiResponseHasOnlyResultKey,
+  isEmptyGeminiResponseObject,
 } from "../../common/gemini-parts.ts";
 import { UnsupportedPartError, UserTurnDrops } from "../../common/parts.ts";
 import { isLiteralValueKeyword, SCHEMA_NAME_MAP_KEYWORDS } from "../../common/schema-refs.ts";
@@ -534,13 +536,6 @@ const lowercaseSchemaTypes = (tool: JsonObject): void => {
   }
 };
 
-const isEmptyResponseObject = (value: Json | undefined): boolean =>
-  value === undefined || (isObj(value) && Object.keys(value).length === 0);
-
-/** `geminiClaudeResponseHasOnlyResultKey`. */
-const responseHasOnlyResultKey = (response: Json | undefined): boolean =>
-  isObj(response) && Object.keys(response).length === 1 && Object.hasOwn(response, "result");
-
 /**
  * `setClaudeToolResultContentFromGemini`: a function response's nested `parts` become content blocks after its
  * response text, relaying their media (34d8fe0f). Media Claude cannot take is dropped from a user turn; when nothing
@@ -554,14 +549,14 @@ const setToolResultContentFromGemini = (
 ): string | undefined => {
   const result = get(fr, "response.result");
   const response = get(fr, "response");
-  const onlyResult = exists(result) && responseHasOnlyResultKey(response);
+  const onlyResult = exists(result) && geminiResponseHasOnlyResultKey(response);
   let baseText = "";
   let hasBaseText = false;
 
   if (onlyResult) {
     baseText = str(result);
     hasBaseText = baseText.trim() !== "";
-  } else if (!isEmptyResponseObject(response)) {
+  } else if (!isEmptyGeminiResponseObject(response)) {
     baseText = JSON.stringify(response);
     hasBaseText = true;
   }

@@ -21,6 +21,7 @@ import {
   geminiPartsHaveFunctionResponse,
   normalizeGeminiTurnRole,
 } from "../../common/gemini-parts.ts";
+import { inlineDataAsDataUrl } from "../../common/file-data.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { getStr, isArr, isObj, raw, str } from "../common/read.ts";
 
@@ -131,12 +132,12 @@ const openAIContentPartFromGeminiInlineData = (part: Json): JsonObject | undefin
 
   if (lower.startsWith("video/")) return { type: "video_url", video_url: { url: dataUrl } };
 
-  // Data that already is a data URL stays as it is.
-  const fileData = data.trim().toLowerCase().startsWith("data:") ? data : dataUrl;
-
   return {
     type: "file",
-    file: { filename: openAIFileNameFromMime(mimeType), file_data: fileData },
+    file: {
+      filename: openAIFileNameFromMime(mimeType),
+      file_data: inlineDataAsDataUrl(mimeType, data),
+    },
   };
 };
 
