@@ -25,7 +25,7 @@ import { collectQuotaSignals } from "../../src/credentials/cooldown/quota-signal
 import { resetCooldownState } from "../../src/credentials/cooldown-reset.ts";
 import { recentRequestsSnapshot } from "../../src/credentials/cooldown/recent-requests.ts";
 import type { CredentialState } from "../../src/credentials/model.ts";
-import { emptyState } from "../../src/credentials/model.ts";
+import { emptyQuota, emptyState } from "../../src/credentials/model.ts";
 import { isBlockedForModel } from "../../src/credentials/selection/availability.ts";
 import type { ReportResult } from "../../src/credentials/selection/types.ts";
 import { cred, NOW } from "../support/credentials.ts";
@@ -635,6 +635,40 @@ describe("disabled credentials stay unavailable (CLIProxyAPI 29de31a8, 35afdf07)
 
     const active = resetCooldownState(mark(emptyState(), "m", fail(429)), NOW + 1000).state;
     expect(active).toMatchObject({ status: "active", unavailable: false });
+  });
+
+  it("a cooldown reset keeps a disabled model disabled and clears only its timers", () => {
+    const cooled = mark(emptyState(), "other", fail(429, "q", { retryAfterMs: HOUR }));
+
+    const withDisabledModel: CredentialState = {
+      ...cooled,
+      modelStates: {
+        ...cooled.modelStates,
+        m: {
+          status: "disabled",
+          statusMessage: "disabled",
+          unavailable: true,
+          nextRetryAfter: NOW + HOUR,
+          forcedUntil: NOW + HOUR,
+          quota: { exceeded: true, reason: "quota", nextRecoverAt: NOW + HOUR, backoffLevel: 2 },
+          updatedAt: NOW,
+        },
+      },
+    };
+
+    const { state, models } = resetCooldownState(withDisabledModel, NOW + 1000);
+    expect(models.toSorted()).toEqual(["m", "other"]);
+    expect(Object.keys(state.modelStates)).toEqual(["m"]);
+    expect(state.modelStates.m).toEqual({
+      status: "disabled",
+      statusMessage: "disabled",
+      unavailable: true,
+      nextRetryAfter: 0,
+      quota: emptyQuota(),
+      updatedAt: NOW + 1000,
+    });
+    expect(blocked(state, "m", NOW + 1000)).toBe(true);
+    expect(blocked(state, "other", NOW + 1000)).toBe(false);
   });
 });
 

@@ -620,7 +620,8 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
     token only inside `refreshNow`, so Go's `MarkResult` guard has no counterpart.
   - count_tokens 501s and typed unsupported-capability codes are availability-neutral like a generic 404.
   - A disabled credential stays disabled and unavailable through a late success and a cooldown reset (CLIProxyAPI
-    29de31a8, 35afdf07); one disabled only in its file keeps its runtime state, so turning it back on needs no reset.
+    29de31a8, 35afdf07); one disabled only in its file keeps its runtime state, so turning it back on needs no reset. A disabled model keeps its
+    state through the reset too, only its timers cleared.
     Commissary has no model reconciliation, inference verification or TOS-violation path, so the rest of those commits
     has nothing to apply to.
   - A live cooldown set by an explicit `force_cooldown` (`stop-and-cooldown`) outlasts later failures that write a zero
