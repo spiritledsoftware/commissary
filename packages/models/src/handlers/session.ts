@@ -41,6 +41,17 @@ export const normalizeExplicitId = (raw: string | undefined): string => {
   return trimmed === "" || encoder.encode(trimmed).length > 256 ? "" : trimmed;
 };
 
+/**
+ * `encodeSessionSegment` (CLIProxyAPI f9ac9ffc): escapes the reserved `:agent:` delimiter, so a raw session id that
+ * contains it cannot collide with a composed `<sid>:agent:<agent>` id. Ordinary ids are left as they are.
+ */
+export const encodeSessionSegment = (raw: string): string =>
+  raw.includes(":agent")
+    ? raw.replace(/:agent([~:])/g, (_match, next: string) =>
+        next === "~" ? ":agent~~" : ":agent~;",
+      )
+    : raw;
+
 const legacyClaudeSession =
   /_session_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 
@@ -537,6 +548,78 @@ export const extractSessionInfo = (
   }
 
   /** Header-keyed sessions: `prefix:<id>` with a parent from `parentHeaders` or the body. */
+  /**
+   * `extractSubagentID`: the first concrete (non-empty, not `main`) subagent id, body before headers before the nested
+   * `request` object.
+   */
+  const subagentId = (): string => {
+    const paths = ["metadata.agent_id", "metadata.subagent_id"];
+
+    for (const path of paths) {
+      const value = root === undefined ? "" : normalizeExplicitId(stringOf(get(root, path)));
+
+      if (value !== "" && value !== "main") return value;
+    }
+
+    for (const name of ["X-Claude-Code-Agent-Id", "X-Agent-Id"]) {
+      const value = header(name);
+
+      if (value !== "" && value !== "main") return value;
+    }
+
+    for (const path of paths) {
+      const value = nested === undefined ? "" : normalizeExplicitId(stringOf(get(nested, path)));
+
+      if (value !== "" && value !== "main") return value;
+    }
+
+    return "";
+  };
+
+  /**
+   * `extractHeaderParentAgentID`: the concrete parent agent id, and the first parent agent id the body named (`main`
+   * included), which is not a parent session.
+   */
+  const headerParentAgent = () => {
+    const paths = ["metadata.parent_agent_id", "metadata.parentAgentId"];
+    let fromBody = "";
+
+    const scan = (source: Json | undefined): string => {
+      if (source === undefined) return "";
+
+      for (const path of paths) {
+        const value = normalizeExplicitId(stringOf(get(source, path)));
+
+        if (value === "") continue;
+
+        if (fromBody === "") fromBody = value;
+
+        if (value !== "main") return value;
+      }
+
+      return "";
+    };
+
+    const own = scan(root);
+
+    if (own !== "") return { id: own, fromBody: own };
+
+    for (const name of ["X-Claude-Code-Parent-Agent-Id", "X-Parent-Agent-Id"]) {
+      const value = header(name);
+
+      if (value !== "" && value !== "main") return { id: value, fromBody };
+    }
+
+    const inner = scan(nested);
+
+    return inner === "" ? { id: "", fromBody } : { id: inner, fromBody: inner };
+  };
+
+  /**
+   * `applyHeaderSessionInfo` (CLIProxyAPI f9ac9ffc): a header session. An explicit parent header makes it a subagent;
+   * a concrete agent id gives the agent a session of its own under the header session, so subagents of one session
+   * keep distinct identities.
+   */
   const headerSession = (
     clientType: string,
     prefix: string,
@@ -545,14 +628,42 @@ export const extractSessionInfo = (
     mainAgent = "main",
   ): SessionInfo | undefined => {
     const info = base(clientType);
-    info.sessionId = `${prefix}:${id}`;
+    const sid = encodeSessionSegment(id);
+    info.sessionId = `${prefix}:${sid}`;
     const parent = header(...parentHeaders);
+    const agent = subagentId();
 
     if (parent !== "" && parent !== id) {
-      info.parentSessionId = `${prefix}:${parent}`;
-      info.agentName = "subagent";
-    } else if (parentCandidate !== "" && parentCandidate !== id) {
-      info.parentSessionId = `${prefix}:${parentCandidate}`;
+      info.parentSessionId = `${prefix}:${encodeSessionSegment(parent)}`;
+      info.isSubagent = true;
+      info.agentName = agent === "" ? "subagent" : agent;
+
+      return finish(info);
+    }
+
+    if (agent !== "") {
+      info.sessionId = `${prefix}:${sid}:agent:${encodeSessionSegment(agent)}`;
+      info.parentSessionId = `${prefix}:${sid}`;
+      const parentAgent = headerParentAgent();
+
+      if (parentAgent.id !== "" && parentAgent.id !== agent) {
+        info.parentSessionId = `${prefix}:${sid}:agent:${encodeSessionSegment(parentAgent.id)}`;
+      } else if (
+        parentCandidate !== "" &&
+        parentCandidate !== id &&
+        parentCandidate !== parentAgent.fromBody
+      ) {
+        info.parentSessionId = `${prefix}:${encodeSessionSegment(parentCandidate)}`;
+      }
+
+      info.agentName = agent;
+      info.isSubagent = true;
+
+      return finish(info);
+    }
+
+    if (parentCandidate !== "" && parentCandidate !== id) {
+      info.parentSessionId = `${prefix}:${encodeSessionSegment(parentCandidate)}`;
       info.agentName = "subagent";
     } else {
       info.agentName = mainAgent;
@@ -643,10 +754,10 @@ export const extractSessionInfo = (
 
   if (threadId !== "") {
     const info = base("openai-thread");
-    info.sessionId = `thread:${threadId}`;
+    info.sessionId = `thread:${encodeSessionSegment(threadId)}`;
 
     if (parentCandidate !== "" && parentCandidate !== threadId) {
-      info.parentSessionId = `thread:${parentCandidate}`;
+      info.parentSessionId = `thread:${encodeSessionSegment(parentCandidate)}`;
 
       if (bodyFork) {
         info.isFork = true;
@@ -662,27 +773,27 @@ export const extractSessionInfo = (
     return finish(info);
   }
 
-  const bodyAgent =
-    field(["metadata.agent_id", "metadata.subagent_id"]) ||
-    header("X-Claude-Code-Agent-Id", "x-agent-id");
+  const bodyAgent = subagentId();
 
   const bodySession = field(SESSION_PATHS);
 
   if (bodySession !== "") {
     const info = base("generic");
 
-    if (bodyAgent !== "" && bodyAgent !== "main") {
-      info.sessionId = `session:${bodySession}:agent:${bodyAgent}`;
-      info.parentSessionId = `session:${bodySession}`;
+    const sid = encodeSessionSegment(bodySession);
+
+    if (bodyAgent !== "") {
+      info.sessionId = `session:${sid}:agent:${encodeSessionSegment(bodyAgent)}`;
+      info.parentSessionId = `session:${sid}`;
 
       if (parentCandidate !== "" && parentCandidate !== bodySession)
-        info.parentSessionId = `session:${parentCandidate}`;
+        info.parentSessionId = `session:${encodeSessionSegment(parentCandidate)}`;
       info.agentName = bodyAgent;
     } else {
-      info.sessionId = `session:${bodySession}`;
+      info.sessionId = `session:${sid}`;
 
       if (parentCandidate !== "" && parentCandidate !== bodySession) {
-        info.parentSessionId = `session:${parentCandidate}`;
+        info.parentSessionId = `session:${encodeSessionSegment(parentCandidate)}`;
 
         if (bodyFork) {
           info.isFork = true;
@@ -703,10 +814,10 @@ export const extractSessionInfo = (
 
   if (bodyTask !== "") {
     const info = base("task");
-    info.sessionId = `task:${bodyTask}`;
+    info.sessionId = `task:${encodeSessionSegment(bodyTask)}`;
 
     if (parentCandidate !== "" && parentCandidate !== bodyTask) {
-      info.parentSessionId = `task:${parentCandidate}`;
+      info.parentSessionId = `task:${encodeSessionSegment(parentCandidate)}`;
 
       if (bodyFork) {
         info.isFork = true;
@@ -726,17 +837,16 @@ export const extractSessionInfo = (
   const conversationObject =
     get(root, "conversation") ?? (nested === undefined ? undefined : get(nested, "conversation"));
 
-  let conversationId = "";
+  let conversationRaw = "";
 
   if (typeof conversationObject === "string") {
-    const value = normalizeExplicitId(conversationObject);
-
-    if (value !== "") conversationId = `conv:${value}`;
+    conversationRaw = normalizeExplicitId(conversationObject);
   } else if (conversationObject !== undefined) {
-    const value = normalizeExplicitId(stringOf(get(conversationObject, "id")));
-
-    if (value !== "") conversationId = `conv:${value}`;
+    conversationRaw = normalizeExplicitId(stringOf(get(conversationObject, "id")));
   }
+
+  const conversationId =
+    conversationRaw === "" ? "" : `conv:${encodeSessionSegment(conversationRaw)}`;
 
   const promptCacheKey =
     normalizeExplicitId(stringOf(get(root, "prompt_cache_key"))) ||
@@ -764,8 +874,8 @@ export const extractSessionInfo = (
     const info = base("conv");
     info.sessionId = conversationId;
 
-    if (parentCandidate !== "" && `conv:${parentCandidate}` !== conversationId) {
-      info.parentSessionId = `conv:${parentCandidate}`;
+    if (parentCandidate !== "" && parentCandidate !== conversationRaw) {
+      info.parentSessionId = `conv:${encodeSessionSegment(parentCandidate)}`;
       info.agentName = "subagent";
     } else {
       info.agentName = "main";
@@ -788,10 +898,10 @@ export const extractSessionInfo = (
 
   if (legacyConversation !== "") {
     const info = base("conv");
-    info.sessionId = `conv:${legacyConversation}`;
+    info.sessionId = `conv:${encodeSessionSegment(legacyConversation)}`;
 
     if (parentCandidate !== "" && parentCandidate !== legacyConversation) {
-      info.parentSessionId = `conv:${parentCandidate}`;
+      info.parentSessionId = `conv:${encodeSessionSegment(parentCandidate)}`;
       info.agentName = "subagent";
     } else {
       info.agentName = "main";
