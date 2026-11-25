@@ -1199,7 +1199,9 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
     additions' own records. `aistudio` and `gemini` share `google`, `vertex` takes `google-vertex`, Codex plans take
     `openai`. Differences from Go: Devin is one aggregated section (a `devin/<id>` lookup resolves the whole section, Go's raw-section
     quirk is not repeated for `devin/` ids in `lookupModelInfo`), and Go's hard-coded Codex/xAI/Devin built-ins
-    (`builtins.json`) are now additions.
+    (`builtins.json`) are now additions, so a provider has one catalog: where Go's shared static lookup still reads its
+    raw xAI entries under the built-ins, Commissary answers the built-in record. A channel-qualified id (`vertex/<id>`)
+    also matches the channel's bare catalog id and answers with the qualified id, as in Go.
   - _Bundled and stored copies_: `catalog/models-dev.json` is the trimmed snapshot shipped with the Worker (regenerated
     with `pnpm run catalog:sync [url|file]`, `tools/sync-models-dev-catalog.ts`, idempotent). The same document is stored in KV
     `CACHE` (`registry/models-dev.json`) by the refresh; `CatalogStore` (`catalog-store.ts`) serves the KV copy per isolate,
@@ -1260,6 +1262,8 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
 - **Index** (`registry.ts`): provider counts, per-provider records ("last registered wins", credentials registered in id
   order), the 5 min quota window and suspension rules of `modelRegistrationAvailability`, `GetModelProviders`,
   `GetModelInfo`, `LookupModelInfo` (registry, then static catalogs), `GetFirstAvailableModel`, native web-search capability.
+  A lookup that names a provider sees only that provider's registrations, then that provider's static catalog, then the
+  shared static catalogs (never Devin's for a bare id); without a provider it takes the last registered record.
   Records are camelCase `ModelInfo`s that satisfy `ThinkingModelInfo`; `snapshot.lookupModelInfo` is the `ModelInfoLookup`
   for `applyThinking`, `snapshot.providersForModel` is `util.GetProviderName` (the pipeline's `ModelProviders`).
 - **Listings** (`listings.ts`, `models-api.ts`, `routes.ts`): `GET /v1/models[/{id}]` dispatches Grok shell UA -> `client_version`
@@ -1291,7 +1295,9 @@ models and Home.
 
 **Codex client catalog** (`GET /v1/models[/{id}]?client_version=...`, `registry/codex-client-models.ts`, port of
 `internal/client/codex/models`): every available model becomes an entry cloned from its template in `codex_client_models.json`
-(or the `gpt-5.5` template with compact instructions), with reasoning levels (`max`/`ultra` only for clients >= 0.144.0 or
+(or the `gpt-5.5` baseline template with compact instructions, listed, `supported_in_api` and
+`minimal_client_version: 0.124.0`, keeping the model's own display name over the catalog's), template modalities filtered
+to what the client accepts (`text`, `image`), with reasoning levels (`max`/`ultra` only for clients >= 0.144.0 or
 unparseable versions), modalities, priorities, Devin display names, `client.codex.optimize-multi-agent-v2` (`multi_agent_version`),
 `client.codex.enable-apply-patch` (`apply_patch_tool_type: freeform` only when every provider of the exact public model has an
 executor, `supportsApplyPatchProviders`) and `cpa_capabilities.web_search` for `client_version=cpa`. The body is plain `JSON.stringify` output.

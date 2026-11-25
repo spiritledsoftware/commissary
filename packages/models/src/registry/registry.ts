@@ -10,7 +10,11 @@
  * Worker rebuilds the index when the inputs change (see `service.ts`). Registration order follows the order of
  * `clients`, which decides "last registered wins" for model records.
  */
-import { lookupStaticModelInfo, type ModelCatalogs } from "./catalog.ts";
+import {
+  lookupSharedStaticModelInfo,
+  lookupStaticModelInfoByChannel,
+  type ModelCatalogs,
+} from "./catalog.ts";
 import {
   MODEL_QUOTA_EXCEEDED_WINDOW_MS,
   type ClientProjection,
@@ -264,16 +268,20 @@ export class ModelRegistryIndex {
       .map(([name]) => name);
   }
 
-  /** `GetModelInfo`: the provider-specific record when the provider serves the model, else the last registered. */
+  /** `GetModelInfo`: the provider-specific record when a provider is named (none if it does not serve the model), else the last registered. */
   modelInfo(modelId: string, provider: string): ModelInfo | undefined {
     const registration = this.#models.get(modelId);
 
     if (registration === undefined) return undefined;
 
-    if (provider !== "" && (registration.providers.get(provider) ?? 0) > 0) {
-      const specific = registration.infoByProvider.get(provider);
+    // A named provider sees only its own active registrations; no provider falls back to the last registered.
+    if (provider !== "") {
+      const specific =
+        (registration.providers.get(provider) ?? 0) > 0
+          ? registration.infoByProvider.get(provider)
+          : undefined;
 
-      if (specific !== undefined) return cloneModelInfo(specific);
+      return specific === undefined ? undefined : cloneModelInfo(specific);
     }
 
     return cloneModelInfo(registration.info);
@@ -376,14 +384,21 @@ export class ModelRegistryIndex {
   }
 
   /**
-   * `registry.LookupModelInfo(modelID, provider)`: the registry first (provider-specific, then global), then the
-   * static catalogs. This is the lookup handed to the thinking pipeline.
+   * `registry.LookupModelInfo(modelID, provider)`: the registry first (only that provider's registrations when one is
+   * named, else the last registered), then the provider's own static catalog, then the shared static catalogs. This
+   * is the lookup handed to the thinking pipeline.
    */
   lookupModelInfo(catalogs: ModelCatalogs, modelId: string, provider = ""): ModelInfo | undefined {
     const id = modelId.trim();
 
     if (id === "") return undefined;
 
-    return this.modelInfo(id, provider.trim().toLowerCase()) ?? lookupStaticModelInfo(catalogs, id);
+    const scope = provider.trim().toLowerCase();
+
+    return (
+      this.modelInfo(id, scope) ??
+      (scope === "" ? undefined : lookupStaticModelInfoByChannel(catalogs, id, scope)) ??
+      lookupSharedStaticModelInfo(catalogs, id)
+    );
   }
 }

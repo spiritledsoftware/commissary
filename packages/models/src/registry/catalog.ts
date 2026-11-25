@@ -305,30 +305,65 @@ const findClaudeFamilyModel = (
   return undefined;
 };
 
-/** Exact id within one channel's models; a Claude variant falls back to its family's entry. */
+const findModel = (
+  models: ReadonlyArray<ModelInfo> | undefined,
+  modelId: string,
+): ModelInfo | undefined => models?.find((model) => model.id === modelId);
+
+/**
+ * Exact id within one channel's models; a Claude variant falls back to its family's entry. A query qualified with the
+ * channel (`devin/swe-2` in `devin`) also matches the bare catalog id, and answers with the qualified id.
+ * Go: internal/registry/model_definitions.go (`LookupStaticModelInfoByChannel`).
+ */
 export const lookupStaticModelInfoByChannel = (
   catalogs: ModelCatalogs,
   modelId: string,
-  channel: string,
+  rawChannel: string,
 ): ModelInfo | undefined => {
   const id = modelId.trim();
 
   if (id === "") return undefined;
+  const channel = rawChannel.trim().toLowerCase();
   const models = staticModelsByChannel(catalogs, channel);
+  const exact = findModel(models, id);
 
-  const found =
-    models?.find((model) => model.id === id) ??
-    (channel.trim().toLowerCase() === "claude" ? findClaudeFamilyModel(models, id) : undefined);
+  if (exact !== undefined) return cloneModelInfo(exact);
+  const slash = id.indexOf("/");
+  const prefix = slash === -1 ? "" : id.slice(0, slash);
+  const nativeId = slash === -1 ? "" : id.slice(slash + 1);
 
-  return found === undefined ? undefined : cloneModelInfo(found);
+  if (nativeId !== "" && prefix.toLowerCase() === channel) {
+    const native = findModel(models, nativeId) ?? findModel(models, nativeId.toLowerCase());
+
+    if (native !== undefined) return { ...cloneModelInfo(native), id: `${channel}/${native.id}` };
+  }
+
+  const family = channel === "claude" ? findClaudeFamilyModel(models, id) : undefined;
+
+  return family === undefined ? undefined : cloneModelInfo(family);
 };
 
-/** First exact match over the provider catalogs, in a fixed provider order. */
-export const lookupStaticModelInfo = (
+/**
+ * `lookupStaticModelInfo`: a qualified id (`devin/swe-2`) first in its channel's catalog, then the first exact match
+ * over the shared provider catalogs in a fixed order, then `additional` (independent catalogs such as Devin's, whose
+ * bare ids would otherwise shadow the shared ones), then a Claude variant's family entry.
+ */
+const lookupInStaticCatalogs = (
   catalogs: ModelCatalogs,
   modelId: string,
+  additional: ReadonlyArray<ModelInfo>,
 ): ModelInfo | undefined => {
-  if (modelId === "") return undefined;
+  const id = modelId.trim();
+
+  if (id === "") return undefined;
+  const slash = id.indexOf("/");
+
+  if (slash !== -1) {
+    const qualified = lookupStaticModelInfoByChannel(catalogs, id, id.slice(0, slash));
+
+    if (qualified !== undefined) return qualified;
+  }
+
   const { models } = catalogs;
 
   const lists = [
@@ -340,21 +375,39 @@ export const lookupStaticModelInfo = (
     models.kimi,
     models.antigravity,
     models.xai,
-    models.devin,
     models.meta,
     models.typesafe,
     models.subq,
     models["opencode-zen"],
+    additional,
   ];
 
   for (const list of lists) {
-    const found = list.find((model) => model.id === modelId);
+    const found = findModel(list, id);
 
     if (found !== undefined) return cloneModelInfo(found);
   }
 
   // Dated and bracketed Claude variants share the capabilities of their catalog entry.
-  const family = findClaudeFamilyModel(models.claude, modelId);
-
-  return family === undefined ? undefined : cloneModelInfo(family);
+  return id.startsWith("claude-")
+    ? lookupStaticModelInfoByChannel(catalogs, id, "claude")
+    : undefined;
 };
+
+/**
+ * First match over every provider catalog, Devin's last. Go: internal/registry/model_definitions.go
+ * (`LookupStaticModelInfo`).
+ */
+export const lookupStaticModelInfo = (
+  catalogs: ModelCatalogs,
+  modelId: string,
+): ModelInfo | undefined => lookupInStaticCatalogs(catalogs, modelId, catalogs.models.devin);
+
+/**
+ * The static fallback of `registry.LookupModelInfo`: the shared provider catalogs only, so a bare id never resolves to
+ * an independent catalog's entry (Devin's models answer to their qualified ids, `devin/<id>`).
+ */
+export const lookupSharedStaticModelInfo = (
+  catalogs: ModelCatalogs,
+  modelId: string,
+): ModelInfo | undefined => lookupInStaticCatalogs(catalogs, modelId, []);
