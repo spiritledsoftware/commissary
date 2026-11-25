@@ -102,6 +102,7 @@ oauth:
       - { name: claude-opus-4, alias: opus }
       - { name: claude-opus-4, alias: OPUS }
       - { name: same, alias: SAME }
+      - { name: exact, alias: exact }
   settings:
     codex:
       - { name: gpt-5, max-context-length: 1 }
@@ -255,8 +256,12 @@ oauth:
         true,
       );
 
+      // An alias spelled exactly like its model is dropped; one that differs only in case is kept (34d8fe0f).
       assert.deepStrictEqual(config.oauth["model-alias"], {
-        claude: [{ name: "claude-opus-4", alias: "opus" }],
+        claude: [
+          { name: "claude-opus-4", alias: "opus" },
+          { name: "same", alias: "SAME" },
+        ],
       });
       assert.deepStrictEqual(config.oauth.settings, {
         codex: [{ name: "gpt-5", alias: "", "max-context-length": 2 }],
