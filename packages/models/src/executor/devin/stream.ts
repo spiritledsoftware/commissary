@@ -116,6 +116,7 @@ export class DevinStreamAssembler {
   #pending: Array<() => void> = [];
   #deferredThoughtStops: number[] = [];
   readonly #responseSignatures = new Map<number, string>();
+  #signatureType = "";
   #postToolContent: string[] = [];
   #sawEos = false;
   readonly #applyPatch: DevinApplyPatchTool | undefined;
@@ -420,8 +421,25 @@ export class DevinStreamAssembler {
       }
     }
 
-    if (frame.deltaSignature.length > 0) {
-      if (this.#thoughtStepIndex === -1 && !this.#contentStarted) {
+    if (frame.deltaSignatureType !== "") this.#signatureType = frame.deltaSignatureType;
+    const responses = this.responseFormat === Formats.OpenAIResponse;
+
+    // Responses may receive the signature type in a frame of its own, after the signature.
+    const lateType =
+      responses &&
+      frame.deltaSignatureType !== "" &&
+      this.#thoughtStepIndex >= 0 &&
+      (this.#responseSignatures.get(this.#thoughtStepIndex) ?? "") !== "";
+
+    if (frame.deltaSignature.length > 0 || lateType) {
+      if (this.#thoughtStepIndex === -1 && (!this.#contentStarted || responses)) {
+        // A signature-only thought can follow an already open message.
+        if (this.#contentStarted) {
+          this.#stepStop(this.#stepIndex);
+          this.#contentStarted = false;
+          this.#stepIndex++;
+        }
+
         this.#thoughtStepIndex = this.#stepIndex;
         this.#emit({ event_type: "step.start", index: this.#stepIndex, step: { type: "thought" } });
         this.#thoughtStarted = true;
@@ -429,16 +447,18 @@ export class DevinStreamAssembler {
 
       const target = this.#thoughtStepIndex < 0 ? 0 : this.#thoughtStepIndex;
       let signature = new TextDecoder().decode(frame.deltaSignature);
+      let signatureType = frame.deltaSignatureType;
 
-      if (this.responseFormat === Formats.OpenAIResponse) {
+      if (responses) {
         // The Responses translator accepts complete signatures, not fragments.
         signature = (this.#responseSignatures.get(target) ?? "") + signature;
         this.#responseSignatures.set(target, signature);
+        signatureType = this.#signatureType;
       }
 
       const delta: Event = { type: "thought_signature", signature };
 
-      if (frame.deltaSignatureType !== "") delta["signature_type"] = frame.deltaSignatureType;
+      if (signatureType !== "") delta["signature_type"] = signatureType;
       this.#emit({ event_type: "step.delta", index: target, delta });
     }
 
@@ -588,6 +608,7 @@ export class DevinAggregator {
 
   #thinking: Uint8Array[] = [];
   #signature: Uint8Array[] = [];
+  #signatureType = "";
   #preText: Uint8Array[] = [];
   #postText: Uint8Array[] = [];
   #tools: ToolBuilder[] = [];
@@ -608,6 +629,8 @@ export class DevinAggregator {
     this.#usage = foldUsage(this.#usage, frame);
 
     if (frame.deltaSignature.length > 0) this.#signature.push(frame.deltaSignature);
+
+    if (frame.deltaSignatureType !== "") this.#signatureType = frame.deltaSignatureType;
 
     if (frame.thinking.length > 0) this.#thinking.push(frame.thinking);
 
@@ -675,6 +698,8 @@ export class DevinAggregator {
       if (this.#signature.length > 0) {
         thought["signature"] = signature;
         thought["thought_signature"] = signature;
+
+        if (this.#signatureType !== "") thought["signature_type"] = this.#signatureType;
       }
 
       steps.push(thought);

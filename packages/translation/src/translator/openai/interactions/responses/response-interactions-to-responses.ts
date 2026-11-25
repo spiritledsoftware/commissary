@@ -48,8 +48,8 @@ import {
   interactionsContentPartToResponses,
   interactionsContentTexts,
   interactionsFunctionCallToResponses,
-  interactionsReasoningEncryptedContent,
   interactionsThoughtSignature,
+  interactionsTypedThoughtSignature,
   isAntigravityModel,
   jsonStringValue,
   parseJson,
@@ -709,7 +709,8 @@ const reasoningItem = (index: number, st: State): JsonObject => {
     summary: [],
   };
 
-  const signature = interactionsReasoningEncryptedContent(st.reasoningEncrypted.get(index) ?? "");
+  // Stored signatures were validated when they arrived.
+  const signature = st.reasoningEncrypted.get(index) ?? "";
 
   if (signature !== "") item.encrypted_content = signature;
   item.summary = [
@@ -1004,9 +1005,7 @@ const stepStart = (root: Json, st: State): string[] => {
     }
 
     case "thought": {
-      const signature = interactionsReasoningEncryptedContent(
-        st.reasoningEncrypted.get(index) ?? "",
-      );
+      const signature = st.reasoningEncrypted.get(index) ?? "";
 
       const added: JsonObject = {
         type: "response.output_item.added",
@@ -1115,7 +1114,7 @@ const stepDelta = (root: Json, st: State): string[] => {
     }
 
     case "thought_signature": {
-      const signature = interactionsReasoningEncryptedContent(getStr(delta, "signature"));
+      const signature = interactionsTypedThoughtSignature(delta);
 
       if (signature !== "") st.reasoningEncrypted.set(index, signature);
 

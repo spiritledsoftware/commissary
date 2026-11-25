@@ -215,6 +215,8 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
         Formats.Interactions,
         { format: from, model: request.model, stream, body: payload },
         thinking.summary,
+        // Reasoning only Devin can verify goes back upstream on this route alone.
+        { devinReasoningReplay: true },
       );
 
       if (translated.error !== undefined) {

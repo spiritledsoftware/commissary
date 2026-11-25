@@ -16,6 +16,7 @@ import {
   qualifyResponsesNamespaceToolName,
   unwrapResponsesCustomToolInput,
 } from "../../../common/responses-tools.ts";
+import { isDevinOpenAIReasoningSignature } from "../../../../signature/gpt.ts";
 import { isRecognizedReasoningSignature } from "../../../../signature/grok.ts";
 import { firstNonEmpty, jsonStringValue } from "../chat-completions/shared.ts";
 
@@ -282,11 +283,34 @@ export const responsesCustomToolCallToInteractions = (
   return out;
 };
 
+/**
+ * `interactionsTypedThoughtSignature`: a `signature` typed `openai` that is Devin's list of GPT reasoning items is kept
+ * verbatim; any other signature must be a recognised reasoning signature.
+ */
+export const interactionsTypedThoughtSignature = (step: Json | undefined): string => {
+  const raw = get(step, "signature");
+
+  if (
+    typeof raw === "string" &&
+    getStr(step, "signature_type") === "openai" &&
+    isDevinOpenAIReasoningSignature(raw)
+  ) {
+    return raw;
+  }
+
+  return interactionsReasoningEncryptedContent(getStr(step, "signature"));
+};
+
 /** `interactionsThoughtSignature`: the first recognised reasoning signature of a thought step. */
 export const interactionsThoughtSignature = (step: Json): string => {
+  const encrypted = interactionsReasoningEncryptedContent(getStr(step, "encrypted_content"));
+
+  if (encrypted !== "") return encrypted;
+  const typed = interactionsTypedThoughtSignature(step);
+
+  if (typed !== "") return typed;
+
   for (const path of [
-    "encrypted_content",
-    "signature",
     "thought_signature",
     "thoughtSignature",
     "extra_content.google.thought_signature",

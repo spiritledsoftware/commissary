@@ -22,6 +22,7 @@ import {
   bytesToBinaryString,
   detectSignatureProvider,
   GEMINI_CODEX_CARRIER_MAGIC,
+  isDevinOpenAIReasoningSignature,
 } from "@commissary/translation/signature";
 import { sanitizeDevinToolDescription, UserRun } from "@commissary/translation";
 import { uuidV5Oid } from "../helps/uuid.ts";
@@ -796,16 +797,28 @@ export const parseInteractionsPayload = (
         case "thought": {
           const text = extractStepText(step);
 
-          const signature = parseSignatureBytes(
-            firstNonEmpty(
-              asString(get(step, "signature")),
-              asString(get(step, "thought_signature")),
-            ),
+          const rawSignature = firstNonEmpty(
+            asString(get(step, "signature")),
+            asString(get(step, "thought_signature")),
           );
+
+          // A typed list of GPT reasoning items goes back verbatim, as its own assistant turn when the previous one
+          // already carries a signature.
+          const openAI =
+            asString(get(step, "signature_type")) === "openai" &&
+            isDevinOpenAIReasoningSignature(rawSignature);
+
+          const signature: SignatureBytes = openAI
+            ? { bytes: utf8.encode(rawSignature), type: "openai" }
+            : parseSignatureBytes(rawSignature);
 
           const previous = last();
 
-          if (previous !== undefined && previous.source === 2) {
+          if (
+            previous !== undefined &&
+            previous.source === 2 &&
+            !(openAI && previous.signature.length > 0)
+          ) {
             previous.thinking = previous.thinking !== "" ? `${previous.thinking}\n\n${text}` : text;
 
             if (signature.bytes.length > 0 && previous.signature.length === 0) {

@@ -69,6 +69,12 @@ export interface TranslateRequestOptions {
    * the session's cache before translating; absent means no lookup.
    */
   readonly webSearchResults?: ReadonlyMap<string, Json>;
+  /**
+   * Responses -> Interactions: replay the reasoning items only Devin can verify (typed GPT reasoning lists and Gemini
+   * bare-Tink signatures) as thought steps. The Devin executor sets it, even for a model without a `devin/` prefix (Go
+   * `DevinReasoningReplayKey`).
+   */
+  readonly devinReasoningReplay?: boolean;
 }
 
 /**
