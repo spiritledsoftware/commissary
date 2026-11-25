@@ -12,13 +12,14 @@ import { Effect, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import {
   asString,
+  get,
   isJsonArray,
   isJsonObject,
   type Json,
   type JsonObject,
   tryParseJson,
 } from "@commissary/json";
-import { CurrentOrg, type OrgKv } from "@commissary/core";
+import { CurrentOrg, type OrgKv, sha256Hex } from "@commissary/core";
 import { deploymentKvOf, orgKvOf } from "../../kv.ts";
 import { controlPlaneOf } from "@commissary/state";
 import {
@@ -56,6 +57,11 @@ export interface FailureState {
 /** The stored record: last good entitlements plus failure bookkeeping. */
 export interface ModelsRecord {
   readonly hints?: AntigravityModelHints;
+  /**
+   * The catalog scope of the credential the hints were probed with (`antigravityCatalogScope`): the executor uses the
+   * enums and thinking groups only while the credential still has it. Absent on records stored before it existed.
+   */
+  readonly scope?: string;
   readonly fetchedAt?: number;
   readonly failure?: FailureState;
 }
@@ -64,30 +70,111 @@ export type ProbeOutcome =
   | { readonly status: "success"; readonly hints: AntigravityModelHints }
   | { readonly status: "auth_error" | "transient" };
 
+/** `antigravityMaxModelIDBytes`: longer model ids, enums and group members are ignored. */
+export const MAX_MODEL_ID_BYTES = 256;
+
+const utf8Length = (value: string): number => new TextEncoder().encode(value).length;
+
+/** `antigravitycatalog.ValidThinkingSuffix`: ASCII alphanumeric segments joined by single hyphens. */
+export const validThinkingSuffix = (suffix: string): boolean =>
+  /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(suffix);
+
+/** `parseAntigravityThinkingGroups`: each group's levels whose `<group>-<level>` member is in `models`. */
+const parseThinkingGroups = (
+  groupedModels: Json | undefined,
+  models: JsonObject,
+): Record<string, Record<string, number>> | undefined => {
+  if (!isJsonObject(groupedModels) || Object.keys(models).length === 0) return undefined;
+  let groups: Record<string, Record<string, number>> | undefined;
+
+  for (const [group, entry] of Object.entries(groupedModels)) {
+    if (group === "" || utf8Length(group) >= MAX_MODEL_ID_BYTES || !isJsonObject(entry)) continue;
+    const declared = entry["supportedThinkingLevels"];
+
+    if (!isJsonArray(declared)) continue;
+    let levels: Record<string, number> | undefined;
+
+    for (const item of declared) {
+      if (!isJsonObject(item)) continue;
+      const suffix = item["thinkingSuffix"];
+
+      if (
+        typeof suffix !== "string" ||
+        utf8Length(group) + 1 + utf8Length(suffix) > MAX_MODEL_ID_BYTES ||
+        !validThinkingSuffix(suffix)
+      )
+        continue;
+      const level = suffix.toLowerCase();
+      const member = models[`${group}-${level}`];
+
+      if (!isJsonObject(member)) continue;
+      // Zero records a declared member that is not eligible as a switch target.
+      const limit = member["maxOutputTokens"];
+      levels ??= {};
+      levels[level] =
+        typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : 0;
+    }
+
+    if (levels !== undefined) {
+      groups ??= {};
+      groups[group] = levels;
+    }
+  }
+
+  return groups;
+};
+
+/** `antigravityThinkingWebSearch`: grouped members listed (by exact id) in `webSearchModelIds`. */
+const thinkingWebSearchOf = (
+  groups: Readonly<Record<string, Readonly<Record<string, number>>>> | undefined,
+  declared: ReadonlyArray<string>,
+): string[] => {
+  if (groups === undefined || declared.length === 0) return [];
+  const listed = new Set(declared);
+
+  return Object.entries(groups).flatMap(([group, levels]) =>
+    Object.keys(levels)
+      .map((level) => `${group}-${level}`)
+      .filter((id) => listed.has(id)),
+  );
+};
+
 /** `parseAntigravityModelCapabilityHints`. */
 export const parseModelHints = (body: string): AntigravityModelHints | undefined => {
   const root = tryParseJson(body);
 
   if (!isJsonObject(root)) return undefined;
+  const rawWebSearch = root["webSearchModelIds"];
 
-  const ids = (list: Json | undefined): string[] =>
-    isJsonArray(list)
-      ? list.map((id) => normalizeFetchedModelId(asString(id))).filter((id) => id !== "")
-      : [];
+  const rawIds = isJsonArray(rawWebSearch)
+    ? rawWebSearch.flatMap((id) => (typeof id === "string" ? [id] : []))
+    : [];
 
+  const webSearchModelIds = rawIds.map(normalizeFetchedModelId).filter((id) => id !== "");
   const models = root["models"];
-  const webSearchModelIds = ids(root["webSearchModelIds"]);
 
-  if (isJsonObject(models)) {
-    return {
-      modelIds: Object.keys(models)
-        .map(normalizeFetchedModelId)
-        .filter((id) => id !== ""),
-      webSearchModelIds,
-    };
+  if (!isJsonObject(models)) return { webSearchModelIds };
+  const modelEnums: Record<string, string> = {};
+
+  for (const [id, entry] of Object.entries(models)) {
+    if (id === "" || utf8Length(id) > MAX_MODEL_ID_BYTES) continue;
+    const value = asString(get(entry, "model"));
+
+    if (value.trim() !== "" && utf8Length(value) <= MAX_MODEL_ID_BYTES) modelEnums[id] = value;
   }
 
-  return { webSearchModelIds };
+  const thinkingGroups = parseThinkingGroups(root["groupedModels"], models);
+  const thinkingWebSearch = thinkingWebSearchOf(thinkingGroups, rawIds);
+
+  return {
+    modelIds: Object.keys(models)
+      .map(normalizeFetchedModelId)
+      .filter((id) => id !== ""),
+    webSearchModelIds,
+    ...(Object.keys(modelEnums).length > 0 ? { modelEnums } : {}),
+    ...(thinkingGroups === undefined ? {} : { thinkingGroups }),
+    ...(thinkingWebSearch.length > 0 ? { thinkingWebSearch } : {}),
+  };
 };
 
 /** `antigravityModelBaseURLs` (first only): `base_urls`, then `base_url`, else daily. */
@@ -162,7 +249,31 @@ export const nextFailure = (
   return { count, lastFailureAt: now, nextRetryAt: now + Math.floor(half + random * half) };
 };
 
-const readRecord = async (kv: OrgKv, credentialId: string): Promise<ModelsRecord | undefined> => {
+/**
+ * `antigravityLocalModelEnumScope`: the grant (refresh token, else access token), project and probe endpoint the
+ * catalog belongs to. Another account, project or endpoint under the same credential id never reads its enums.
+ */
+export const antigravityCatalogScope = (
+  attributes: Readonly<Record<string, string>>,
+  metadata: JsonObject,
+): string => {
+  const text = (key: string): string =>
+    typeof metadata[key] === "string" ? metadata[key].trim() : "";
+
+  const grant = text("refresh_token") || text("access_token");
+
+  if (grant === "") return "";
+
+  return sha256Hex(
+    JSON.stringify([grant, text("project_id"), modelsBaseUrl(attributes, metadata)]),
+  );
+};
+
+/** The stored record of one credential (best effort). */
+export const readModelsRecord = async (
+  kv: OrgKv,
+  credentialId: string,
+): Promise<ModelsRecord | undefined> => {
   try {
     const raw = await kv.get(antigravityModelsName(credentialId));
 
@@ -183,7 +294,7 @@ export const loadAntigravityHints = async (
   if (kv === undefined) return out;
   await Promise.all(
     credentialIds.map(async (id) => {
-      const record = await readRecord(kv, id);
+      const record = await readModelsRecord(kv, id);
 
       if (record?.hints !== undefined) out.set(id, record.hints);
     }),
@@ -230,7 +341,7 @@ export const refreshAntigravityModels = Effect.gen(function* () {
 
   for (const source of sources) {
     if (source.provider.trim().toLowerCase() !== "antigravity" || source.disabled) continue;
-    const previous = yield* Effect.promise(() => readRecord(kv, source.id));
+    const previous = yield* Effect.promise(() => readModelsRecord(kv, source.id));
 
     if (previous?.failure !== undefined && previous.failure.nextRetryAt > now) {
       results.push({ id: source.id, status: "backoff" });
@@ -267,12 +378,15 @@ export const refreshAntigravityModels = Effect.gen(function* () {
       userAgent: antigravityUserAgent(version),
     });
 
+    const scope = antigravityCatalogScope(credential.attributes, credential.metadata);
+
     const record: ModelsRecord =
       outcome.status === "success"
-        ? { hints: outcome.hints, fetchedAt: now }
+        ? { hints: outcome.hints, fetchedAt: now, ...(scope === "" ? {} : { scope }) }
         : {
             ...(previous?.hints === undefined ? {} : { hints: previous.hints }),
             ...(previous?.fetchedAt === undefined ? {} : { fetchedAt: previous.fetchedAt }),
+            ...(previous?.scope === undefined ? {} : { scope: previous.scope }),
             failure: nextFailure(previous?.failure, now, Math.random()),
           };
 

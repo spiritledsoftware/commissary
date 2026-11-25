@@ -63,6 +63,7 @@ import {
 import {
   thinkingTextsNeedingCachedSignatures,
   builtinTranslators,
+  getModelInfoLookup,
   withModelInfoLookup,
   makeTranslationState,
   type RequestEnvelope,
@@ -78,7 +79,18 @@ import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
-import { parseSuffix } from "@commissary/translation/thinking";
+import {
+  type ModelInfoLookup,
+  parseSuffix,
+  requestedAntigravityThinkingLevel,
+} from "@commissary/translation/thinking";
+import { type ModelsRecord, readModelsRecord } from "./models.ts";
+import {
+  type AntigravityModelSelection,
+  antigravityExcludedModels,
+  plainSelection,
+  selectAntigravityModel,
+} from "./model-selection.ts";
 import { Thinking } from "../thinking.ts";
 import {
   type ExecutionContext,
@@ -127,6 +139,7 @@ import {
   configuredUserAgent,
   geminiToAntigravity,
   requestBaseUrl,
+  capMaxOutputTokens,
   constrainRequestPayload,
   schemaSanitizationFlags,
   needsSchemaSanitization,
@@ -186,6 +199,12 @@ const coolingDisabled = (context: ExecutionContext): boolean => {
 };
 
 /** Models served through a streaming upstream request and aggregated for non-stream callers. */
+/** The credential's stored model catalog, when KV is bound (best effort: an unreadable record selects nothing). */
+const readCatalog = (kv: OrgKv | undefined, credentialId: string) =>
+  kv === undefined
+    ? Effect.succeed(undefined)
+    : Effect.promise(() => readModelsRecord(kv, credentialId));
+
 export const aggregatesStream = (baseModel: string): boolean => {
   // Model families are matched case-insensitively (CLIProxyAPI 18a03e40).
   const lower = baseModel.toLowerCase();
@@ -224,6 +243,8 @@ interface Attempt {
   readonly signatures: MemorySignatureCache;
   /** The credential's scope within the org's signature cache (`signature-scope.ts`); `""` recovers nothing. */
   readonly signatureScope: string;
+  /** The credential's stored `fetchAvailableModels` catalog (model enums, thinking groups), when there is one. */
+  readonly catalog: ModelsRecord | undefined;
   /** The request's org: the state, signatures and credential belong to it. */
   readonly org: OrgId;
   readonly waitUntil: ((promise: Promise<unknown>) => void) | undefined;
@@ -310,6 +331,7 @@ export const makeAntigravityExecutor = (
       deploymentKv: deploymentKvIfBound(env),
       signatures: orgSignatureCache(org),
       signatureScope: antigravitySignatureScope(context.credential.id, context.credential.metadata),
+      catalog: yield* readCatalog(orgKvIfBound(env, org), context.credential.id),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
       accessToken,
@@ -321,15 +343,102 @@ export const makeAntigravityExecutor = (
     bypassStrictMode: config.oauth.providers.antigravity["signature-bypass-strict"] ?? false,
   });
 
-  /** Runs one synchronous translator call with the attempt's signature cache, settings and model lookup. */
-  const translating = <T>(attempt: Attempt, run: () => T): T =>
+  /**
+   * Runs one synchronous translator call with the attempt's signature cache, settings and model lookup. A thinking
+   * variant the catalog selected answers the lookup with its own web-search capability (Go `TranslationModelInfo`).
+   */
+  const translating = <T>(
+    attempt: Attempt,
+    run: () => T,
+    selection?: AntigravityModelSelection,
+  ): T =>
     withSignatureContext(
       {
         cache: scopedSignatureCache(attempt.signatures, attempt.signatureScope),
         settings: signatureSettings(attempt.context.config),
       },
-      () => withModelInfoLookup(attempt.request.modelLookup, run),
+      () => withModelInfoLookup(selectionLookup(attempt, selection), run),
     );
+
+  const selectionLookup = (
+    attempt: Attempt,
+    selection: AntigravityModelSelection | undefined,
+  ): ModelInfoLookup | undefined => {
+    const base = attempt.request.modelLookup;
+
+    if (selection === undefined || selection.maxOutputTokens === 0) return base;
+    const fallback = base ?? getModelInfoLookup();
+
+    return (id, provider) =>
+      id === selection.id
+        ? { ...(fallback(id, provider) ?? { id }), supportsWebSearch: selection.webSearch }
+        : fallback(id, provider);
+  };
+
+  /**
+   * `SelectAntigravityRequestModel`: the caller's explicit thinking level, read before translation or validation, picks
+   * the credential's grouped variant; a token count without a level keeps the requested model.
+   */
+  const selectModel = (
+    attempt: Attempt,
+    baseModel: string,
+    countTokens: boolean,
+  ): AntigravityModelSelection => {
+    const { context, request, options } = attempt;
+
+    const level = requestedAntigravityThinkingLevel(
+      options.originalRequest ?? request.payload,
+      options.sourceFormat,
+      request.model,
+    );
+
+    if (level === "" && countTokens) return plainSelection(baseModel);
+
+    const selection = selectAntigravityModel(
+      attempt.catalog,
+      context.credential,
+      baseModel,
+      level,
+      antigravityExcludedModels(context.credential, context.config),
+    );
+
+    // Usage is reported against the model actually scheduled (Go `SetAttemptModel`).
+    if (selection.id !== baseModel) context.usage.setAttemptModel(selection.id);
+
+    return selection;
+  };
+
+  /**
+   * `ApplyAntigravityRequestThinkingDoc`: a selected variant gets its own level through the thinking pipeline (the
+   * variant's catalog lists only that level); anything else goes through the requested model's thinking rules.
+   */
+  const applyThinking = (
+    thinking: Thinking["Service"],
+    attempt: Attempt,
+    selection: AntigravityModelSelection,
+    body: Json,
+    source: Json,
+    configurationUpdatesChanged: boolean,
+  ) => {
+    const { request, options } = attempt;
+    const selected = selection.maxOutputTokens > 0;
+
+    if (selected) del(body, "request.generationConfig.thinking_config");
+
+    return thinking.apply({
+      body,
+      model: selected ? `${selection.id}(${selection.level})` : request.model,
+      from: options.sourceFormat,
+      to,
+      provider: ANTIGRAVITY_IDENTIFIER,
+      source,
+      configurationUpdatesChanged,
+      modelInfo: selected
+        ? { id: selection.id, thinking: { levels: [selection.level] } }
+        : request.modelInfo,
+      lookupModelInfo: request.modelLookup,
+    });
+  };
 
   /** Loads the credential's signatures for `texts` from KV; an attempt without a scope loads none. */
   const prefetchScopedSignatures = (
@@ -455,44 +564,49 @@ export const makeAntigravityExecutor = (
     attempt: Attempt,
     mode: "generate" | "stream" | "aggregate",
     agent: string,
+    selection: AntigravityModelSelection,
   ) {
     const { context, request, options } = attempt;
     const thinking = yield* Thinking;
-    const baseModel = parseSuffix(request.model).modelName;
+    // The upstream model: the requested one, or the thinking variant the credential's catalog selected.
+    const model = selection.id;
     const from = options.sourceFormat;
     const stream = mode === "stream";
     const upstreamStream = mode !== "generate";
     // Claude-format clients carry thinking blocks whose signatures are validated against the upstream's rules.
     const source = structuredClone(options.originalRequest ?? request.payload);
-    const original = validateRequestSignatures(baseModel, from, source);
+    const original = validateRequestSignatures(model, from, source);
 
     const texts =
       from === Formats.Claude
-        ? translating(attempt, () => thinkingTextsNeedingCachedSignatures(baseModel, original))
+        ? translating(attempt, () => thinkingTextsNeedingCachedSignatures(model, original))
         : [];
 
     const { kv } = attempt;
 
     if (texts.length > 0 && kv !== undefined) {
-      yield* Effect.promise(() => prefetchScopedSignatures(attempt, kv, baseModel, texts));
+      yield* Effect.promise(() => prefetchScopedSignatures(attempt, kv, model, texts));
     }
 
     const translateWith = (body: Json, streamFlag: boolean) =>
-      translating(attempt, () =>
-        translateRequestForExecutor(
-          registry,
-          from,
-          to,
-          {
-            format: from,
-            model: baseModel,
-            stream: streamFlag,
-            body: structuredClone(body),
-            ...(request.modelInfo === undefined ? {} : { modelInfo: request.modelInfo }),
-          },
-          thinking.summary,
-          { headers: options.headers, config: context.config },
-        ),
+      translating(
+        attempt,
+        () =>
+          translateRequestForExecutor(
+            registry,
+            from,
+            to,
+            {
+              format: from,
+              model,
+              stream: streamFlag,
+              body: structuredClone(body),
+              ...(request.modelInfo === undefined ? {} : { modelInfo: request.modelInfo }),
+            },
+            thinking.summary,
+            { headers: options.headers, config: context.config },
+          ),
+        selection,
       );
 
     const translated = translateWith(original, upstreamStream);
@@ -501,20 +615,17 @@ export const makeAntigravityExecutor = (
     // Baseline of the payload rules: the translation before thinking and shaping.
     const originalTranslatedBody = structuredClone(translated.body);
 
-    let body = yield* thinking.apply({
-      body: translated.body,
-      model: request.model,
-      from,
-      to,
-      provider: ANTIGRAVITY_IDENTIFIER,
-      source: original,
-      configurationUpdatesChanged: translated.configurationUpdatesChanged === true,
-      modelInfo: request.modelInfo,
-      lookupModelInfo: request.modelLookup,
-    });
+    let body = yield* applyThinking(
+      thinking,
+      attempt,
+      selection,
+      translated.body,
+      original,
+      translated.configurationUpdatesChanged === true,
+    );
 
     body = applyAntigravitySensitiveWords(body, context.config);
-    body = sanitizeGeminiRequestSignatures(baseModel, body);
+    body = sanitizeGeminiRequestSignatures(model, body);
 
     if (stream) del(body, "request.stream");
     const effort = get(body, "request.generationConfig.thinkingConfig.thinkingLevel");
@@ -525,13 +636,13 @@ export const makeAntigravityExecutor = (
 
     if (useCredits) injectEnabledCreditTypes(body);
     // Gemini reasoning replay (signatures and native function calls of earlier turns), then the boundary turns.
-    const replay = yield* prepareReplayPayload(ledger, baseModel, request, options, body);
-    body = ensureBoundaryUserContent(baseModel, replay.payload);
+    const replay = yield* prepareReplayPayload(ledger, model, request, options, body);
+    body = ensureBoundaryUserContent(model, replay.payload);
     const accumulator = makeAccumulator(replay.scope, body);
 
     const credentialId = context.credential.id;
 
-    const envelope = geminiToAntigravity(baseModel, body, attempt.project, {
+    const envelope = geminiToAntigravity(model, body, attempt.project, {
       credentialId,
       org: attempt.org,
       sessionId: antigravitySessionIdForCredential(credentialId, {
@@ -539,12 +650,13 @@ export const makeAntigravityExecutor = (
         execution: options.metadata.websocket?.sessionId,
         derived: options.metadata.derivedSessionId,
       }),
+      ...(selection.enum === "" ? {} : { modelEnum: selection.enum }),
       now: yield* Clock.currentTimeMillis,
     });
 
     body = envelope.payload;
     const translatedForResponse = structuredClone(body);
-    body = constrainRequestPayload(baseModel, body);
+    body = constrainRequestPayload(model, body, selection.maxOutputTokens);
 
     const alt = options.alt === "responses/compact" ? "" : options.alt;
     const base = requestBaseUrl(context.credential.attributes, context.credential.metadata);
@@ -561,7 +673,7 @@ export const makeAntigravityExecutor = (
       context.config,
       ANTIGRAVITY_IDENTIFIER,
       {
-        model: baseModel,
+        model,
         requestedModel,
         protocol: to,
         fromProtocol: from,
@@ -587,7 +699,7 @@ export const makeAntigravityExecutor = (
       headers: headersFor(attempt, agent),
       body: finalBody,
       wire: serializeAntigravityPayload(finalBody, isAgent),
-      baseModel,
+      baseModel: model,
       translated: translatedForResponse,
       useCredits,
       replayScope: replay.scope,
@@ -744,11 +856,21 @@ export const makeAntigravityExecutor = (
   ) {
     const attempt = yield* resolve(context, request, options);
     const baseModel = parseSuffix(request.model).modelName;
-    yield* checkShortCooldown(attempt, baseModel);
+    const selection = selectModel(attempt, baseModel, false);
+
+    yield* checkShortCooldown(attempt, selection.id);
     const agent = yield* userAgent(attempt);
     yield* maybeRefreshCredits(attempt, agent);
+
     const aggregate = aggregatesStream(baseModel);
-    const prepared = yield* prepare(attempt, aggregate ? "aggregate" : "generate", agent);
+
+    const prepared = yield* prepare(
+      attempt,
+      aggregate ? "aggregate" : "generate",
+      agent,
+      selection,
+    );
+
     const response = yield* send(attempt, prepared);
     const responseFormat = responseFormatOf(options);
 
@@ -964,11 +1086,11 @@ export const makeAntigravityExecutor = (
     options: ExecutorOptions,
   ) {
     const attempt = yield* resolve(context, request, options);
-    const baseModel = parseSuffix(request.model).modelName;
-    yield* checkShortCooldown(attempt, baseModel);
+    const selection = selectModel(attempt, parseSuffix(request.model).modelName, false);
+    yield* checkShortCooldown(attempt, selection.id);
     const agent = yield* userAgent(attempt);
     yield* maybeRefreshCredits(attempt, agent);
-    const prepared = yield* prepare(attempt, "stream", agent);
+    const prepared = yield* prepare(attempt, "stream", agent, selection);
     const response = yield* send(attempt, prepared);
 
     const httpClient = yield* HttpClient.HttpClient;
@@ -1144,77 +1266,90 @@ export const makeAntigravityExecutor = (
     const attempt = yield* resolve(context, request, options);
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
+    const selection = selectModel(attempt, baseModel, true);
+    const model = selection.id;
     const from = options.sourceFormat;
-    yield* checkShortCooldown(attempt, baseModel, true);
+    yield* checkShortCooldown(attempt, model, true);
     const agent = yield* userAgent(attempt);
 
     const original = validateRequestSignatures(
-      baseModel,
+      model,
       from,
       structuredClone(options.originalRequest ?? request.payload),
     );
 
     const texts =
       from === Formats.Claude
-        ? translating(attempt, () => thinkingTextsNeedingCachedSignatures(baseModel, original))
+        ? translating(attempt, () => thinkingTextsNeedingCachedSignatures(model, original))
         : [];
 
     const { kv } = attempt;
 
     if (texts.length > 0 && kv !== undefined) {
-      yield* Effect.promise(() => prefetchScopedSignatures(attempt, kv, baseModel, texts));
+      yield* Effect.promise(() => prefetchScopedSignatures(attempt, kv, model, texts));
     }
 
-    const translated = translating(attempt, () =>
-      translateRequestForExecutor(
-        registry,
-        from,
-        to,
-        {
-          format: from,
-          model: baseModel,
-          stream: false,
-          body: structuredClone(original),
-          ...(request.modelInfo === undefined ? {} : { modelInfo: request.modelInfo }),
-        },
-        thinking.summary,
-        { headers: options.headers, config: context.config },
-      ),
+    const translated = translating(
+      attempt,
+      () =>
+        translateRequestForExecutor(
+          registry,
+          from,
+          to,
+          {
+            format: from,
+            model,
+            stream: false,
+            body: structuredClone(original),
+            ...(request.modelInfo === undefined ? {} : { modelInfo: request.modelInfo }),
+          },
+          thinking.summary,
+          { headers: options.headers, config: context.config },
+        ),
+      selection,
     );
 
     if (translated.error !== undefined) return yield* requestError(translated);
     const originalTranslated = structuredClone(translated.body);
 
-    let body = yield* thinking.apply({
-      body: translated.body,
-      model: request.model,
-      from,
-      to,
-      provider: ANTIGRAVITY_IDENTIFIER,
-      source: original,
-      configurationUpdatesChanged: translated.configurationUpdatesChanged === true,
-      modelInfo: request.modelInfo,
-      lookupModelInfo: request.modelLookup,
-    });
+    let body = yield* applyThinking(
+      thinking,
+      attempt,
+      selection,
+      translated.body,
+      original,
+      translated.configurationUpdatesChanged === true,
+    );
 
     body = applyAntigravitySensitiveWords(body, context.config);
     // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3), in the native wire format (38067a29).
-    prepareClaudeStructuredOutput(baseModel, body);
+    prepareClaudeStructuredOutput(model, body);
     normalizeAntigravityRequest(body);
-    body = sanitizeGeminiRequestSignatures(baseModel, body);
+    body = sanitizeGeminiRequestSignatures(model, body);
     // The reasoning replay of the counted request: the ledger is peeked, never reserved or invalidated (Go
     // `prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc`).
-    body = (yield* prepareReplayPayload(ledger, baseModel, request, options, body, {
+    body = (yield* prepareReplayPayload(ledger, model, request, options, body, {
       reserve: false,
     })).payload;
-    body = ensureLeadingUserContent(baseModel, body);
+    body = ensureLeadingUserContent(model, body);
+
     // `countTokens` needs the tokenizer model once the top-level `model` is gone (CLIProxyAPI fb989e5f).
-    const requestModel = get(body, "request.model");
+    // A selected variant is counted as itself, under its output cap (CLIProxyAPI 2f86992c, 14a95b19).
+    if (selection.maxOutputTokens > 0) {
+      set(body, "request.model", countTokensModel(model));
+      capMaxOutputTokens(
+        body,
+        selection.maxOutputTokens,
+        schemaSanitizationFlags(model).isClaudeModel,
+      );
+    } else {
+      const requestModel = get(body, "request.model");
 
-    if (typeof requestModel !== "string" || requestModel.trim() === "") {
-      const model = countTokensModel(baseModel);
+      if (typeof requestModel !== "string" || requestModel.trim() === "") {
+        const tokenizer = countTokensModel(baseModel);
 
-      if (model !== "") set(body, "request.model", model);
+        if (tokenizer !== "") set(body, "request.model", tokenizer);
+      }
     }
 
     for (const path of [
@@ -1230,8 +1365,7 @@ export const makeAntigravityExecutor = (
     }
 
     // The schemas are cleaned as for a generate request (CLIProxyAPI 94b164bf).
-    if (needsSchemaSanitization(body))
-      sanitizeRequestSchemas(body, schemaSanitizationFlags(baseModel));
+    if (needsSchemaSanitization(body)) sanitizeRequestSchemas(body, schemaSanitizationFlags(model));
 
     const alt = options.alt;
     const base = requestBaseUrl(context.credential.attributes, context.credential.metadata);

@@ -43,11 +43,18 @@ import {
 import { normalizeFunctionResponseRoles } from "../src/executor/antigravity/content.ts";
 import { usesReasoningReplay } from "../src/executor/helps/reasoning-replay.ts";
 import {
+  antigravityCatalogScope,
   loadAntigravityHints,
+  type ModelsRecord,
   nextFailure,
   parseModelHints,
   refreshAntigravityModels,
 } from "../src/executor/antigravity/models.ts";
+import {
+  antigravityExcludedModels,
+  selectAntigravityModel,
+} from "../src/executor/antigravity/model-selection.ts";
+import { decodeConfig } from "../src/config/codec.ts";
 import {
   convertStreamToNonStream,
   inBandErrorStatus,
@@ -1531,5 +1538,153 @@ describe("antigravity signature scope", () => {
     const scopeA = antigravitySignatureScope("cred-a", grant);
     await prefetchSignatures(fresh, store, "claude-x", [scopedSignatureText(scopeA, "thought")]);
     expect(scopedSignatureCache(fresh, scopeA).get("claude-x", "thought")).toBe(LONG_SIGNATURE);
+  });
+});
+
+describe("Antigravity thinking groups (CLIProxyAPI 2f86992c, 14a95b19, b8e3bc66)", () => {
+  it("parses model enums, thinking groups and their web search members", () => {
+    expect(
+      parseModelHints(
+        JSON.stringify({
+          models: {
+            "gemini-x-low": { model: "M1", maxOutputTokens: 65536 },
+            "gemini-x-high": { model: "M2", maxOutputTokens: 0 },
+            "gemini-x-medium": { model: " " },
+            other: {},
+          },
+          groupedModels: {
+            "gemini-x": {
+              supportedThinkingLevels: [
+                { thinkingSuffix: "LOW" },
+                { thinkingSuffix: "high" },
+                { thinkingSuffix: "medium" },
+                { thinkingSuffix: "missing" },
+                { thinkingSuffix: "bad suffix" },
+              ],
+            },
+            lonely: { supportedThinkingLevels: [{ thinkingSuffix: "low" }] },
+          },
+          webSearchModelIds: ["gemini-x-low", "other"],
+        }),
+      ),
+    ).toEqual({
+      modelIds: ["gemini-x-low", "gemini-x-high", "gemini-x-medium", "other"],
+      webSearchModelIds: ["gemini-x-low", "other"],
+      modelEnums: { "gemini-x-low": "M1", "gemini-x-high": "M2" },
+      thinkingGroups: { "gemini-x": { low: 65536, high: 0, medium: 0 } },
+      thinkingWebSearch: ["gemini-x-low"],
+    });
+  });
+
+  const credential = (attributes: Record<string, string> = {}): CredentialSnapshot => ({
+    id: "ag-1",
+    provider: "antigravity",
+    kind: "oauth",
+    attributes,
+    metadata: { refresh_token: "r", project_id: "p" },
+  });
+
+  const high = "gemini-3.8-flash-high";
+  const low = "gemini-3.8-flash-low";
+
+  const record = (
+    enums: Record<string, string>,
+    groups?: Record<string, Record<string, number>>,
+    // `null`: a record stored before the scope existed.
+    scope: string | null = antigravityCatalogScope({}, { refresh_token: "r", project_id: "p" }),
+  ): ModelsRecord => ({
+    hints: {
+      webSearchModelIds: [],
+      modelEnums: enums,
+      ...(groups === undefined ? {} : { thinkingGroups: groups }),
+      thinkingWebSearch: [low],
+    },
+    ...(scope === null ? {} : { scope }),
+  });
+
+  const enums = {
+    [high]: "M321",
+    [low]: "M320",
+    "gemini-3.8-flash-tiered": "M322",
+    "gemini-3.8-flash-very-high": "M323",
+    "gemini-3.8-flash-medium": "M324",
+  };
+
+  const groups = {
+    "gemini-3.8-flash": { low: 65536, high: 32768, "very-high": 81920, medium: 0 },
+    "gemini-3.8-flash-very": { high: 0 },
+  };
+
+  // Go `TestAntigravityThinkingGroupsGenerate`.
+  it.each([
+    ["variant", high, "LOW", low, "M320", 65536],
+    ["group", "gemini-3.8-flash", "LOW", low, "M320", 65536],
+    ["same variant", low, "low", low, "M320", 65536],
+    [
+      "more-specific group owns a zero-limit member",
+      "gemini-3.8-flash-very-high",
+      "LOW",
+      "gemini-3.8-flash-very-high",
+      "M323",
+      0,
+    ],
+    ["zero limit is membership", "gemini-3.8-flash-medium", "LOW", low, "M320", 65536],
+    ["declared custom suffix", high, "VERY-HIGH", "gemini-3.8-flash-very-high", "M323", 81920],
+    [
+      "tiered is not a member",
+      "gemini-3.8-flash-tiered",
+      "LOW",
+      "gemini-3.8-flash-tiered",
+      "M322",
+      0,
+    ],
+    ["missing level", high, "MEDIUM", high, "M321", 0],
+    ["no thinking", high, "", high, "M321", 0],
+  ] as const)("%s", (_name, model, level, wantModel, wantEnum, wantMax) => {
+    const selection = selectAntigravityModel(record(enums, groups), credential(), model, level, []);
+
+    expect([selection.id, selection.enum, selection.maxOutputTokens]).toEqual([
+      wantModel,
+      wantEnum,
+      wantMax,
+    ]);
+  });
+
+  it("keeps the requested model without a target enum, groups, or a matching scope", () => {
+    const pick = (stored: ModelsRecord | undefined) =>
+      selectAntigravityModel(stored, credential(), high, "low", []);
+
+    expect(pick(record({ ...enums, [low]: " " }, groups)).id).toBe(high);
+    expect(pick(record({ [high]: "M321" }, groups)).id).toBe(high);
+    expect(pick(record(enums)).maxOutputTokens).toBe(0);
+    expect(pick(record(enums)).enum).toBe("M321");
+    // A record stored before the scope existed, or for another grant, selects nothing.
+    expect(pick(record(enums, groups, null))).toMatchObject({ id: high, enum: "" });
+    expect(pick(record(enums, groups, "other"))).toMatchObject({ id: high, enum: "" });
+    expect(pick(undefined)).toMatchObject({ id: high, enum: "" });
+    expect(pick(record(enums, groups)).webSearch).toBe(true);
+  });
+
+  // Go `TestAntigravityThinkingGroupsReviewExclusions`.
+  it("never switches to an excluded variant", () => {
+    const configWith = (excluded: Record<string, string[]>) =>
+      Effect.runSync(decodeConfig({ oauth: { "excluded-models": excluded } }));
+
+    const config = configWith({ antigravity: [" GEMINI-*-LO* "] });
+    const stored = record(enums, groups);
+
+    const pick = (attributes: Record<string, string>, from = config) =>
+      selectAntigravityModel(
+        stored,
+        credential(attributes),
+        high,
+        "low",
+        antigravityExcludedModels(credential(attributes), from),
+      ).id;
+
+    expect(pick({})).toBe(high);
+    expect(pick({ excluded_models: "another-*" })).toBe(low);
+    expect(pick({ excluded_models: "gemini-*low" }, configWith({}))).toBe(high);
+    expect(pick({}, configWith({}))).toBe(low);
   });
 });

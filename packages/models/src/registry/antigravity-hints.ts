@@ -3,7 +3,9 @@
  *
  * Go source: sdk/cliproxy/antigravity_models.go (`filterAntigravityModels`, `applyAntigravityFetchedModelCapabilities`,
  * `parseAntigravityModelCapabilityHints`). The cron task (`executor/antigravity/models.ts`) stores the probe result in KV;
- * the registry snapshot attaches it to the credential's `ModelSource`.
+ * the registry snapshot attaches it to the credential's `ModelSource`, and the executor reads its model enums and
+ * thinking groups (`executor/antigravity/model-selection.ts`, CLIProxyAPI 2f86992c). Every field but
+ * `webSearchModelIds` is optional, so records stored before a field existed still decode.
  */
 import type { ModelInfo } from "./model-info.ts";
 
@@ -12,6 +14,15 @@ export interface AntigravityModelHints {
   readonly modelIds?: ReadonlyArray<string>;
   /** `webSearchModelIds` (lower-cased): these models get `supportsWebSearch`. */
   readonly webSearchModelIds: ReadonlyArray<string>;
+  /** Exact upstream model id -> its model enum (`models.<id>.model`, Go `modelEnums`; b8e3bc66). */
+  readonly modelEnums?: Readonly<Record<string, string>>;
+  /**
+   * Thinking group -> level -> output limit of the `<group>-<level>` member (`groupedModels`, Go `thinkingGroups`,
+   * 2f86992c). A zero limit records a declared member that is not a switch target.
+   */
+  readonly thinkingGroups?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  /** Exact ids of grouped members that can search the web (Go `thinkingWebSearch`). */
+  readonly thinkingWebSearch?: ReadonlyArray<string>;
 }
 
 /** `normalizeAntigravityFetchedModelID`. */

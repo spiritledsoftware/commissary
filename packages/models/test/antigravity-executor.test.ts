@@ -8,6 +8,13 @@ import {
   scopedSignatureText,
 } from "../src/executor/antigravity/signature-scope.ts";
 import { orgSignatureCache } from "../src/signature/store.ts";
+import { env } from "cloudflare:workers";
+import {
+  antigravityCatalogScope,
+  antigravityModelsName,
+  type ModelsRecord,
+} from "../src/executor/antigravity/models.ts";
+import { orgKvOf } from "../src/kv.ts";
 import { GLOBAL_ORG } from "@commissary/core";
 import type { Json, JsonObject } from "@commissary/json";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
@@ -1099,5 +1106,85 @@ describe("antigravity executor: translated Claude errors", () => {
     expect(text).not.toContain("message_stop");
     // The stream failed with the 502 rather than ending as a success.
     expect(h.records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+  });
+});
+
+// CLIProxyAPI 2f86992c, 14a95b19, b8e3bc66: the credential's fetchAvailableModels catalog routes an explicit thinking
+// level to its grouped variant, names the variant's enum in the labels and caps the output at the variant's limit.
+describe("antigravity executor: thinking groups", () => {
+  const seed = async (owner: typeof cred) => {
+    const stored: ModelsRecord = {
+      hints: {
+        webSearchModelIds: [],
+        modelEnums: { "gemini-3-pro-high": "M_HIGH", "gemini-3-pro-low": "M_LOW" },
+        thinkingGroups: { "gemini-3-pro": { low: 4096, high: 8192 } },
+      },
+      scope: antigravityCatalogScope(owner.attributes, owner.metadata),
+    };
+
+    await orgKvOf(env, GLOBAL_ORG).put(antigravityModelsName(owner.id), JSON.stringify(stored));
+  };
+
+  const owner = credential("antigravity", `antigravity-groups-${crypto.randomUUID()}.json`, {
+    kind: "oauth",
+    metadata: { refresh_token: "1//r", access_token: "ya29.token", project_id: "proj-1" },
+  });
+
+  it("sends the variant of the requested level with its enum and output cap, and reports usage against it", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), { credential: owner });
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/chat/completions",
+      postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low", max_tokens: 50_000 }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-low");
+    expect(sent.request.labels.model_enum).toBe("M_LOW");
+    expect(sent.request.generationConfig.maxOutputTokens).toBe(4096);
+    expect(sent.request.generationConfig.thinkingConfig.thinkingLevel).toBe("LOW");
+    expect(h.records[0]?.model).toBe("gemini-3-pro-low");
+  });
+
+  it("counts tokens as the variant a numeric suffix selects, under its output cap", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+    const h = harness(() => jsonResponse({ totalTokens: 7 }), { credential: owner });
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/messages/count_tokens",
+      postJson({
+        model: "gemini-3-pro-high(1024)",
+        max_tokens: 50_000,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.model).toBe("models/gemini-3-pro-low");
+    expect(sent.request.labels).toBeUndefined();
+    expect(sent.request.generationConfig.maxOutputTokens).toBe(4096);
+  });
+
+  it("keeps the requested model, with its own enum, without a thinking level", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), { credential: owner });
+    afterAll(h.dispose);
+
+    expect((await h.call("/v1/chat/completions", postJson(chat("gemini-3-pro-high")))).status).toBe(
+      200,
+    );
+
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-high");
+    expect(sent.request.labels.model_enum).toBe("M_HIGH");
+    expect(h.records[0]?.model).toBe("gemini-3-pro-high");
   });
 });

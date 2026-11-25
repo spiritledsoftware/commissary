@@ -259,7 +259,8 @@ export const extractSourceThinkingConfig = (
     : extractThinkingConfig(body, format);
 };
 
-const extractThinkingConfigForUsage = (
+/** The thinking intent a body expresses, as usage logging reads it (`extractThinkingConfigForUsage`). */
+export const extractThinkingConfigForUsage = (
   body: Json | undefined,
   provider: string,
 ): ThinkingConfig => {
