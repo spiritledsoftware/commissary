@@ -1,5 +1,5 @@
 /**
- * Zero-output abnormal terminations of Gemini-family responses (Gemini, Vertex; Go also Antigravity and AI Studio).
+ * Zero-output abnormal terminations of Gemini-family responses (Gemini, Vertex, Antigravity; Go also AI Studio).
  *
  * Go source: internal/runtime/executor/helps/gemini_zero_output.go (cf07c78a, f2efe2c4) and `newGeminiZeroOutputStatusErr`,
  * `newGeminiTranslatedClaudeErrorStatusErr` in internal/runtime/executor/openai_compat_executor.go (7e82d0d1).
@@ -176,8 +176,11 @@ export const inspectGeminiPayload = (
 };
 
 /** `CheckGeminiZeroOutputNonStream`: the abnormal finish reason of a complete zero-output response. */
-export const zeroOutputFinishReason = (root: Json | undefined): string | undefined => {
-  const inspection = inspectGeminiPayload(root);
+export const zeroOutputFinishReason = (
+  root: Json | undefined,
+  allowResponseWrapper = false,
+): string | undefined => {
+  const inspection = inspectGeminiPayload(root, allowResponseWrapper);
 
   return isZeroOutputAbnormalFinishReason(inspection.finishReason) && !inspection.hasVisibleOutput
     ? inspection.finishReason

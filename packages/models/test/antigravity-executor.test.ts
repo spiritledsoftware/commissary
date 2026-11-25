@@ -87,6 +87,17 @@ const upstream = (parts: Json[], extra: JsonObject = {}) => ({
 const sse = (events: Json[]) =>
   sseResponse(events.map((event) => `data: ${JSON.stringify(event)}\n\n`));
 
+const streamChat = (model = "gemini-2.5-flash"): JsonObject => ({
+  model,
+  stream: true,
+  messages: [{ role: "user", content: "hi" }],
+});
+
+const chat = (model = "gemini-2.5-flash"): JsonObject => ({
+  model,
+  messages: [{ role: "user", content: "hi" }],
+});
+
 describe("antigravity executor: non-stream", () => {
   it("wraps the request in the Cloud Code envelope with the whitelisted headers and applies payload rules last", async () => {
     resetMemoryAntigravityState();
@@ -484,6 +495,61 @@ describe("antigravity executor: stream", () => {
 
     expect(response.status).toBe(429);
   });
+
+  it("fails a successful stream without a single JSON frame with a zero-output 502 (CLIProxyAPI 20be744e)", async () => {
+    const h = harness(() => sseResponse([": keep-alive\n\n"]), {
+      credential: unique("empty-stream"),
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(streamChat()));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("upstream stream closed with zero output");
+  });
+
+  it("fails a signature-only stream without a finish reason before the 200 (CLIProxyAPI f2efe2c4)", async () => {
+    const h = harness(
+      () =>
+        sse([
+          {
+            response: {
+              candidates: [{ content: { role: "model", parts: [{ thoughtSignature: "c2ln" }] } }],
+              usageMetadata: { promptTokenCount: 3, totalTokenCount: 3 },
+            },
+          },
+        ]),
+      { credential: unique("signature-only") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(streamChat()));
+    expect(response.status).toBe(502);
+  });
+
+  it("fails an abnormal zero-output finish inside the response envelope before the 200", async () => {
+    const h = harness(
+      () =>
+        sse([
+          {
+            response: {
+              candidates: [
+                { content: { role: "model", parts: [] }, finishReason: "MALFORMED_FUNCTION_CALL" },
+              ],
+              usageMetadata: { promptTokenCount: 3, totalTokenCount: 3 },
+            },
+          },
+        ]),
+      { credential: unique("malformed") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(streamChat()));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("MALFORMED_FUNCTION_CALL");
+  });
 });
 
 describe("antigravity executor: errors", () => {
@@ -550,6 +616,67 @@ describe("antigravity executor: errors", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("bad");
   });
+
+  it("fails an in-band error of an HTTP 200 body with its status and records the cooldown (CLIProxyAPI ec25cc83)", async () => {
+    resetMemoryAntigravityState();
+    const h = harness(() => jsonResponse(rateLimit("30.000s")), { credential: unique("in-band") });
+    afterAll(h.dispose);
+
+    const first = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(first.status).toBe(429);
+    const upstreamCalls = h.calls.length;
+    const second = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(await second.text()).toContain("auth in short cooldown");
+    expect(h.calls).toHaveLength(upstreamCalls);
+  });
+
+  it("fails an aggregated stream without a JSON frame with a zero-output 502 (CLIProxyAPI d1bdee85)", async () => {
+    const h = harness(() => sseResponse(["\n\n"]), { credential: unique("empty-aggregate") });
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(chat("claude-sonnet-4-5")));
+    expect(response.status).toBe(502);
+  });
+
+  it("falls back on the Retry-After header of a 429 without a body delay (CLIProxyAPI 84b838e1)", async () => {
+    resetMemoryAntigravityState();
+    const limit = rateLimit("1s");
+    const details = limit.error.details.slice(0, 1);
+
+    const h = harness(
+      () =>
+        jsonResponse(
+          { error: { ...limit.error, details } },
+          { status: 429, headers: { "content-type": "application/json", "retry-after": "45" } },
+        ),
+      { credential: unique("retry-after") },
+    );
+
+    afterAll(h.dispose);
+
+    const first = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(first.status).toBe(429);
+    expect(h.reports.some((report) => report.retryAfterMs === 45_000)).toBe(true);
+    const second = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(await second.text()).toContain("auth in short cooldown");
+  });
+
+  it("carries the retry hint of a 503 capacity error (CLIProxyAPI ae3d80f7)", async () => {
+    const h = harness(
+      () =>
+        jsonResponse(
+          { error: { code: 503, message: "No capacity available", status: "UNAVAILABLE" } },
+          { status: 503, headers: { "content-type": "application/json", "retry-after": "7" } },
+        ),
+      { credential: unique("capacity") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(response.status).toBe(503);
+    expect(h.reports.some((report) => report.retryAfterMs === 7_000)).toBe(true);
+  });
 });
 
 describe("antigravity executor: token counting", () => {
@@ -571,6 +698,42 @@ describe("antigravity executor: token counting", () => {
     expect(sent.request.safetySettings).toBeUndefined();
     expect(sent.request.sessionId).toBeUndefined();
     expect(sent.request.contents[0].parts[0].text).toBe("hello");
+    // The tokenizer model (CLIProxyAPI fb989e5f); a stream flag never reaches countTokens.
+    expect(sent.request.model).toBe("models/claude-sonnet-4-5");
+    expect(sent.request.stream).toBeUndefined();
+  });
+
+  const count = (respond: UpstreamResponder, name: string) => {
+    const h = harness(respond, { credential: unique(name) });
+    afterAll(h.dispose);
+
+    return h
+      .call(
+        "/v1/messages/count_tokens",
+        postJson({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hello" }] }),
+      )
+      .then(async (response) => ({ status: response.status, text: await response.text(), h }));
+  };
+
+  it("rejects an HTTP 200 that is not a count (CLIProxyAPI 9bce4825)", async () => {
+    const notJson = await count(() => jsonResponse("<html>oops</html>"), "count-html");
+    expect(notJson.status).toBe(502);
+    expect(notJson.text).toContain("not a valid JSON object");
+    const missing = await count(() => jsonResponse({ total: 3 }), "count-missing");
+    expect(missing.status).toBe(502);
+    expect(missing.text).toContain("missing numeric totalTokens");
+    const negative = await count(() => jsonResponse({ totalTokens: -1 }), "count-negative");
+    expect(negative.text).toContain("invalid totalTokens");
+  });
+
+  it("answers an in-band error with its status (CLIProxyAPI 4087007c)", async () => {
+    const result = await count(
+      () => jsonResponse({ error: { code: 400, message: "bad request" } }),
+      "count-in-band",
+    );
+
+    expect(result.status).toBe(400);
+    expect(result.text).toContain("bad request");
   });
 });
 

@@ -44,6 +44,7 @@ import {
 } from "../src/executor/antigravity/models.ts";
 import {
   convertStreamToNonStream,
+  inBandErrorStatus,
   JsonAssembler,
   UsageFilter,
 } from "../src/executor/antigravity/stream.ts";
@@ -795,18 +796,28 @@ describe("SSE handling", () => {
     expect(filter.filter(terminal)).toBe(terminal);
   });
 
-  it("joins JSON split over several lines and turns error objects into status errors", () => {
+  it("joins JSON split over several lines like Go's SSE assembler (CLIProxyAPI 892fc486)", () => {
     const assembler = new JsonAssembler();
-    expect(assembler.push('data: {"response":')).toEqual({ kind: "none" });
-    expect(assembler.push('{"x":1}}')).toEqual({
-      kind: "payload",
-      payload: '{"response":\n{"x":1}}',
-    });
-    expect(assembler.push("")).toEqual({ kind: "none" });
-    const error = assembler.push(data({ error: { code: 503, message: "down" } }));
-    expect(error.kind === "error" && error.error.status).toBe(503);
-    const odd = assembler.push(data({ error: { code: 200, message: "?" } }));
-    expect(odd.kind === "error" && odd.error.status).toBe(502);
+    expect(assembler.push('data: {"response":')).toBeUndefined();
+    // Comments and other fields inside an event are skipped; a bare line does not continue a `data:` payload.
+    expect(assembler.push(": keep-alive")).toBeUndefined();
+    expect(assembler.push('{"ignored":1}')).toBeUndefined();
+    expect(assembler.push('data: {"x":1}}')).toBe('{"response":\n{"x":1}}');
+    // A malformed event ends at its empty line and does not swallow the next one.
+    expect(assembler.push('data: {"broken":')).toBeUndefined();
+    expect(assembler.push("")).toBeUndefined();
+    expect(assembler.push('data: {"ok":true}')).toBe('{"ok":true}');
+    // Raw JSON lines (no `data:`) continue with raw lines.
+    expect(assembler.push('{"a":')).toBeUndefined();
+    expect(assembler.push("2}")).toBe('{"a":\n2}');
+  });
+
+  it("reads in-band error objects as statuses (antigravityInBandErrorStatusCode)", () => {
+    expect(inBandErrorStatus({ error: { code: 503, message: "down" } })).toBe(503);
+    expect(inBandErrorStatus({ error: { code: 200, message: "?" } })).toBe(502);
+    expect(inBandErrorStatus({ error: "text" })).toBe(502);
+    expect(inBandErrorStatus({ error: null })).toBeUndefined();
+    expect(inBandErrorStatus({ response: {} })).toBeUndefined();
   });
 
   it("merges a streamed response: text runs, thoughts with signatures, calls and the last usage", () => {

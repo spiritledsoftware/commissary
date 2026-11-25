@@ -28,8 +28,18 @@ import {
 } from "../helps/cloak-obfuscate.ts";
 import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 import type { Config } from "../../config/schema.ts";
-import { asInt, del, get, type Json, tryParseJson } from "@commissary/json";
+import {
+  asInt,
+  del,
+  get,
+  isJsonArray,
+  isJsonObject,
+  type Json,
+  set,
+  tryParseJson,
+} from "@commissary/json";
 import { splitLines } from "@commissary/translation/sse";
+import { normalizeAntigravityRequest } from "@commissary/translation";
 import { fetchProjectId } from "../../oauth/flows/antigravity.ts";
 import {
   type DeploymentKv,
@@ -113,6 +123,8 @@ import {
   geminiToAntigravity,
   requestBaseUrl,
   constrainRequestPayload,
+  needsSchemaSanitization,
+  sanitizeRequestSchemas,
 } from "./envelope.ts";
 import {
   antigravityStatusError,
@@ -120,7 +132,19 @@ import {
   hasExplicitCreditsBalanceExhaustedReason,
 } from "./errors.ts";
 import { type AntigravityState, antigravityStateFor } from "./state.ts";
-import { convertStreamToNonStream, JsonAssembler, UsageFilter } from "./stream.ts";
+import {
+  convertStreamToNonStream,
+  inBandErrorStatus,
+  JsonAssembler,
+  UsageFilter,
+} from "./stream.ts";
+import {
+  type ZeroOutputAction,
+  zeroOutputError,
+  zeroOutputErrorMessage,
+  zeroOutputFinishReason,
+  ZeroOutputStreamGuard,
+} from "../helps/gemini-zero-output.ts";
 import { antigravityRequestUserAgent, currentAntigravityVersion } from "./version.ts";
 import { serializeAntigravityPayload } from "./payload-order.ts";
 import { ModelsEnv } from "../../env.ts";
@@ -336,12 +360,17 @@ export const makeAntigravityExecutor = (
   };
 
   /** Short quota cooldown (`antigravityIsInShortCooldownRequired`): answers 429 so the conductor switches auth. */
-  const checkShortCooldown = (attempt: Attempt, baseModel: string) =>
+  const checkShortCooldown = (attempt: Attempt, baseModel: string, countTokens = false) =>
     Effect.gen(function* () {
       const { context, options, state } = attempt;
 
       if (coolingDisabled(context)) return;
-      const bypass = options.metadata.antigravityCredits === true && creditsEnabled(context.config);
+
+      // A token count never spends credits, so a cooling credential always refuses it (CLIProxyAPI 94b164bf).
+      const bypass =
+        !countTokens &&
+        options.metadata.antigravityCredits === true &&
+        creditsEnabled(context.config);
 
       if (bypass) return;
       const now = yield* Clock.currentTimeMillis;
@@ -532,33 +561,25 @@ export const makeAntigravityExecutor = (
     } satisfies PreparedRequest;
   });
 
-  const send = Effect.fnUntraced(function* (attempt: Attempt, prepared: PreparedRequest) {
+  /**
+   * `applyAntigravityUpstreamError`: the bookkeeping of an upstream error, an HTTP error status or an in-band `error`
+   * object of an HTTP 2xx body or stream frame (CLIProxyAPI ec25cc83): replay invalidation on a rejected signature,
+   * the short cooldown or credits exhaustion of a 429, then the status error. A stream frame has no headers.
+   */
+  const upstreamError = Effect.fnUntraced(function* (
+    attempt: Attempt,
+    prepared: PreparedRequest,
+    status: number,
+    headers: Headers | undefined,
+    text: string,
+  ) {
     const { context, state } = attempt;
-    const client = yield* HttpClient.HttpClient;
+    context.usage.fail(status, text);
+    yield* clearReplayOnInvalidSignature(ledger, prepared.replayScope, status, text);
+    const now = yield* Clock.currentTimeMillis;
 
-    const request = HttpClientRequest.post(prepared.url).pipe(
-      HttpClientRequest.bodyText(prepared.wire, "application/json"),
-      HttpClientRequest.setHeaders(prepared.headers),
-    );
-
-    const response: HttpClientResponse.HttpClientResponse = yield* client
-      .execute(request)
-      .pipe(
-        Effect.provideService(HttpClient.TracerPropagationEnabled, false),
-        Effect.mapError(transportError),
-      );
-
-    context.usage.markFirstByte(yield* Clock.currentTimeMillis);
-
-    if (response.status >= 200 && response.status < 300) return response;
-
-    const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
-    context.usage.fail(response.status, text);
-    yield* clearReplayOnInvalidSignature(ledger, prepared.replayScope, response.status, text);
-
-    if (response.status === 429) {
-      const decision = decideAntigravity429(text);
-      const now = yield* Clock.currentTimeMillis;
+    if (status === 429) {
+      const decision = decideAntigravity429(text, headers, now);
 
       const retryAfterMs = decision.retryAfterMs ?? 0;
 
@@ -580,7 +601,38 @@ export const makeAntigravityExecutor = (
       }
     }
 
-    return yield* antigravityStatusError(response.status, text, new Headers(response.headers));
+    return yield* antigravityStatusError(status, text, headers ?? new Headers(), now);
+  });
+
+  const send = Effect.fnUntraced(function* (attempt: Attempt, prepared: PreparedRequest) {
+    const { context } = attempt;
+    const client = yield* HttpClient.HttpClient;
+
+    const request = HttpClientRequest.post(prepared.url).pipe(
+      HttpClientRequest.bodyText(prepared.wire, "application/json"),
+      HttpClientRequest.setHeaders(prepared.headers),
+    );
+
+    const response: HttpClientResponse.HttpClientResponse = yield* client
+      .execute(request)
+      .pipe(
+        Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+        Effect.mapError(transportError),
+      );
+
+    context.usage.markFirstByte(yield* Clock.currentTimeMillis);
+
+    if (response.status >= 200 && response.status < 300) return response;
+
+    const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+
+    return yield* upstreamError(
+      attempt,
+      prepared,
+      response.status,
+      new Headers(response.headers),
+      text,
+    );
   });
 
   const responseContext = (
@@ -657,12 +709,33 @@ export const makeAntigravityExecutor = (
     const aggregate = aggregatesStream(baseModel);
     const prepared = yield* prepare(attempt, aggregate ? "aggregate" : "generate", agent);
     const response = yield* send(attempt, prepared);
-    yield* finishSuccess(attempt, prepared);
+    const responseFormat = responseFormatOf(options);
+
+    /** An abnormal finish without visible output answered nothing (Go `CheckGeminiZeroOutputNonStream`). */
+    const checkZeroOutput = (text: string) => {
+      const reason = zeroOutputFinishReason(tryParseJson(text), true);
+
+      if (reason === undefined) return Effect.void;
+      const message = zeroOutputErrorMessage(responseFormat, reason);
+      context.usage.publish(parseAntigravityUsage(text));
+      context.usage.fail(502, message);
+
+      return Effect.fail(zeroOutputError(message));
+    };
 
     if (!aggregate) {
       const text = yield* response.text.pipe(Effect.mapError(transportError));
+      // An in-band error of an HTTP 2xx body fails with its own status and bookkeeping (CLIProxyAPI ec25cc83).
+      const status = inBandErrorStatus(tryParseJson(text));
 
-      // `cacheAntigravityReasoningReplayFromResponse`
+      if (status !== undefined) {
+        return yield* upstreamError(attempt, prepared, status, new Headers(response.headers), text);
+      }
+
+      yield* checkZeroOutput(text);
+      const payload = yield* translateBody(attempt, prepared, text);
+
+      // `cacheAntigravityReasoningReplayFromResponse`, once the translation succeeded (CLIProxyAPI 555bdb4b).
       if (prepared.replay !== undefined) {
         const parsed = tryParseJson(text);
 
@@ -670,7 +743,7 @@ export const makeAntigravityExecutor = (
         yield* prepared.replay.commit(ledger);
       }
 
-      const payload = yield* translateBody(attempt, prepared, text);
+      yield* finishSuccess(attempt, prepared);
 
       return { payload, headers: new Headers(response.headers) } satisfies ExecutorResponse;
     }
@@ -682,18 +755,37 @@ export const makeAntigravityExecutor = (
       Stream.runCollect,
     );
 
+    const assembler = new JsonAssembler();
     const payloads: string[] = [];
 
     for (const line of lines) {
-      prepared.replay?.observeLine(line);
-      const payload = jsonPayloadOf(line);
+      const payload = assembler.push(line);
 
-      if (payload !== undefined) payloads.push(payload);
+      if (payload === undefined) continue;
+      // A mid-stream error frame fails with its status and bookkeeping (CLIProxyAPI 892fc486, ec25cc83).
+      const status = inBandErrorStatus(tryParseJson(payload));
+
+      if (status !== undefined)
+        return yield* upstreamError(attempt, prepared, status, undefined, payload);
+      prepared.replay?.observeLine(payload);
+      payloads.push(payload);
     }
 
-    if (prepared.replay !== undefined) yield* prepared.replay.commit(ledger);
+    // An HTTP 200 without a single JSON frame answered nothing (CLIProxyAPI d1bdee85).
+    if (payloads.length === 0) {
+      const message = zeroOutputErrorMessage(responseFormat, "");
+      context.usage.fail(502, message);
+
+      return yield* zeroOutputError(message);
+    }
+
     const merged = JSON.stringify(convertStreamToNonStream(payloads));
+    yield* checkZeroOutput(merged);
     const payload = yield* translateBody(attempt, prepared, merged);
+
+    // The ledger is written once the translation succeeded (CLIProxyAPI 555bdb4b).
+    if (prepared.replay !== undefined) yield* prepared.replay.commit(ledger);
+    yield* finishSuccess(attempt, prepared);
 
     return { payload, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
@@ -837,7 +929,6 @@ export const makeAntigravityExecutor = (
     yield* maybeRefreshCredits(attempt, agent);
     const prepared = yield* prepare(attempt, "stream", agent);
     const response = yield* send(attempt, prepared);
-    yield* finishSuccess(attempt, prepared);
 
     const httpClient = yield* HttpClient.HttpClient;
     const responseFormat = responseFormatOf(options);
@@ -845,6 +936,10 @@ export const makeAntigravityExecutor = (
     const ctx = responseContext(attempt, prepared, "");
     const filter = new UsageFilter();
     const assembler = new JsonAssembler();
+    // Go cf07c78a, f2efe2c4: withholds leading contentless frames (the `response` envelope included) and fails an
+    // abnormal zero-output finish before them, while the handler can still fail over.
+    const guard = new ZeroOutputStreamGuard(responseFormat, true);
+    let sawUpstreamJson = false;
 
     const translate = (payload: string): ReadonlyArray<string> =>
       translating(attempt, () => registry.translateStream(responseFormat, to, ctx, payload));
@@ -859,58 +954,115 @@ export const makeAntigravityExecutor = (
           )
         : Stream.fromIterable(chunks);
 
+    /** Translates one upstream payload for the client, its usage filtered after the guard classified it. */
+    const emitPayload = (raw: string): Stream.Stream<string, ExecutionError> => {
+      const filtered = filter.filter(raw);
+
+      if (filtered.trim() === "") return Stream.empty;
+
+      return Stream.unwrap(
+        resolveGrounding(attempt, prepared, filtered).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.map((payload) => {
+            context.usage.observeResponseModel(responseModelOf(tryParseJson(payload)));
+            const chunks = translate(payload);
+            context.usage.observeTokenEvent(Date.now(), isGeminiTokenEvent(payload));
+
+            if (chunks.some((chunk) => chunk !== "")) guard.markEmitted();
+
+            // Publish the ledger before any client-visible terminal event (`response.completed`, a chat `finish_reason`,
+            // `message_stop`, ...) reaches the client, so the next turn finds it (Go cc95661c, `antigravityStreamChunks
+            // HaveTerminalCommitEvent`). As in Go this is the `finishReason` frame: a signature or call frame that
+            // arrives after it is not captured (a stream that keeps sending after its finish reason is not expected).
+            const commit =
+              prepared.replay?.terminal === true &&
+              !prepared.replay.committed &&
+              chunksHaveTerminalCommitEvent(chunks)
+                ? prepared.replay.commit(ledger)
+                : Effect.void;
+
+            return Stream.unwrap(commit.pipe(Effect.as(withToolInputCheck(chunks))));
+          }),
+        ),
+      );
+    };
+
+    const emitAll = (
+      frames: ReadonlyArray<string>,
+      then: Stream.Stream<string, ExecutionError> = Stream.empty,
+    ): Stream.Stream<string, ExecutionError> =>
+      Stream.concat(Stream.fromIterable(frames).pipe(Stream.flatMap(emitPayload)), then);
+
+    const failZeroOutput = (finishReason: string) =>
+      Stream.fail(zeroOutputError(zeroOutputErrorMessage(responseFormat, finishReason)));
+
+    /** Applies a guard decision; `frame` is the current payload, if any. */
+    const guarded = (
+      action: ZeroOutputAction,
+      frame: string | undefined,
+    ): Stream.Stream<string, ExecutionError> => {
+      switch (action.kind) {
+        case "continue":
+          return Stream.empty;
+        case "fail":
+          return failZeroOutput(action.finishReason);
+        case "emit-error-then-fail":
+          return emitAll([action.frame], failZeroOutput(action.finishReason));
+        case "emit":
+          return emitAll(frame === undefined ? action.flush : [...action.flush, frame]);
+      }
+    };
+
     const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
 
     const body = lines.pipe(
       Stream.flatMap((line) => {
-        prepared.replay?.observeLine(line);
+        const payload = assembler.push(line);
+
+        if (payload === undefined) return Stream.empty;
+        sawUpstreamJson = true;
         // Accounting is captured before the client-facing filter renames usage.
-        const usage = parseAntigravityStreamUsage(line);
+        const usage = parseAntigravityStreamUsage(payload);
 
         if (usage !== undefined) context.usage.publish(usage);
-        const assembled = assembler.push(filter.filter(line));
+        const root = tryParseJson(payload);
+        // A mid-stream error frame fails with its status and bookkeeping (CLIProxyAPI 892fc486, ec25cc83).
+        const status = inBandErrorStatus(root);
 
-        if (assembled.kind === "none") return Stream.empty;
+        if (status !== undefined)
+          return Stream.fromEffect(upstreamError(attempt, prepared, status, undefined, payload));
+        prepared.replay?.observeLine(payload);
 
-        if (assembled.kind === "error") return Stream.fail(assembled.error);
-
-        return Stream.unwrap(
-          resolveGrounding(attempt, prepared, assembled.payload).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.map((payload) => {
-              context.usage.observeResponseModel(responseModelOf(tryParseJson(payload)));
-              const chunks = translate(payload);
-              context.usage.observeTokenEvent(Date.now(), isGeminiTokenEvent(payload));
-
-              // Publish the ledger before any client-visible terminal event (`response.completed`, a chat `finish_reason`,
-              // `message_stop`, ...) reaches the client, so the next turn finds it (Go cc95661c, `antigravityStreamChunks
-              // HaveTerminalCommitEvent`). As in Go this is the `finishReason` frame: a signature or call frame that
-              // arrives after it is not captured (a stream that keeps sending after its finish reason is not expected).
-              const commit =
-                prepared.replay?.terminal === true &&
-                !prepared.replay.committed &&
-                chunksHaveTerminalCommitEvent(chunks)
-                  ? prepared.replay.commit(ledger)
-                  : Effect.void;
-
-              return Stream.unwrap(commit.pipe(Effect.as(withToolInputCheck(chunks))));
-            }),
-          ),
-        );
+        return guarded(guard.observe(payload, root), payload);
       }),
     );
 
     // Only a clean end of stream may produce a synthetic terminal event (a read error never reports success).
     // The ledger is committed before the EOF-generated completion is delivered.
     const tail = Stream.suspend(() => {
-      const chunks = translate("[DONE]");
+      // An HTTP 200 stream without a single JSON frame answered nothing (CLIProxyAPI 20be744e).
+      if (!sawUpstreamJson) return failZeroOutput("");
+      const action = guard.finalize();
 
-      const commit =
-        prepared.replay !== undefined && !prepared.replay.committed
-          ? prepared.replay.commit(ledger)
-          : Effect.void;
+      if (action.kind !== "emit") return guarded(action, undefined);
 
-      return Stream.unwrap(commit.pipe(Effect.as(withToolInputCheck(chunks))));
+      const done = Stream.suspend(() => {
+        const chunks = translate("[DONE]");
+
+        const commit =
+          prepared.replay !== undefined && !prepared.replay.committed
+            ? prepared.replay.commit(ledger)
+            : Effect.void;
+
+        return Stream.unwrap(
+          commit.pipe(
+            Effect.andThen(finishSuccess(attempt, prepared)),
+            Effect.as(withToolInputCheck(chunks)),
+          ),
+        );
+      });
+
+      return emitAll(action.flush, done);
     });
 
     const chunks = Stream.concat(body, tail).pipe(
@@ -932,6 +1084,7 @@ export const makeAntigravityExecutor = (
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;
+    yield* checkShortCooldown(attempt, baseModel, true);
     const agent = yield* userAgent(attempt);
 
     const original = validateRequestSignatures(
@@ -986,8 +1139,9 @@ export const makeAntigravityExecutor = (
     });
 
     body = applyAntigravitySensitiveWords(body, context.config);
-    // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3).
+    // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3), in the native wire format (38067a29).
     prepareClaudeStructuredOutput(baseModel, body);
+    normalizeAntigravityRequest(body);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
     // The reasoning replay of the counted request: the ledger is peeked, never reserved or invalidated (Go
     // `prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc`).
@@ -995,6 +1149,14 @@ export const makeAntigravityExecutor = (
       reserve: false,
     })).payload;
     body = ensureLeadingUserContent(baseModel, body);
+    // `countTokens` needs the tokenizer model once the top-level `model` is gone (CLIProxyAPI fb989e5f).
+    const requestModel = get(body, "request.model");
+
+    if (typeof requestModel !== "string" || requestModel.trim() === "") {
+      const model = countTokensModel(baseModel);
+
+      if (model !== "") set(body, "request.model", model);
+    }
 
     for (const path of [
       "project",
@@ -1003,8 +1165,21 @@ export const makeAntigravityExecutor = (
       "request.toolConfig",
       "request.labels",
       "request.sessionId",
+      "request.stream",
     ]) {
       del(body, path);
+    }
+
+    // The schemas are cleaned as for a generate request (CLIProxyAPI 94b164bf).
+    if (needsSchemaSanitization(body)) {
+      const lower = baseModel.toLowerCase();
+      const isClaudeModel = lower.includes("claude");
+
+      sanitizeRequestSchemas(body, {
+        useAntigravitySchema:
+          isClaudeModel || lower.includes("gemini-3-pro") || lower.includes("gemini-3.1-pro"),
+        isClaudeModel,
+      });
     }
 
     const alt = options.alt;
@@ -1046,25 +1221,55 @@ export const makeAntigravityExecutor = (
     };
 
     const response = yield* send(attempt, prepared);
-    const text = yield* response.text.pipe(Effect.mapError(transportError));
-    const count = asInt(get(tryParseJson(text), "totalTokens"));
-    const payload = registry.translateTokenCount(responseFormatOf(options), to, count, text);
+    const raw = yield* response.text.pipe(Effect.mapError(transportError));
+    const headers = new Headers(response.headers);
 
-    return { payload, headers: new Headers(response.headers) } satisfies ExecutorResponse;
+    // A 200 must be one JSON object with a count, else it is an upstream failure (CLIProxyAPI 9bce4825).
+    const invalid = (message: string) => {
+      context.usage.fail(502, message);
+
+      return new ExecutionError({ status: 502, message });
+    };
+
+    if (raw.length > COUNT_TOKENS_MAX_RESPONSE_BYTES) {
+      return yield* invalid(
+        `antigravity count_tokens response exceeded ${COUNT_TOKENS_MAX_RESPONSE_BYTES} bytes`,
+      );
+    }
+
+    const root = raw.trim().startsWith("{") ? tryParseJson(raw) : undefined;
+
+    if (!isJsonObject(root))
+      return yield* invalid("antigravity count_tokens response is not a valid JSON object");
+    // An in-band error answers with its own status and 429 bookkeeping (CLIProxyAPI 4087007c).
+    const status = inBandErrorStatus(root);
+
+    if (status !== undefined) return yield* upstreamError(attempt, prepared, status, headers, raw);
+    const total = root["totalTokens"];
+
+    if (typeof total !== "number")
+      return yield* invalid("antigravity count_tokens response missing numeric totalTokens");
+
+    if (!Number.isSafeInteger(total) || total < 0)
+      return yield* invalid("antigravity count_tokens response has invalid totalTokens");
+    const payload = registry.translateTokenCount(responseFormatOf(options), to, total, raw);
+
+    return { payload, headers } satisfies ExecutorResponse;
   });
 
   return { identifier: ANTIGRAVITY_IDENTIFIER, execute, executeStream, countTokens };
 };
 
-/** `JSONPayload`: the JSON object of an SSE `data:` line or raw JSON line. */
-const jsonPayloadOf = (line: string): string | undefined => {
-  let trimmed = line.trim();
+/** `antigravityCountTokensMaxResponseBytes`: the largest `countTokens` body accepted (1 MiB). */
+const COUNT_TOKENS_MAX_RESPONSE_BYTES = 1 << 20;
 
-  if (trimmed === "" || trimmed === "[DONE]" || trimmed.startsWith("event:")) return undefined;
+/** `formatAntigravityCountTokensModel`: a bare model id becomes `models/<id>`; resource names stay as they are. */
+const countTokensModel = (model: string): string => {
+  const trimmed = model.trim();
 
-  if (trimmed.startsWith("data:")) trimmed = trimmed.slice(5).trim();
+  if (trimmed === "") return "";
 
-  return trimmed.startsWith("{") ? trimmed : undefined;
+  return /^(models|projects|publishers)\//.test(trimmed) ? trimmed : `models/${trimmed}`;
 };
 
 /** `AntigravityExecutor.obfuscateSensitiveWordsDoc`: the configured words and replacements in the system instruction. */
