@@ -355,8 +355,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"gpt-5.4\",\"instructions\":\"\",\"input\":[],\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":\"medium\"},\"stream\":true,\"store\":false,\"include\":[\"reasoning.encrypted_content\"]}",
-  "requestError": "unsupported content part: document"
+  "translatedRequest": "{\"model\":\"gpt-5.4\",\"instructions\":\"\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_file\",\"file_url\":\"https://x/y.pdf\"}]}],\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":\"medium\"},\"stream\":true,\"store\":false,\"include\":[\"reasoning.encrypted_content\"]}"
  },
  {
   "name": "stream: reasoning summary parts, text deltas and usage",
@@ -483,7 +482,7 @@
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"gAAAAADKl4ESyhu9yvrCMbOaI9xNp4bv-BR8TnK5gHeFr-5Iu8qXgRLKG73K-sIxs5oj3E2nhu_4FHxOcrmAd4Wv7ki7ypeBEg\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
    ],
    [
-    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Only here.\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Only here.x\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"
    ],
    [
     "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":0,\"output_tokens\":37,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":100,\"output_tokens_details\":{\"thinking_tokens\":37}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
