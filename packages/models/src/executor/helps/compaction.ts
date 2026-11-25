@@ -772,6 +772,23 @@ export const compactionSummaryStatusError = (summary: Json | undefined): string 
 };
 
 /**
+ * Seals the summary text into a capsule. A failure is the request-scoped 502 of every other summary builder error
+ * (CLIProxyAPI dc2455d9). `seal` is replaceable for tests.
+ */
+export const sealSummaryCapsule = (
+  text: string,
+  modelName: string,
+  seal: (summary: string, modelName: string) => Promise<string> = sealCompaction,
+): Effect.Effect<string, ExecutionError> =>
+  Effect.tryPromise({
+    try: () => seal(text, modelName),
+    catch: (error) =>
+      compactionSummaryError(
+        `seal compaction capsule: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+  });
+
+/**
  * `BuildResponsesCompactionResponseFromSummary`: a Responses-format summary sealed into a `response.compaction` body.
  * Fails with the request-scoped 502 when the summary is incomplete or has no text.
  */
@@ -794,11 +811,7 @@ export const sealCompactionSummary = (
         ),
     });
 
-    const capsule = yield* Effect.tryPromise({
-      try: () => sealCompaction(text, modelName),
-      catch: (error) =>
-        new ExecutionError({ status: 500, message: `seal compaction capsule: ${String(error)}` }),
-    });
+    const capsule = yield* sealSummaryCapsule(text, modelName);
 
     const usage = responsesSummaryUsage(summary ?? null, summaryBody);
 

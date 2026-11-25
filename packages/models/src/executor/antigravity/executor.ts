@@ -107,7 +107,7 @@ import {
   markLocalCompaction,
   prepareCompactionSummaryPayload,
   responsesSummaryUsage,
-  sealCompaction,
+  sealSummaryCapsule,
 } from "../helps/compaction.ts";
 import { resolveGroundingUrlsInPayload, shouldResolveGroundingUrls } from "./grounding.ts";
 import { creditsRecordFresh } from "./state.ts";
@@ -874,11 +874,7 @@ export const makeAntigravityExecutor = (
         ),
     });
 
-    const capsule = yield* Effect.tryPromise({
-      try: () => sealCompaction(text, baseModel),
-      catch: (error) =>
-        new ExecutionError({ status: 500, message: `seal compaction capsule: ${String(error)}` }),
-    });
+    const capsule = yield* sealSummaryCapsule(text, baseModel);
 
     const usage = responsesSummaryUsage(parsed, summary.payload);
 
