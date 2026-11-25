@@ -11,6 +11,9 @@
  * and an allowlist of its headers come back. A 401 refreshes the credential once; a request-scoped rule whose action
  * continues moves on to the next credential, up to `max-retry-credentials`.
  *
+ * The upstream's `Retry-After` sets the cooldown (`parseRetryAfterHeader`); an invalid base URL or an oversized upstream
+ * answer is a 502 that marks nothing. Like alpha search, the request counts against free usage once it is served.
+ *
  * Not ported: Go's `/muse-code/models` catalog (`models.go`), and the `credentialRetryAfter` refinement of Go's cooldowns.
  */
 import { Clock, Effect, Result } from "effect";
@@ -38,7 +41,10 @@ import { CredentialPicker, type PickResult } from "../../executor/picker.ts";
 import type { ExecutionContext } from "../../executor/types.ts";
 import { UsageReporter } from "../../usage/reporter.ts";
 import { ModelProviders } from "../model-providers.ts";
-import { type ClientApiServices, currentConfig, readRequestBody } from "../request.ts";
+import { type ClientApiServices, currentConfig } from "../request.ts";
+import { planLimitError } from "../metering.ts";
+import { countRequest, uncountRequest } from "@commissary/billing/api";
+import { parseRetryAfterMs } from "../../executor/helps/retry-after.ts";
 
 const MAX_BODY_BYTES = 16 << 20;
 
@@ -153,6 +159,12 @@ const upstreamHeaders = (
   );
 };
 
+/** A relay fault that is not the credential's (Go returns these without marking a result): never reported. */
+const RELAY_FAULT = "muse_code_relay_fault";
+
+const relayFault = (message: string) =>
+  new ExecutionError({ status: 502, code: RELAY_FAULT, message });
+
 const handle = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const url = new URL(request.url, "http://localhost");
@@ -166,11 +178,11 @@ const handle = Effect.gen(function* () {
   if (Result.isFailure(configResult))
     return errorJson(configResult.failure.status, configResult.failure.message);
   const config = configResult.success;
-  const read = yield* Effect.result(readRequestBody(request));
+  // `readLimitedBody`: the raw bytes, forwarded unchanged.
+  const read = yield* Effect.result(request.arrayBuffer);
 
-  if (Result.isFailure(read))
-    return errorJson(read.failure.status, "Failed to read Muse Code request");
-  const body = new TextEncoder().encode(read.success.text);
+  if (Result.isFailure(read)) return errorJson(400, "Failed to read Muse Code request");
+  const body = new Uint8Array(read.success);
 
   if (body.length > MAX_BODY_BYTES) return errorJson(413, "muse code: body exceeds 16 MiB limit");
 
@@ -183,6 +195,22 @@ const handle = Effect.gen(function* () {
   if (Result.isFailure(modelsResult))
     return errorJson(modelsResult.failure.status, modelsResult.failure.message);
   const models = modelsResult.success;
+
+  // Like alpha search: the request counts against free usage once it starts being served, and a Free org over its
+  // limit is refused first.
+  const counted = yield* Effect.result(countRequest);
+
+  if (Result.isFailure(counted)) {
+    const refused = planLimitError(counted.failure);
+
+    // The refusal's message is the whole JSON error body (`PlanLimitReached.body`).
+    return HttpServerResponse.text(refused.message, {
+      status: refused.status,
+      contentType: "application/json",
+      headers: refused.safeHeaders ?? {},
+    });
+  }
+
   const picker = yield* CredentialPicker;
   const client = yield* HttpClient.HttpClient;
   const clientHeaders = new Headers(request.headers);
@@ -223,8 +251,13 @@ const handle = Effect.gen(function* () {
     return yield* firstError ?? noCredential;
   });
 
-  /** One credential: forward, refreshing once after a 401 (`forwardWithCredential`). */
+  /**
+   * One credential: forward, refreshing once after a 401 (`forwardWithCredential`). The 401 fails the attempt so the
+   * refresh helper can repeat it; the upstream answer it carries is kept in `unauthorized`.
+   */
   const forward = (picked: PickResult, requestedAt: number) => {
+    let unauthorized: Relayed | undefined;
+
     const usage = new UsageReporter({
       requestId: crypto.randomUUID(),
       provider: "meta",
@@ -246,14 +279,10 @@ const handle = Effect.gen(function* () {
 
     const attempt = (current: ExecutionContext) =>
       Effect.gen(function* () {
+        unauthorized = undefined;
         const origin = originOf(metaCreds(current.credential).baseUrl);
 
-        if (origin === undefined) {
-          return yield* new ExecutionError({
-            status: 502,
-            message: "muse code: invalid Meta base_url",
-          });
-        }
+        if (origin === undefined) return yield* relayFault("muse code: invalid Meta base_url");
 
         const target = `${origin}${path}${query === "" ? "" : `?${query}`}`;
 
@@ -295,33 +324,37 @@ const handle = Effect.gen(function* () {
           ),
         );
 
-        if (buffer.byteLength > MAX_BODY_BYTES) {
-          return yield* new ExecutionError({
-            status: 502,
-            message: "Meta response body exceeds 16 MiB limit",
-            requestScoped: true,
-          });
-        }
+        if (buffer.byteLength > MAX_BODY_BYTES)
+          return yield* relayFault("Meta response body exceeds 16 MiB limit");
 
-        const bytes = new Uint8Array(buffer);
-
-        // A 401 fails the attempt so the refresh helper repeats it once with a fresh token.
-        if (response.status === 401) {
-          return yield* new ExecutionError({
-            status: 401,
-            message: new TextDecoder().decode(bytes),
-            headers: { ...response.headers },
-          });
-        }
-
-        return {
+        const relayed: Relayed = {
           status: response.status,
           headers: { ...response.headers },
-          bytes,
-        } satisfies Relayed;
+          bytes: new Uint8Array(buffer),
+        };
+
+        if (response.status === 401) {
+          unauthorized = relayed;
+
+          return yield* new ExecutionError({
+            status: 401,
+            message: new TextDecoder().decode(relayed.bytes),
+            headers: relayed.headers,
+          });
+        }
+
+        return relayed;
       });
 
-    return withCredentialRefresh({ credential: picked.credential, config, usage }, attempt);
+    // A 401 the refresh did not cure is an upstream answer like any other: relayed as it came.
+    return withCredentialRefresh({ credential: picked.credential, config, usage }, attempt).pipe(
+      Effect.catch((error) =>
+        error.status === 401 && unauthorized !== undefined
+          ? Effect.succeed({ relayed: unauthorized, error })
+          : Effect.fail(error),
+      ),
+      Effect.map((outcome) => ("bytes" in outcome ? { relayed: outcome } : outcome)),
+    );
   };
 
   for (let attempt = 0; maxCredentials === 0 || attempt < maxCredentials; attempt++) {
@@ -330,6 +363,8 @@ const handle = Effect.gen(function* () {
     if (Result.isFailure(picked)) {
       if (last !== undefined) break;
       const failure = picked.failure;
+      // No credential was picked, so no upstream attempt was made: the request did no work and is not counted.
+      yield* uncountRequest(counted.success);
       const retryAfter = safeRetryAfter(failure);
 
       return errorJson(
@@ -373,16 +408,10 @@ const handle = Effect.gen(function* () {
 
     if (Result.isFailure(outcome)) {
       const error = outcome.failure;
-      const action = yield* report(error);
 
-      // A 401 that survived the refresh is answered as the upstream sent it.
-      if (error.status === 401 && action !== "continue" && action !== "continue-and-cooldown") {
-        return relayedResponse({
-          status: 401,
-          headers: error.headers ?? {},
-          bytes: new TextEncoder().encode(error.message),
-        });
-      }
+      // Not the credential's fault: answered without a report (and so without a cooldown).
+      if (error.code === RELAY_FAULT) return errorJson(error.status, error.message);
+      const action = yield* report(error);
 
       if (action === "continue" || action === "continue-and-cooldown") {
         last = { error };
@@ -392,15 +421,25 @@ const handle = Effect.gen(function* () {
       return errorJson(error.status > 0 ? error.status : 502, error.message);
     }
 
-    const relayed = outcome.success;
+    const { relayed } = outcome.success;
+    const now = yield* Clock.currentTimeMillis;
+    // `parseRetryAfterHeader`: the upstream's Retry-After sets the cooldown.
+    const retryAfterMs = parseRetryAfterMs(relayed.headers["retry-after"] ?? null, now);
 
-    const action = yield* report(
+    const failure =
       relayed.status < 400
         ? undefined
-        : new ExecutionError({
-            status: relayed.status,
-            message: new TextDecoder().decode(relayed.bytes),
-          }),
+        : "error" in outcome.success
+          ? outcome.success.error
+          : new ExecutionError({
+              status: relayed.status,
+              message: new TextDecoder().decode(relayed.bytes),
+            });
+
+    const action = yield* report(
+      failure === undefined || retryAfterMs === undefined
+        ? failure
+        : withErrorFields(failure, { retryAfterMs }),
     );
 
     if (action === "continue" || action === "continue-and-cooldown") {

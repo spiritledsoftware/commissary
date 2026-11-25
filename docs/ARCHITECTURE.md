@@ -2029,10 +2029,13 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   (the client's `X-Tbh-*` session when it sent one) and the credential's bearer token; the answer keeps only
   `Content-Type`, `Cache-Control`, `ETag`, `Last-Modified` and `Retry-After`. A credential is picked through the usual
   selection for any Meta model (sorted, as Go's `metaCandidateModels`), refreshed on a 401, and its result recorded
-  without a model, so a 401/402/403/429 or 5xx cools the whole credential down; other 4xx are answered as they come
-  (request-scoped rules still apply). Not ported: the `/muse-code/models` catalog (`models.go`) and Go's
-  `credentialRetryAfter` refinement of the cooldown. Relayed calls carry no model, so they don't count against
-  Commissary Cloud's free usage.
+  without a model, so a 401/402/403/429 or 5xx cools the whole credential down, for the upstream's `Retry-After` when
+  it sent one; other 4xx are relayed as they come (request-scoped rules still apply). Every upstream answer, a 401 the
+  refresh did not cure included, goes back with its status, allowlisted headers and raw body; the request body is
+  forwarded as raw bytes. An invalid base URL or an upstream answer over 16 MiB is a 502 that cools nothing. Like
+  alpha search, a call counts against Commissary Cloud's free usage (a Free org over its limit is refused first) unless
+  no credential was picked. Not ported: the `/muse-code/models` catalog (`models.go`) and Go's `credentialRetryAfter`
+  refinement of the cooldown.
 - **Meta deviations from Go**: the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
