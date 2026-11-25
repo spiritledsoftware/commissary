@@ -39,6 +39,7 @@ const KNOWN_CHANNELS = [
   "antigravity",
   "claude",
   "codex",
+  "copilot",
   "devin",
   "gemini-interactions",
   "kimi",
