@@ -85,10 +85,8 @@ const fallbackFields = (body: Json | undefined): GoogleThinkingFields => {
   return found(snake) ? snake : fromExtraBody(body);
 };
 
-/** The thinking config an OpenAI Chat request carries in Gemini's fields; the level wins over the budget. */
-export const extractOpenAIGoogleThinkingConfig = (body: Json | undefined): ThinkingConfig => {
-  const { level, budget } = fallbackFields(body);
-
+/** The canonical config of the found fields; the level wins over the budget. */
+const configFromFields = ({ level, budget }: GoogleThinkingFields): ThinkingConfig => {
   if (level !== undefined) {
     if (level === "none") return noneConfig();
 
@@ -105,6 +103,18 @@ export const extractOpenAIGoogleThinkingConfig = (body: Json | undefined): Think
 
   return budgetConfig(budget);
 };
+
+/**
+ * `extractOpenAIGoogleThinkingFields`: only the Google `extra_body`/`google` thinking fields of an OpenAI Chat body,
+ * without the `generationConfig` ones; the level wins over the budget.
+ */
+export const extractOpenAIGoogleExtraBodyThinkingConfig = (
+  body: Json | undefined,
+): ThinkingConfig => configFromFields(fromExtraBody(body));
+
+/** The thinking config an OpenAI Chat request carries in Gemini's fields; the level wins over the budget. */
+export const extractOpenAIGoogleThinkingConfig = (body: Json | undefined): ThinkingConfig =>
+  configFromFields(fallbackFields(body));
 
 /**
  * `ApplyOpenAIGoogleThinkingConfigDoc`: writes the Gemini thinking fields an OpenAI Chat request carries onto `out`

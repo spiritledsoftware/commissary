@@ -4,7 +4,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { extractSessionInfo, isGuardianRequest } from "../../src/handlers/session.ts";
 import type { Json, JsonObject } from "@commissary/json";
-import { derivedAntigravitySessionId } from "../../src/executor/antigravity/derived-session.ts";
+import {
+  antigravitySessionIdForCredential,
+  derivedAntigravitySessionId,
+  scopeAntigravitySessionIdForCredential,
+} from "../../src/executor/antigravity/derived-session.ts";
 import { extractCanonicalTurns, prepareFingerprints } from "../../src/session-routing/canonical.ts";
 import {
   boundSessionIdentity,
@@ -234,6 +238,22 @@ describe("derived Antigravity session ids (Go parity)", () => {
   for (const entry of fixtures.antigravitySessions) {
     it(`derived ${JSON.stringify(entry.derived)}`, () => {
       expect(derivedAntigravitySessionId(entry.derived)).toBe(entry.id);
+    });
+  }
+
+  // CLIProxyAPI 3a24d03c, 14e12fb5, 55e5a7ea: signed int64 ids scoped per credential.
+  for (const entry of fixtures.antigravityScoped) {
+    it(`scoped ${JSON.stringify(entry)}`, () => {
+      const id =
+        "incoming" in entry
+          ? scopeAntigravitySessionIdForCredential(entry.credential, entry.incoming ?? "")
+          : antigravitySessionIdForCredential(entry.credential, {
+              canonical: entry.canonical,
+              execution: entry.execution,
+              derived: entry.derived,
+            });
+
+      expect(id).toBe(entry.id);
     });
   }
 });

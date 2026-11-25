@@ -210,6 +210,8 @@ describe("accumulator -> ledger -> request restore", () => {
         requestPayload: {},
         headers: new Headers(headers),
         derivedSessionId: "",
+        canonicalSessionId: "",
+        executionSessionId: "",
         callerScope: "scope",
       },
       {},
@@ -616,6 +618,8 @@ describe("OpenAI chat replay continuity (Go da21f1e5, 80aa2b1d)", () => {
           requestPayload: { system },
           headers: sessionHeaders,
           derivedSessionId: "",
+          canonicalSessionId: "",
+          executionSessionId: "",
           callerScope: "",
         },
         {},
@@ -648,6 +652,8 @@ describe("OpenAI chat replay continuity (Go da21f1e5, 80aa2b1d)", () => {
           requestPayload: {},
           headers: new Headers(headers),
           derivedSessionId: "derived-1",
+          canonicalSessionId: "",
+          executionSessionId: "",
           callerScope: "",
         },
         {},
@@ -969,5 +975,127 @@ describe("Interactions continuation sessions", () => {
 
     for (const calls of [[], [""], ["a", "a"], ["a\u0000b"]])
       expect(interactionsCallKey(calls)).toBe("");
+  });
+});
+
+// Go: antigravity_reasoning_replay_test.go (3988a389): parallel subagents, body sessions and forks keep their own keys.
+describe("replay session key isolation (Go 3988a389)", () => {
+  const contents = { contents: [{ role: "user", parts: [{ text: "shared swarm prompt" }] }] };
+
+  const key = (
+    body: Json,
+    headers: Record<string, string> = {},
+    canonical = "",
+    translated: Json = {},
+    execution = "",
+  ) =>
+    replaySessionKey(
+      {
+        modelName: MODEL,
+        originalRequest: body,
+        requestPayload: body,
+        headers: new Headers(headers),
+        derivedSessionId: "",
+        canonicalSessionId: canonical,
+        executionSessionId: execution,
+        callerScope: "",
+      },
+      translated,
+    );
+
+  it("isolates body subagents under one session id", () => {
+    const worker = (agent: string): Json => ({
+      sessionId: "root-swarm",
+      metadata: { agent_id: agent },
+      request: contents,
+    });
+
+    expect(key(worker("worker-1"))).toBe("session:root-swarm:agent:worker-1");
+    expect(key(worker("worker-2"))).toBe("session:root-swarm:agent:worker-2");
+    expect(key(worker("worker-1"), {}, "session:root-swarm:agent:worker-1")).toBe(
+      "session:root-swarm:agent:worker-1",
+    );
+
+    const snake = (agent: string): Json => ({
+      session_id: "root-swarm",
+      metadata: { subagent_id: agent },
+      request: contents,
+    });
+
+    expect(key(snake("sub-1"))).not.toBe(key(snake("sub-2")));
+  });
+
+  it("gives a Claude Code subagent named in the body its own lane", () => {
+    const headers = { "X-Claude-Code-Session-Id": "claude-swarm-sess" };
+    const system = [{ type: "text", text: "You are Claude Code." }];
+    const messages = [{ role: "user", content: "hi" }];
+    const first = key({ metadata: { agent_id: "worker-1" }, system, messages }, headers);
+
+    const second = key(
+      {
+        metadata: {
+          user_id: JSON.stringify({ session_id: "claude-swarm-sess", agent_id: "worker-2" }),
+        },
+        system,
+        messages,
+      },
+      headers,
+    );
+
+    expect(first).toMatch(/^claude:claude-swarm-sess:agent:worker-1:context:[0-9a-f]{32}$/);
+    expect(second).toMatch(/^claude:claude-swarm-sess:agent:worker-2:context:[0-9a-f]{32}$/);
+  });
+
+  it("formats canonical sessions by kind", () => {
+    expect(key({}, {}, "session:plain-id")).toBe("session:plain-id");
+    expect(key({}, {}, "lcp:v1:branch-alpha")).toBe("client:lcp:v1:branch-alpha");
+    expect(key({}, {}, "execution:exec-only")).toBe("execution:exec-only");
+    expect(key({ prompt_cache_key: "same-value" }, {}, "pck:same-value")).toBe(
+      "prompt-cache:same-value",
+    );
+    // A user id is no session: the key falls back to the payload's.
+    expect(key({}, {}, "user:u-1")).not.toContain("user:");
+  });
+
+  it("isolates body tasks, threads and conversations", () => {
+    expect(key({ task_id: "task-alpha", request: contents })).toBe("client:task:task-alpha");
+    expect(key({ thread_id: "thread-alpha", request: contents })).toBe(
+      "client:thread:thread-alpha",
+    );
+
+    const threadA = key({ session_id: "root", thread_id: "thread-A", request: contents });
+    const threadB = key({ session_id: "root", thread_id: "thread-B", request: contents });
+    expect(threadA).not.toBe(threadB);
+    expect(threadA).toContain("thread:thread-A");
+  });
+
+  it("isolates Codex subagents sharing a Session-Id header", () => {
+    const turn = (agent: string) => ({
+      "Session-Id": "codex-root-sess",
+      "X-Codex-Turn-Metadata": JSON.stringify({ agent_name: agent, subagent_kind: "thread_spawn" }),
+    });
+
+    expect(key({}, turn("worker-1"))).not.toBe(key({}, turn("worker-2")));
+    expect(key({}, turn("worker-1"))).toMatch(/^client:codex:/);
+    expect(key({}, { "Session-Id": "codex-root-sess" })).toBe("responses:codex-root-sess");
+  });
+
+  it("ranks the WebSocket execution session ahead of prompt-cache and derived keys", () => {
+    expect(key({ prompt_cache_key: "same-value" }, {}, "", {}, "socket-session")).toBe(
+      "execution:socket-session",
+    );
+    // An explicit canonical session still wins.
+    expect(key({}, {}, "session:plain-id", {}, "socket-session")).toBe("session:plain-id");
+    expect(key({ prompt_cache_key: "same-value" })).toBe("prompt-cache:same-value");
+  });
+
+  it("replays nothing for a fork without an identifiable child session", () => {
+    const fork = { forked_from_thread_id: "parent", request: contents };
+    // Without the fork indicator the first turn's text would key it.
+    expect(key({ request: contents }, {}, "", { request: contents })).toMatch(/^session:/);
+    expect(key(fork, {}, "", { request: contents })).toBe("");
+    expect(key(fork, {}, "", { request: { ...contents, sessionId: "child-1" } })).toBe(
+      "session:child-1",
+    );
   });
 });

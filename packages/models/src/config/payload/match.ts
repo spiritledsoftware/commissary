@@ -72,14 +72,16 @@ const parseThinkingSuffix = (model: string): ThinkingSuffix => {
 };
 
 /**
- * `[upstream model, base of requested model, requested model with suffix]`, deduplicated case-insensitively, then the
- * published route's source, which keeps its canonical spelling: selectors are case-sensitive. Go:
- * internal/runtime/executor/helps/payload_helpers.go (`payloadModelCandidates`, f89d408e).
+ * `[upstream model, base of requested model, requested model with suffix]`, deduplicated
+ * case-insensitively, then the source models, each kept in its canonical spelling (skipped only on an exact match), since
+ * selectors are case-sensitive: the published route's provider-qualified source (f89d408e), or the model an Antigravity
+ * thinking variant was selected for (`NewPayloadFinalizerWithSourceModels`). Go:
+ * internal/runtime/executor/helps/payload_helpers.go (`payloadModelCandidates`).
  */
 export const payloadModelCandidates = (
   rawModel: string,
   rawRequestedModel: string,
-  rawSourceModel = "",
+  sourceModels: ReadonlyArray<string> = [],
 ): string[] => {
   const model = rawModel.trim();
   const requestedModel = rawRequestedModel.trim();
@@ -106,9 +108,11 @@ export const payloadModelCandidates = (
     if (parsed.hasSuffix) add(requestedModel);
   }
 
-  const source = rawSourceModel.trim();
+  for (const raw of sourceModels) {
+    const id = raw.trim();
 
-  if (source !== "" && !candidates.includes(source)) candidates.push(source);
+    if (id !== "" && !candidates.includes(id)) candidates.push(id);
+  }
 
   return candidates;
 };

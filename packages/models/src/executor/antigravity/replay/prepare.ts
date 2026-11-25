@@ -108,6 +108,8 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
       requestPayload: request.payload,
       headers: options.headers,
       derivedSessionId: options.metadata.derivedSessionId ?? "",
+      canonicalSessionId: options.metadata.sessionId ?? "",
+      executionSessionId: options.metadata.websocket?.sessionId ?? "",
       callerScope: options.metadata.callerScope,
     },
     payload,

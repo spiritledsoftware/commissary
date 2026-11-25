@@ -1,9 +1,9 @@
 /**
- * The Claude 5.5 model pattern shared by the forced tool-choice rewrite (`claude-tool-choice.ts`) and the Antigravity
- * structured-output prompt (`antigravity/structured-output.ts`): the two models that reject forced tool use.
+ * The Claude 5.5 model pattern of the forced tool-choice rewrite (`claude-tool-choice.ts`): the two models that reject
+ * forced tool use. Antigravity's wider pattern lives in `antigravity/structured-output.ts`.
  *
- * Go source: internal/runtime/executor/helps/antigravity_structured_output.go (`claude55Model`, CLIProxyAPI 1d45a5f3).
- * Haiku 5.5 is deliberately outside it, as in Go.
+ * Go source: internal/runtime/executor/helps/claude_tool_choice.go (`claude55Model`, CLIProxyAPI 1d45a5f3). Haiku 5.5 is
+ * deliberately outside it, as in Go.
  */
 import { parseSuffix } from "@commissary/translation/thinking";
 

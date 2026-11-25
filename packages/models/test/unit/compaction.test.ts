@@ -14,6 +14,7 @@ import {
   recognizedCompactionResponseId,
   sealCompaction,
   sealCompactionSummary,
+  sealSummaryCapsule,
 } from "../../src/executor/helps/compaction.ts";
 import type { ExecutorOptions, ExecutorRequest } from "../../src/executor/types.ts";
 
@@ -306,6 +307,20 @@ describe("sealing a summary", () => {
     const error = await Effect.runPromise(Effect.flip(sealCompactionSummary("m", body, 0)));
     expect(error.status).toBe(502);
     expect(error.requestScoped).toBe(true);
+  });
+
+  it("fails a capsule that cannot be sealed with a request-scoped 502 (CLIProxyAPI dc2455d9)", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(
+        sealSummaryCapsule("the summary", "m", async () => {
+          throw new Error("encrypt failed");
+        }),
+      ),
+    );
+
+    expect(error.status).toBe(502);
+    expect(error.requestScoped).toBe(true);
+    expect(error.message).toBe("seal compaction capsule: encrypt failed");
   });
 
   it("fails a summary without text with a request-scoped 502", async () => {

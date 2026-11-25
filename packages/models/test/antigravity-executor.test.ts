@@ -3,6 +3,19 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { resetMemoryAntigravityState } from "../src/executor/antigravity/state.ts";
+import {
+  antigravitySignatureScope,
+  scopedSignatureText,
+} from "../src/executor/antigravity/signature-scope.ts";
+import { orgSignatureCache } from "../src/signature/store.ts";
+import { env } from "cloudflare:workers";
+import {
+  antigravityCatalogScope,
+  antigravityModelsName,
+  type ModelsRecord,
+} from "../src/executor/antigravity/models.ts";
+import { orgKvOf } from "../src/kv.ts";
+import { GLOBAL_ORG } from "@commissary/core";
 import type { Json, JsonObject } from "@commissary/json";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import {
@@ -87,6 +100,17 @@ const upstream = (parts: Json[], extra: JsonObject = {}) => ({
 const sse = (events: Json[]) =>
   sseResponse(events.map((event) => `data: ${JSON.stringify(event)}\n\n`));
 
+const streamChat = (model = "gemini-2.5-flash"): JsonObject => ({
+  model,
+  stream: true,
+  messages: [{ role: "user", content: "hi" }],
+});
+
+const chat = (model = "gemini-2.5-flash"): JsonObject => ({
+  model,
+  messages: [{ role: "user", content: "hi" }],
+});
+
 describe("antigravity executor: non-stream", () => {
   it("wraps the request in the Cloud Code envelope with the whitelisted headers and applies payload rules last", async () => {
     resetMemoryAntigravityState();
@@ -124,8 +148,20 @@ describe("antigravity executor: non-stream", () => {
     expect(sent.model).toBe("gemini-2.5-flash");
     expect(sent.userAgent).toBe("antigravity");
     expect(sent.requestType).toBe("agent");
-    expect(sent.requestId).toMatch(/^agent-/);
-    expect(sent.request.sessionId).toMatch(/^-\d+$/);
+    // The agent envelope (CLIProxyAPI b8e3bc66): agent/<cascade>/<millis>/<trajectory>/<step>, signed int64 session.
+    expect(sent.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/1$/);
+    expect(sent.request.sessionId).toMatch(/^-?\d+$/);
+    expect(sent.request.labels.used_non_gemini_model).toBe("false");
+    expect(sent.request.systemInstruction.role).toBe("user");
+    // The native key order of an agent request.
+    expect(Object.keys(sent)).toEqual([
+      "project",
+      "requestId",
+      "request",
+      "model",
+      "userAgent",
+      "requestType",
+    ]);
     expect(sent.request.safetySettings).toBeUndefined();
     // Non-Claude models lose maxOutputTokens; the payload rule (root `request`) still lands afterwards.
     expect(sent.request.generationConfig.maxOutputTokens).toBeUndefined();
@@ -295,9 +331,11 @@ describe("antigravity executor: Claude 5.5 structured output", () => {
 
       const sent = JSON.parse(h.calls[0]?.body ?? "{}");
       const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
-      // The original system text (obfuscated) stays first; the schema instruction follows, complete.
-      expect(parts[0]?.text).toBe("keep the s\u034Fecret safe");
-      expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
+      // The original system text (obfuscated) stays first; the schema instruction follows, complete. The native wire
+      // format joins the parts into one (`NormalizeAntigravityRequestDoc`, CLIProxyAPI 38067a29).
+      expect(parts).toHaveLength(1);
+      expect(parts[0]?.text.startsWith("keep the s\u034Fecret safe\n\n")).toBe(true);
+      expect(parts[0]?.text).toContain(JSON.stringify(schema));
       expect(sent.request.generationConfig.responseSchema).toBeUndefined();
       expect(sent.request.generationConfig.responseJsonSchema).toBeUndefined();
       expect(sent.request.generationConfig.responseMimeType).toBeUndefined();
@@ -470,6 +508,61 @@ describe("antigravity executor: stream", () => {
 
     expect(response.status).toBe(429);
   });
+
+  it("fails a successful stream without a single JSON frame with a zero-output 502 (CLIProxyAPI 20be744e)", async () => {
+    const h = harness(() => sseResponse([": keep-alive\n\n"]), {
+      credential: unique("empty-stream"),
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(streamChat()));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("upstream stream closed with zero output");
+  });
+
+  it("fails a signature-only stream without a finish reason before the 200 (CLIProxyAPI f2efe2c4)", async () => {
+    const h = harness(
+      () =>
+        sse([
+          {
+            response: {
+              candidates: [{ content: { role: "model", parts: [{ thoughtSignature: "c2ln" }] } }],
+              usageMetadata: { promptTokenCount: 3, totalTokenCount: 3 },
+            },
+          },
+        ]),
+      { credential: unique("signature-only") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(streamChat()));
+    expect(response.status).toBe(502);
+  });
+
+  it("fails an abnormal zero-output finish inside the response envelope before the 200", async () => {
+    const h = harness(
+      () =>
+        sse([
+          {
+            response: {
+              candidates: [
+                { content: { role: "model", parts: [] }, finishReason: "MALFORMED_FUNCTION_CALL" },
+              ],
+              usageMetadata: { promptTokenCount: 3, totalTokenCount: 3 },
+            },
+          },
+        ]),
+      { credential: unique("malformed") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(streamChat()));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("MALFORMED_FUNCTION_CALL");
+  });
 });
 
 describe("antigravity executor: errors", () => {
@@ -536,6 +629,67 @@ describe("antigravity executor: errors", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("bad");
   });
+
+  it("fails an in-band error of an HTTP 200 body with its status and records the cooldown (CLIProxyAPI ec25cc83)", async () => {
+    resetMemoryAntigravityState();
+    const h = harness(() => jsonResponse(rateLimit("30.000s")), { credential: unique("in-band") });
+    afterAll(h.dispose);
+
+    const first = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(first.status).toBe(429);
+    const upstreamCalls = h.calls.length;
+    const second = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(await second.text()).toContain("auth in short cooldown");
+    expect(h.calls).toHaveLength(upstreamCalls);
+  });
+
+  it("fails an aggregated stream without a JSON frame with a zero-output 502 (CLIProxyAPI d1bdee85)", async () => {
+    const h = harness(() => sseResponse(["\n\n"]), { credential: unique("empty-aggregate") });
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(chat("claude-sonnet-4-5")));
+    expect(response.status).toBe(502);
+  });
+
+  it("falls back on the Retry-After header of a 429 without a body delay (CLIProxyAPI 84b838e1)", async () => {
+    resetMemoryAntigravityState();
+    const limit = rateLimit("1s");
+    const details = limit.error.details.slice(0, 1);
+
+    const h = harness(
+      () =>
+        jsonResponse(
+          { error: { ...limit.error, details } },
+          { status: 429, headers: { "content-type": "application/json", "retry-after": "45" } },
+        ),
+      { credential: unique("retry-after") },
+    );
+
+    afterAll(h.dispose);
+
+    const first = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(first.status).toBe(429);
+    expect(h.reports.some((report) => report.retryAfterMs === 45_000)).toBe(true);
+    const second = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(await second.text()).toContain("auth in short cooldown");
+  });
+
+  it("carries the retry hint of a 503 capacity error (CLIProxyAPI ae3d80f7)", async () => {
+    const h = harness(
+      () =>
+        jsonResponse(
+          { error: { code: 503, message: "No capacity available", status: "UNAVAILABLE" } },
+          { status: 503, headers: { "content-type": "application/json", "retry-after": "7" } },
+        ),
+      { credential: unique("capacity") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(chat()));
+    expect(response.status).toBe(503);
+    expect(h.reports.some((report) => report.retryAfterMs === 7_000)).toBe(true);
+  });
 });
 
 describe("antigravity executor: token counting", () => {
@@ -557,6 +711,106 @@ describe("antigravity executor: token counting", () => {
     expect(sent.request.safetySettings).toBeUndefined();
     expect(sent.request.sessionId).toBeUndefined();
     expect(sent.request.contents[0].parts[0].text).toBe("hello");
+    // The tokenizer model (CLIProxyAPI fb989e5f); a stream flag never reaches countTokens.
+    expect(sent.request.model).toBe("models/claude-sonnet-4-5");
+    expect(sent.request.stream).toBeUndefined();
+  });
+
+  const count = (respond: UpstreamResponder, name: string) => {
+    const h = harness(respond, { credential: unique(name) });
+    afterAll(h.dispose);
+
+    return h
+      .call(
+        "/v1/messages/count_tokens",
+        postJson({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hello" }] }),
+      )
+      .then(async (response) => ({ status: response.status, text: await response.text(), h }));
+  };
+
+  it("rejects an HTTP 200 that is not a count (CLIProxyAPI 9bce4825)", async () => {
+    const notJson = await count(() => jsonResponse("<html>oops</html>"), "count-html");
+    expect(notJson.status).toBe(502);
+    expect(notJson.text).toContain("not a valid JSON object");
+    const missing = await count(() => jsonResponse({ total: 3 }), "count-missing");
+    expect(missing.status).toBe(502);
+    expect(missing.text).toContain("missing numeric totalTokens");
+    const negative = await count(() => jsonResponse({ totalTokens: -1 }), "count-negative");
+    expect(negative.text).toContain("invalid totalTokens");
+  });
+
+  // Go `strconv.ParseUint(totalTokens.Raw, 10, 63)`: the count as written must be plain digits.
+  it("rejects a count written as a fraction or an exponent (CLIProxyAPI 9bce4825)", async () => {
+    for (const [written, name] of [
+      ["1.0", "count-fraction"],
+      ["1e3", "count-exponent"],
+    ] as const) {
+      const result = await count(
+        () =>
+          new Response(`{"totalTokens":${written}}`, {
+            headers: { "content-type": "application/json" },
+          }),
+        name,
+      );
+
+      expect(result.status).toBe(502);
+      expect(result.text).toContain("invalid totalTokens");
+    }
+
+    // A nested `totalTokens` is not the count.
+    const nested = await count(
+      () =>
+        new Response('{"meta":{"totalTokens":1.5},"totalTokens":7}', {
+          headers: { "content-type": "application/json" },
+        }),
+      "count-nested",
+    );
+
+    expect(nested.status).toBe(200);
+  });
+
+  it("reads the first of duplicate totalTokens members, as Go does", async () => {
+    const raw = (body: string) => () =>
+      new Response(body, { headers: { "content-type": "application/json" } });
+
+    const first = await count(
+      raw('{"a":{"totalTokens":"x","b":[1,{"c":"}"}]},"totalTokens":5,"totalTokens":"x"}'),
+      "count-duplicate-first",
+    );
+
+    expect(first.status).toBe(200);
+    expect(JSON.parse(first.text)).toEqual({ input_tokens: 5 });
+
+    const later = await count(raw('{"totalTokens":"x","totalTokens":5}'), "count-duplicate-later");
+    expect(later.status).toBe(502);
+    expect(later.text).toContain("missing numeric totalTokens");
+
+    const fraction = await count(
+      raw('{"totalTokens":1.5,"totalTokens":5}'),
+      "count-duplicate-fraction",
+    );
+
+    expect(fraction.status).toBe(502);
+    expect(fraction.text).toContain("invalid totalTokens");
+  });
+
+  it("limits the body by its UTF-8 bytes, not its characters", async () => {
+    // 400,000 three-byte characters: 1.2 MB, under a million characters.
+    const padding = "€".repeat(400_000);
+    const result = await count(() => jsonResponse({ totalTokens: 3, padding }), "count-utf8");
+
+    expect(result.status).toBe(502);
+    expect(result.text).toContain("exceeded 1048576 bytes");
+  });
+
+  it("answers an in-band error with its status (CLIProxyAPI 4087007c)", async () => {
+    const result = await count(
+      () => jsonResponse({ error: { code: 400, message: "bad request" } }),
+      "count-in-band",
+    );
+
+    expect(result.status).toBe(400);
+    expect(result.text).toContain("bad request");
   });
 });
 
@@ -568,6 +822,39 @@ describe("antigravity executor: Responses compaction summary", () => {
       { type: "compaction_trigger" },
     ],
     ...extra,
+  });
+
+  it("keeps the summary's cached and reasoning tokens in the compaction response (CLIProxyAPI dc2455d9)", async () => {
+    const h = harness(
+      () =>
+        jsonResponse(
+          upstream([{ text: "the summary" }], {
+            usageMetadata: {
+              promptTokenCount: 10,
+              cachedContentTokenCount: 4,
+              candidatesTokenCount: 3,
+              thoughtsTokenCount: 2,
+              totalTokenCount: 15,
+            },
+          }),
+        ),
+      { credential: unique("compaction-usage") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/responses", postJson(trigger()));
+    expect(response.status).toBe(200);
+
+    const { usage } = (await response.json()) as {
+      usage: {
+        input_tokens_details: { cached_tokens: number };
+        output_tokens_details: { reasoning_tokens: number };
+      };
+    };
+
+    expect(usage.input_tokens_details.cached_tokens).toBe(4);
+    expect(usage.output_tokens_details.reasoning_tokens).toBe(2);
   });
 
   it("answers a summary without text with a request-scoped 502, not a 500", async () => {
@@ -740,5 +1027,325 @@ describe("antigravity executor: Vertex bare-Tink thought signatures", () => {
 
     expect(parts[0]?.["thoughtSignature"]).toBe(native);
     expect(parts[1]?.["thoughtSignature"]).toBe(native);
+  });
+});
+
+// CLIProxyAPI 85225381, 06225fcf: a thinking signature belongs to the credential whose upstream issued it.
+describe("antigravity executor: signature cache per credential", () => {
+  it("records a returned signature under the credential's scope, never the org-wide key", async () => {
+    resetMemoryAntigravityState();
+    const signature = `sig-${"a".repeat(60)}`;
+    const thinking = `plan-${crypto.randomUUID()}`;
+    const owner = unique("signature-owner");
+
+    const h = harness(
+      () =>
+        sse([
+          upstream([{ text: thinking, thought: true, thoughtSignature: signature }]),
+          upstream([{ text: "done" }]),
+        ]),
+      { credential: owner },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/messages",
+      postJson({
+        model: "claude-sonnet-4-5",
+        max_tokens: 100,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const cache = orgSignatureCache(GLOBAL_ORG);
+
+    const scope = (id: string) =>
+      antigravitySignatureScope(id, { access_token: "ya29.token", project_id: "proj-1" });
+
+    expect(cache.has("claude-sonnet-4-5", scopedSignatureText(scope(owner.id), thinking))).toBe(
+      true,
+    );
+
+    expect(cache.has("claude-sonnet-4-5", thinking)).toBe(false);
+    expect(
+      cache.has("claude-sonnet-4-5", scopedSignatureText(scope("another-credential"), thinking)),
+    ).toBe(false);
+  });
+});
+
+// CLIProxyAPI cf07c78a (antigravity_executor_execute.go, antigravity_executor_stream.go): an Anthropic error the
+// translator writes (a malformed function call the zero-output guard did not see, here one with grounding only) is a
+// 502 on both paths.
+describe("antigravity executor: translated Claude errors", () => {
+  const malformed = (): JsonObject => ({
+    response: {
+      candidates: [
+        {
+          content: { role: "model", parts: [] },
+          finishReason: "MALFORMED_FUNCTION_CALL",
+          groundingMetadata: { groundingChunks: [{ web: { uri: "https://example.com" } }] },
+          index: 0,
+        },
+      ],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 },
+    },
+  });
+
+  const message = (stream: boolean): JsonObject => ({
+    model: "gemini-2.5-flash",
+    max_tokens: 16,
+    stream,
+    messages: [{ role: "user", content: "hi" }],
+  });
+
+  it("fails a non-stream answer with 502", async () => {
+    resetMemoryAntigravityState();
+
+    const h = harness(() => jsonResponse(malformed()), {
+      credential: unique("translated-error"),
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/messages", postJson(message(false)));
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("MALFORMED_FUNCTION_CALL");
+  });
+
+  it("fails a stream after the error event instead of ending it cleanly", async () => {
+    resetMemoryAntigravityState();
+    const h = harness(() => sse([malformed()]), { credential: unique("translated-error-stream") });
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/messages", postJson(message(true)));
+    const text = await response.text();
+
+    expect(text).toContain("MALFORMED_FUNCTION_CALL");
+    expect(text).not.toContain("message_stop");
+    // The stream failed with the 502 rather than ending as a success.
+    expect(h.records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+  });
+});
+
+// CLIProxyAPI 2f86992c, 14a95b19, b8e3bc66: the credential's fetchAvailableModels catalog routes an explicit thinking
+// level to its grouped variant, names the variant's enum in the labels and caps the output at the variant's limit.
+describe("antigravity executor: thinking groups", () => {
+  const seed = async (owner: typeof cred) => {
+    const stored: ModelsRecord = {
+      hints: {
+        webSearchModelIds: [],
+        modelEnums: { "gemini-3-pro-high": "M_HIGH", "gemini-3-pro-low": "M_LOW" },
+        thinkingGroups: { "gemini-3-pro": { low: 4096, high: 8192 } },
+      },
+      scope: antigravityCatalogScope(owner.attributes, owner.metadata),
+    };
+
+    await orgKvOf(env, GLOBAL_ORG).put(antigravityModelsName(owner.id), JSON.stringify(stored));
+  };
+
+  const owner = credential("antigravity", `antigravity-groups-${crypto.randomUUID()}.json`, {
+    kind: "oauth",
+    metadata: { refresh_token: "1//r", access_token: "ya29.token", project_id: "proj-1" },
+  });
+
+  it("sends the variant of the requested level with its enum and output cap, and reports usage against it", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), { credential: owner });
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/chat/completions",
+      postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low", max_tokens: 50_000 }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-low");
+    expect(sent.request.labels.model_enum).toBe("M_LOW");
+    expect(sent.request.generationConfig.maxOutputTokens).toBe(4096);
+    expect(sent.request.generationConfig.thinkingConfig.thinkingLevel).toBe("LOW");
+    expect(h.records[0]?.model).toBe("gemini-3-pro-low");
+  });
+
+  it("counts tokens as the variant a numeric suffix selects, under its output cap", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+    const h = harness(() => jsonResponse({ totalTokens: 7 }), { credential: owner });
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/messages/count_tokens",
+      postJson({
+        model: "gemini-3-pro-high(1024)",
+        max_tokens: 50_000,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.model).toBe("models/gemini-3-pro-low");
+    expect(sent.request.labels).toBeUndefined();
+    expect(sent.request.generationConfig.maxOutputTokens).toBe(4096);
+  });
+
+  // Go `TestAntigravityThinkingGroupsPayloadRulesLast`: rules for the requested model and for the variant both apply.
+  it("applies payload rules of the requested model and of the selected variant last", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+
+    const rules = await loadConfig(`
+requests:
+  payload:
+    override:
+      - models: [{ name: "gemini-3-pro-high", protocol: antigravity }]
+        params:
+          "generationConfig.maxOutputTokens": 1234
+          "labels.model_enum": "FILTER_ME"
+    filter:
+      - models: [{ name: "gemini-3-pro-low", protocol: antigravity }]
+        params: ["labels.model_enum"]
+`);
+
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), {
+      credential: owner,
+      config: rules,
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/chat/completions",
+      postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low" }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-low");
+    expect(sent.request.generationConfig.maxOutputTokens).toBe(1234);
+    expect(sent.request.labels.model_enum).toBeUndefined();
+  });
+
+  // Go marks a variant's result under the variant (`SetUpstreamAttemptModel`); Commissary keeps marking the base model
+  // until the pre-pick target check is ported, so an exhausted variant cools every level on the credential (SPI-1421).
+  it("short-cools the variant itself but reports the result against the base model", async () => {
+    resetMemoryAntigravityState();
+
+    const cooled = credential(
+      "antigravity",
+      `antigravity-groups-cool-${crypto.randomUUID()}.json`,
+      {
+        kind: "oauth",
+        metadata: { refresh_token: "1//r", access_token: "ya29.token", project_id: "proj-1" },
+      },
+    );
+
+    await seed(cooled);
+
+    const h = harness(
+      (request) =>
+        JSON.parse(request.body ?? "{}").model === "gemini-3-pro-low"
+          ? jsonResponse(
+              {
+                error: {
+                  code: 429,
+                  message: "Resource exhausted",
+                  status: "RESOURCE_EXHAUSTED",
+                  details: [
+                    {
+                      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                      reason: "RATE_LIMIT_EXCEEDED",
+                      domain: "x",
+                    },
+                    { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "30.000s" },
+                  ],
+                },
+              },
+              { status: 429 },
+            )
+          : jsonResponse(upstream([{ text: "ok" }])),
+      { credential: cooled },
+    );
+
+    afterAll(h.dispose);
+    const low = postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low" });
+
+    expect((await h.call("/v1/chat/completions", low)).status).toBe(429);
+    // The conductor marks the lease's model: the requested base model, not the variant.
+    expect(h.picks[0]?.model).toBe("gemini-3-pro-high");
+    expect(h.reports[0]).toMatchObject({ success: false, retryAfterMs: 30_000 });
+    expect(h.reports[0]?.model).toBeUndefined();
+
+    // The variant's short cooldown answers the next low request without upstream, and records no usage for the variant.
+    const calls = h.calls.length;
+    const records = h.records.length;
+    const again = await h.call("/v1/chat/completions", low);
+    expect(again.status).toBe(429);
+    expect(await again.text()).toContain("auth in short cooldown");
+    expect(h.calls).toHaveLength(calls);
+    expect(h.records.slice(records).map((record) => record.model)).not.toContain(
+      "gemini-3-pro-low",
+    );
+
+    // The base model itself is not short-cooled by the executor.
+    expect((await h.call("/v1/chat/completions", postJson(chat("gemini-3-pro-high")))).status).toBe(
+      200,
+    );
+  });
+
+  it("ignores a stored catalog over 2 MiB", async () => {
+    resetMemoryAntigravityState();
+
+    const big = credential("antigravity", `antigravity-groups-big-${crypto.randomUUID()}.json`, {
+      kind: "oauth",
+      metadata: { refresh_token: "1//r", access_token: "ya29.token", project_id: "proj-1" },
+    });
+
+    const stored: ModelsRecord = {
+      hints: {
+        webSearchModelIds: ["x".repeat(2 << 20)],
+        modelEnums: { "gemini-3-pro-high": "M_HIGH", "gemini-3-pro-low": "M_LOW" },
+        thinkingGroups: { "gemini-3-pro": { low: 4096, high: 8192 } },
+      },
+      scope: antigravityCatalogScope(big.attributes, big.metadata),
+    };
+
+    await orgKvOf(env, GLOBAL_ORG).put(antigravityModelsName(big.id), JSON.stringify(stored));
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), { credential: big });
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/chat/completions",
+      postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low" }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-high");
+    expect(sent.request.labels.model_enum).toBeUndefined();
+  });
+
+  it("keeps the requested model, with its own enum, without a thinking level", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), { credential: owner });
+    afterAll(h.dispose);
+
+    expect((await h.call("/v1/chat/completions", postJson(chat("gemini-3-pro-high")))).status).toBe(
+      200,
+    );
+
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-high");
+    expect(sent.request.labels.model_enum).toBe("M_HIGH");
+    expect(h.records[0]?.model).toBe("gemini-3-pro-high");
   });
 });

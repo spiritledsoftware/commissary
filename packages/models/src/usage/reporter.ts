@@ -63,6 +63,7 @@ export class UsageReporter {
   #firstPacketAt: number | undefined;
   #reasoningEffort: string | undefined;
   #serviceTier: string;
+  #model: string;
   #finished = false;
   /** Usage of extra models the attempt consumed (`PublishAdditionalModel`, e.g. the Codex image tool). */
   readonly #additional: Array<{ readonly model: string; readonly detail: UsageDetail }> = [];
@@ -70,6 +71,15 @@ export class UsageReporter {
   constructor(readonly init: UsageReporterInit) {
     this.#reasoningEffort = init.reasoningEffort;
     this.#serviceTier = init.serviceTier;
+    this.#model = init.model;
+  }
+
+  /**
+   * `SetAttemptModel`: the record names the model actually scheduled (an Antigravity thinking variant) while keeping
+   * the caller's alias. Call before the record is published.
+   */
+  setAttemptModel(model: string): void {
+    this.#model = model;
   }
 
   /**
@@ -226,7 +236,7 @@ export class UsageReporter {
       ...(init.traceId !== undefined ? { traceId: init.traceId } : {}),
       provider: init.provider,
       executorType: init.executorType,
-      model: init.model,
+      model: this.#model,
       alias: init.alias,
       endpoint: init.endpoint,
       principalId: init.principalId,

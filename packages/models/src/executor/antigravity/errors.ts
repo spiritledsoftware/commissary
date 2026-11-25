@@ -1,12 +1,13 @@
 /**
  * Antigravity upstream error handling: the 429 decision table, on the retry delays of `helps/google-retry.ts`.
  *
- * Go source: internal/runtime/executor/antigravity_executor_credits.go (`decideAntigravity429`, `newAntigravityStatusErr`,
+ * Go source: internal/runtime/executor/antigravity_executor_credits.go (`decideAntigravity429WithHeaders`,
+ * `newAntigravityStatusErrWithHeaders`,
  * `antigravityHasExplicitCreditsBalanceExhaustedReason`).
  */
 import { asString, get, isJsonArray, tryParseJson } from "@commissary/json";
 import { ExecutionError, headersRecord } from "../errors.ts";
-import { ERROR_INFO, parseGoogleRetryDelayMs } from "../helps/google-retry.ts";
+import { ERROR_INFO, parseGoogleRetryDelayWithHeadersMs } from "../helps/google-retry.ts";
 
 export const INSTANT_RETRY_THRESHOLD_MS = 3_000;
 
@@ -24,10 +25,21 @@ export interface Antigravity429Decision {
   readonly reason: string;
 }
 
-/** `decideAntigravity429`. */
-export const decideAntigravity429 = (body: string): Antigravity429Decision => {
-  if (body === "") return { kind: "soft_retry", reason: "" };
-  const retryAfterMs = parseGoogleRetryDelayMs(body);
+/**
+ * The 429 decision table: the retry delay comes from the body, else the `Retry-After` header (CLIProxyAPI 84b838e1; a
+ * mid-stream error frame has no headers). `now` is the caller's clock reading, for an HTTP-date header.
+ */
+export const decideAntigravity429 = (
+  body: string,
+  headers: Headers | undefined,
+  now: number,
+): Antigravity429Decision => {
+  const retryAfterMs = parseGoogleRetryDelayWithHeadersMs(headers, body, now);
+
+  if (body === "")
+    return retryAfterMs === undefined
+      ? { kind: "soft_retry", reason: "" }
+      : { kind: "soft_retry", retryAfterMs, reason: "" };
 
   const withDelay = (kind: Antigravity429Kind, reason: string): Antigravity429Decision =>
     retryAfterMs === undefined ? { kind, reason } : { kind, retryAfterMs, reason };
@@ -84,13 +96,20 @@ export const hasExplicitCreditsBalanceExhaustedReason = (body: string): boolean 
   );
 };
 
-/** `newAntigravityStatusErr`: the upstream body verbatim; a 429 carries its retry delay. */
+/**
+ * `newAntigravityStatusErrWithHeaders`: the upstream body verbatim; a 429 or a 503 capacity error carries its retry
+ * delay, from the body or the `Retry-After` header (CLIProxyAPI 84b838e1, ae3d80f7).
+ */
 export const antigravityStatusError = (
   status: number,
   body: string,
   headers: Headers,
+  now: number,
 ): ExecutionError => {
-  const retryAfterMs = status === 429 ? parseGoogleRetryDelayMs(body) : undefined;
+  const retryAfterMs =
+    status === 429 || status === 503
+      ? parseGoogleRetryDelayWithHeadersMs(headers, body, now)
+      : undefined;
 
   return new ExecutionError({
     status,

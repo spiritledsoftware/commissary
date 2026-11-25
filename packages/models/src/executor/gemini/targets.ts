@@ -129,7 +129,8 @@ export const isNativeVertexInteractions = (context: ExecutionContext): boolean =
 
 const accessTokenOf = (metadata: JsonObject): string => metadataString(metadata, "access_token");
 
-const metadataString = (metadata: JsonObject, key: string): string => {
+/** A trimmed string of the credential metadata, `""` when absent or not a string. */
+export const metadataString = (metadata: JsonObject, key: string): string => {
   const value = metadata[key];
 
   return typeof value === "string" ? value.trim() : "";

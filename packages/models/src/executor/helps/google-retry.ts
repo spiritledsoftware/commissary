@@ -95,3 +95,25 @@ export const parseGoogleRetryDelayMs = (body: string): number | undefined => {
 
   return structuredRetryDelayMs(root, true) ?? messageRetryDelayMs(root, true);
 };
+
+/**
+ * `ParseRetryDelayWithHeaders` (CLIProxyAPI 84b838e1): the body's retry delay (explicit zero kept), else the
+ * `Retry-After` header, where an explicit `0` seconds is kept too but an HTTP date must lie in the future.
+ */
+export const parseGoogleRetryDelayWithHeadersMs = (
+  headers: Headers | undefined,
+  body: string,
+  now: number,
+): number | undefined => {
+  const fromBody = parseGoogleRetryDelayMs(body);
+
+  if (fromBody !== undefined) return fromBody;
+  const raw = (headers?.get("retry-after") ?? "").trim();
+
+  if (raw === "") return undefined;
+  const header = parseRetryAfterMs(raw, now);
+
+  if (header === undefined) return undefined;
+
+  return /^\d+$/.test(raw) || header > 0 ? header : undefined;
+};

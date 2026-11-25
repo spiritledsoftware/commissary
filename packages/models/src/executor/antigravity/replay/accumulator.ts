@@ -502,13 +502,14 @@ export class ReplayAccumulator {
       .deleteIfUnchanged(scope.modelName, scope.sessionKey, scope.snapshot)
       .pipe(Effect.asVoid);
 
-    if (this.#overflow) return clear;
+    // A client that disconnects right after the terminal chunk must not abort the write (CLIProxyAPI 327b4c61).
+    if (this.#overflow) return Effect.uninterruptible(clear);
     this.#appendPendingSignatures();
 
-    if (this.#overflow || this.#items.length === 0) return clear;
+    if (this.#overflow || this.#items.length === 0) return Effect.uninterruptible(clear);
 
     return ledger
       .replaceIfUnchanged(scope.modelName, scope.sessionKey, scope.snapshot, this.#items)
-      .pipe(Effect.asVoid);
+      .pipe(Effect.asVoid, Effect.uninterruptible);
   }
 }

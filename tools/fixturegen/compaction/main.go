@@ -40,11 +40,13 @@ import (
 )
 
 var (
-	capsuleRe    = regexp.MustCompile(`cpa-ag-compact-v1:[A-Za-z0-9_-]+`)
-	idRe         = regexp.MustCompile(`((?:resp|cmp)_ag_compact_)\d+`)
-	timeRe       = regexp.MustCompile(`"(created_at|completed_at)":\d+`)
-	requestIDRe  = regexp.MustCompile(`"requestId":"[^"]*"`)
-	sessionIDRe  = regexp.MustCompile(`"sessionId":"[^"]*"`)
+	capsuleRe   = regexp.MustCompile(`cpa-ag-compact-v1:[A-Za-z0-9_-]+`)
+	idRe        = regexp.MustCompile(`((?:resp|cmp)_ag_compact_)\d+`)
+	timeRe      = regexp.MustCompile(`"(created_at|completed_at)":\d+`)
+	requestIDRe = regexp.MustCompile(`"requestId":"[^"]*"`)
+	sessionIDRe = regexp.MustCompile(`"sessionId":"[^"]*"`)
+	// The agent envelope's labels carry a random cascade and trajectory per session.
+	labelIDRe    = regexp.MustCompile(`"(cascade_id|root_cascade_id|trajectory_id|request_id)":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	summaryModel = "claude-haiku-4-5-20251001"
 )
 
@@ -54,6 +56,7 @@ func normalize(text string) string {
 	text = timeRe.ReplaceAllString(text, `"$1":0`)
 	text = requestIDRe.ReplaceAllString(text, `"requestId":"R"`)
 	text = sessionIDRe.ReplaceAllString(text, `"sessionId":"S"`)
+	text = labelIDRe.ReplaceAllString(text, `"$1":"U`)
 	return text
 }
 

@@ -39,6 +39,7 @@ import { ExecutionError, headersRecord, notImplemented } from "../errors.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { parseGoogleRetryAfterMs } from "../helps/google-retry.ts";
 import {
+  claudeStreamErrorPayload,
   translatedClaudeError,
   type ZeroOutputAction,
   zeroOutputError,
@@ -326,19 +327,6 @@ export const convertImagenToGeminiResponse = (
     responseId: `imagen-${nowNanos}`,
     usageMetadata: { candidatesTokenCount: 0, promptTokenCount: 0, totalTokenCount: 0 },
   });
-};
-
-/** Go `TranslatedClaudeStreamErrorPayload`: the data payload of the first `error` event among translated Claude chunks. */
-const claudeStreamErrorPayload = (chunks: ReadonlyArray<string>): string | undefined => {
-  for (const chunk of chunks) {
-    for (const line of chunk.split("\n")) {
-      const payload = jsonPayload(line);
-
-      if (payload !== undefined && get(tryParseJson(payload), "type") === "error") return payload;
-    }
-  }
-
-  return undefined;
 };
 
 /**

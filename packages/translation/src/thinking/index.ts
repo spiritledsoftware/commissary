@@ -2,6 +2,8 @@
  * Thinking pipeline: suffix parsing, per-format extractors, canonical config, central validation, provider
  * appliers, strip rules and reasoning-summary handling. Port of internal/thinking.
  */
+export { requestedAntigravityThinkingLevel } from "./antigravity-intent.ts";
+
 export { applyThinking, type ApplyThinkingOptions, type ApplyThinkingResult } from "./apply.ts";
 
 export { claudeEffortDirective, claudeOutputEffort } from "./claude-effort-directive.ts";

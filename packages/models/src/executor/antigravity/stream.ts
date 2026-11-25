@@ -17,8 +17,6 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { jsonPayload, stripUsageMetadataFromJson } from "../gemini/usage.ts";
-import { ExecutionError } from "../errors.ts";
-import { antigravityStatusError } from "./errors.ts";
 
 const finishReasonOf = (root: Json | undefined): string =>
   asString(
@@ -68,49 +66,113 @@ export class UsageFilter {
   }
 }
 
-/** Result of feeding one SSE line to {@link JsonAssembler}. */
-export type Assembled =
-  | { readonly kind: "none" }
-  | { readonly kind: "payload"; readonly payload: string }
-  | { readonly kind: "error"; readonly error: ExecutionError };
+/** `StreamScannerBuffer`: the largest JSON payload the assembler buffers. */
+const MAX_ASSEMBLED_BYTES = 52_428_800;
 
-/** Collects JSON objects that upstream split over several SSE lines (`pendingJSON`) and detects `error` objects. */
+/** `isSSEControlLine`: an SSE comment or a field other than `data`. */
+const isControlLine = (trimmed: string): boolean =>
+  trimmed.startsWith(":") ||
+  trimmed.startsWith("event:") ||
+  trimmed.startsWith("id:") ||
+  trimmed.startsWith("retry:") ||
+  trimmed === "event" ||
+  trimmed === "id" ||
+  trimmed === "retry";
+
+/**
+ * `SSEJSONAssembler` (CLIProxyAPI 892fc486): reassembles JSON payloads that upstream split over several SSE lines. A
+ * malformed event is isolated to its own event: only an empty line ends an event, and a `data:` payload that outgrows
+ * the limit is dropped up to that line. Lengths are counted in UTF-16 units, close enough for a 50 MiB bound.
+ */
 export class JsonAssembler {
   #pending = "";
+  #fromData = false;
+  #discardUntilBlank = false;
 
-  push(line: string): Assembled {
-    let payload = jsonPayload(line);
+  #reset(): void {
+    this.#pending = "";
+    this.#fromData = false;
+    this.#discardUntilBlank = false;
+  }
+
+  /** The next complete JSON payload, or `undefined` when the line carries none (yet). */
+  push(line: string): string | undefined {
+    if (line.replace(/\r$/, "") === "") {
+      this.#reset();
+
+      return undefined;
+    }
+
+    if (this.#discardUntilBlank) return undefined;
+    const trimmed = line.trim();
+
+    if (trimmed === "") return undefined;
 
     if (this.#pending !== "") {
-      let trimmed = line.trim();
+      if (isControlLine(trimmed)) return undefined;
+      let chunk: string;
 
-      if (trimmed.startsWith("data:")) trimmed = trimmed.slice(5).trim();
+      if (trimmed.startsWith("data:")) chunk = trimmed.slice(5).trim();
+      else if (trimmed === "data" || this.#fromData) return undefined;
+      else chunk = trimmed;
 
-      if (trimmed !== "") this.#pending += `\n${trimmed}`;
+      if (chunk === "[DONE]") {
+        this.#reset();
 
-      if (tryParseJson(this.#pending) === undefined) return { kind: "none" };
-      payload = this.#pending;
-      this.#pending = "";
-    } else if (payload !== undefined && tryParseJson(payload) === undefined) {
-      this.#pending = payload;
+        return undefined;
+      }
 
-      return { kind: "none" };
+      if (chunk === "") return undefined;
+
+      if (this.#pending.length + 1 + chunk.length > MAX_ASSEMBLED_BYTES) {
+        const wasFromData = this.#fromData;
+        this.#reset();
+        this.#discardUntilBlank = wasFromData;
+
+        return undefined;
+      }
+
+      this.#pending += `\n${chunk}`;
+
+      if (tryParseJson(this.#pending) === undefined) return undefined;
+      const payload = this.#pending;
+      this.#reset();
+
+      return payload;
     }
 
-    if (payload === undefined) return { kind: "none" };
-    const error = get(tryParseJson(payload), "error");
+    const payload = jsonPayload(line);
 
-    if (error !== undefined) {
-      let status = Math.trunc(Number(get(error, "code") ?? 0));
+    if (payload === undefined) return undefined;
 
-      if (!(status >= 400 && status <= 599)) status = 502;
+    if (tryParseJson(payload) !== undefined) return payload;
+    const fromData = trimmed.startsWith("data:");
 
-      return { kind: "error", error: antigravityStatusError(status, payload, new Headers()) };
+    if (payload.length > MAX_ASSEMBLED_BYTES) {
+      this.#discardUntilBlank = fromData;
+
+      return undefined;
     }
 
-    return { kind: "payload", payload };
+    this.#pending = payload;
+    this.#fromData = fromData;
+
+    return undefined;
   }
 }
+
+/**
+ * The status of an in-band `error` object in an HTTP 2xx body or stream frame (`antigravityInBandErrorStatusCode`):
+ * its `code` when that is a 4xx/5xx, else 502; `undefined` without one (a `null` error is none).
+ */
+export const inBandErrorStatus = (root: Json | undefined): number | undefined => {
+  const error = get(root, "error");
+
+  if (error === undefined || error === null) return undefined;
+  const status = Math.trunc(Number(get(error, "code") ?? 0));
+
+  return status >= 400 && status <= 599 ? status : 502;
+};
 
 /** A chunk is terminal when it carries a finishReason, or when its translation ends the client stream. */
 export const isTerminalPayload = (payload: string): boolean =>

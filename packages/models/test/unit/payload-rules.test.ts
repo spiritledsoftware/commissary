@@ -494,18 +494,40 @@ describe("payload rules engine details", () => {
   });
 
   it("payloadModelCandidates adds a published route's source in its canonical spelling (f89d408e)", () => {
-    expect(payloadModelCandidates("gpt-6-sol", "sonnet", "copilot/gpt-6-sol")).toEqual([
+    expect(payloadModelCandidates("gpt-6-sol", "sonnet", ["copilot/gpt-6-sol"])).toEqual([
       "gpt-6-sol",
       "sonnet",
       "copilot/gpt-6-sol",
     ]);
-    expect(payloadModelCandidates("gpt-6-sol", "COPILOT/GPT-6-SOL", "copilot/gpt-6-sol")).toEqual([
-      "gpt-6-sol",
-      "COPILOT/GPT-6-SOL",
-      "copilot/gpt-6-sol",
+    expect(payloadModelCandidates("gpt-6-sol", "COPILOT/GPT-6-SOL", ["copilot/gpt-6-sol"])).toEqual(
+      ["gpt-6-sol", "COPILOT/GPT-6-SOL", "copilot/gpt-6-sol"],
+    );
+    expect(payloadModelCandidates("", "", [" copilot/gpt-6-sol "])).toEqual(["copilot/gpt-6-sol"]);
+    expect(payloadModelCandidates("gpt-6-sol", "", [" "])).toEqual(["gpt-6-sol"]);
+  });
+
+  // Go `NewPayloadFinalizerWithSourceModels`: an Antigravity thinking variant keeps the rules of the model it was
+  // selected for, behind an alias too; a source model differing only in case is kept, since selectors are case-sensitive.
+  it("payloadModelCandidates appends the source models", () => {
+    expect(payloadModelCandidates("g-low", "alias", ["g-high", "G-LOW", "g-low", " "])).toEqual([
+      "g-low",
+      "alias",
+      "g-high",
+      "G-LOW",
     ]);
-    expect(payloadModelCandidates("", "", " copilot/gpt-6-sol ")).toEqual(["copilot/gpt-6-sol"]);
-    expect(payloadModelCandidates("gpt-6-sol", "", " ")).toEqual(["gpt-6-sol"]);
+
+    const rules = { override: [{ models: [{ name: "g-high" }], params: { hit: true } }] };
+
+    expect(apply(rules, { model: "g-low", requestedModel: "alias", protocol: "x" }, {})).toEqual(
+      {},
+    );
+    expect(
+      apply(
+        rules,
+        { model: "g-low", requestedModel: "alias", sourceModels: ["g-high"], protocol: "x" },
+        {},
+      ),
+    ).toEqual({ hit: true });
   });
 
   it("resolvePayloadRulePaths expands queries into index paths", () => {

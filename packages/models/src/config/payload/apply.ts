@@ -50,10 +50,12 @@ export interface PayloadRequest {
   /** Model string the client sent (may carry a `(thinking)` suffix); lets rules target aliases. */
   readonly requestedModel?: string;
   /**
-   * The published route's provider-qualified source (`copilot/gpt-6-sol`), which rules may also name. Go:
-   * internal/runtime/executor/helps/payload_helpers.go (`ApplyPayloadConfigWithRequestDoc`, f89d408e).
+   * Intermediate resolved model ids rules may also name: the published route's provider-qualified source
+   * (`copilot/gpt-6-sol`; Go `ApplyPayloadConfigWithRequestDoc`, f89d408e), or the model an Antigravity thinking variant
+   * was selected for (Go `NewPayloadFinalizerWithSourceModels`). Go:
+   * internal/runtime/executor/helps/payload_helpers.go.
    */
-  readonly sourceModel?: string;
+  readonly sourceModels?: ReadonlyArray<string>;
   /** Target (provider) protocol of the payload, e.g. `openai`, `claude`, `gemini`, `codex`, `antigravity`. */
   readonly protocol: string;
   /** Source (client) protocol, e.g. `openai`, `responses`, `claude`, `gemini`. */
@@ -230,7 +232,7 @@ export const applyPayloadRules = (
   const model = request.model.trim();
   const requestedModel = (request.requestedModel ?? "").trim();
 
-  const candidates = payloadModelCandidates(model, requestedModel, request.sourceModel);
+  const candidates = payloadModelCandidates(model, requestedModel, request.sourceModels);
 
   if (!hasPayloadRules || candidates.length === 0) return { payload: out, touched };
 

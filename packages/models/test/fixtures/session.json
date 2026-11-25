@@ -1,12 +1,137 @@
 {
+ "antigravityScoped": [
+  {
+   "credential": "auth-a",
+   "canonical": "session:abc",
+   "execution": "ws-1",
+   "derived": "ctx:v1:abc",
+   "id": "8938114677403345696"
+  },
+  {
+   "credential": "auth-a",
+   "execution": "ws-1",
+   "derived": "ctx:v1:abc",
+   "id": "2600363608937582804"
+  },
+  {
+   "credential": "auth-a",
+   "derived": "ctx:v1:abc",
+   "id": "377930345249753081"
+  },
+  {
+   "credential": "auth-a",
+   "derived": "ctx:v1:abd",
+   "id": "8840790425754414382"
+  },
+  {
+   "credential": "auth-a",
+   "id": ""
+  },
+  {
+   "credential": "auth-a",
+   "incoming": "-1234567890",
+   "id": "-1630971645993963500"
+  },
+  {
+   "credential": "auth-a",
+   "incoming": " 42 ",
+   "id": "-3350209502371718110"
+  },
+  {
+   "credential": "auth-a",
+   "id": ""
+  },
+  {
+   "credential": "auth-b",
+   "canonical": "session:abc",
+   "execution": "ws-1",
+   "derived": "ctx:v1:abc",
+   "id": "-5191986634764934963"
+  },
+  {
+   "credential": "auth-b",
+   "execution": "ws-1",
+   "derived": "ctx:v1:abc",
+   "id": "-5591801203641346635"
+  },
+  {
+   "credential": "auth-b",
+   "derived": "ctx:v1:abc",
+   "id": "9095205864543859688"
+  },
+  {
+   "credential": "auth-b",
+   "derived": "ctx:v1:abd",
+   "id": "598885509316798571"
+  },
+  {
+   "credential": "auth-b",
+   "id": ""
+  },
+  {
+   "credential": "auth-b",
+   "incoming": "-1234567890",
+   "id": "8767747292389925179"
+  },
+  {
+   "credential": "auth-b",
+   "incoming": " 42 ",
+   "id": "-1990529235510643995"
+  },
+  {
+   "credential": "auth-b",
+   "id": ""
+  },
+  {
+   "credential": "",
+   "canonical": "session:abc",
+   "execution": "ws-1",
+   "derived": "ctx:v1:abc",
+   "id": "-2087272813315488128"
+  },
+  {
+   "credential": "",
+   "execution": "ws-1",
+   "derived": "ctx:v1:abc",
+   "id": "6533513072003528236"
+  },
+  {
+   "credential": "",
+   "derived": "ctx:v1:abc",
+   "id": "-5145062517813872159"
+  },
+  {
+   "credential": "",
+   "derived": "ctx:v1:abd",
+   "id": "1745393985886777342"
+  },
+  {
+   "credential": "",
+   "id": ""
+  },
+  {
+   "credential": "",
+   "incoming": "-1234567890",
+   "id": "-1234567890"
+  },
+  {
+   "credential": "",
+   "incoming": " 42 ",
+   "id": "42"
+  },
+  {
+   "credential": "",
+   "id": ""
+  }
+ ],
  "antigravitySessions": [
   {
    "derived": "ctx:v1:abc",
-   "id": "-343153222512140981"
+   "id": "-75256649208330661"
   },
   {
    "derived": "ctx:v1:0123456789abcdef",
-   "id": "-1008492153426790619"
+   "id": "-4149584204787596307"
   },
   {
    "derived": "",

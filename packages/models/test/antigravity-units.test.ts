@@ -32,16 +32,32 @@ import {
   stableSessionId,
 } from "../src/executor/antigravity/envelope.ts";
 import { prepareClaudeStructuredOutput } from "../src/executor/antigravity/structured-output.ts";
+import { scopeAntigravitySessionIdForCredential } from "../src/executor/antigravity/derived-session.ts";
+import { serializeAntigravityPayload } from "../src/executor/antigravity/payload-order.ts";
+import { aggregatesStream } from "../src/executor/antigravity/executor.ts";
+import {
+  antigravitySignatureScope,
+  scopedSignatureCache,
+  scopedSignatureText,
+} from "../src/executor/antigravity/signature-scope.ts";
 import { normalizeFunctionResponseRoles } from "../src/executor/antigravity/content.ts";
 import { usesReasoningReplay } from "../src/executor/helps/reasoning-replay.ts";
 import {
+  antigravityCatalogScope,
   loadAntigravityHints,
+  type ModelsRecord,
   nextFailure,
   parseModelHints,
   refreshAntigravityModels,
 } from "../src/executor/antigravity/models.ts";
 import {
+  antigravityExcludedModels,
+  selectAntigravityModel,
+} from "../src/executor/antigravity/model-selection.ts";
+import { decodeConfig } from "../src/config/codec.ts";
+import {
   convertStreamToNonStream,
+  inBandErrorStatus,
   JsonAssembler,
   UsageFilter,
 } from "../src/executor/antigravity/stream.ts";
@@ -129,23 +145,25 @@ describe("429 decisions and retry delays", () => {
   });
 
   it("follows the decision table", () => {
-    expect(decideAntigravity429("").kind).toBe("soft_retry");
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "1s", "NOT_EXHAUSTED")).kind).toBe(
-      "soft_retry",
-    );
-    expect(decideAntigravity429(body("QUOTA_EXHAUSTED")).kind).toBe("full_quota_exhausted");
-    expect(decideAntigravity429(body("INSUFFICIENT_G1_CREDITS_BALANCE")).kind).toBe(
+    expect(decideAntigravity429("", undefined, 0).kind).toBe("soft_retry");
+    expect(
+      decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "1s", "NOT_EXHAUSTED"), undefined, 0).kind,
+    ).toBe("soft_retry");
+    expect(decideAntigravity429(body("QUOTA_EXHAUSTED"), undefined, 0).kind).toBe(
       "full_quota_exhausted",
     );
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED")).kind).toBe("soft_retry");
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "2s")).kind).toBe(
+    expect(decideAntigravity429(body("INSUFFICIENT_G1_CREDITS_BALANCE"), undefined, 0).kind).toBe(
+      "full_quota_exhausted",
+    );
+    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED"), undefined, 0).kind).toBe("soft_retry");
+    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "2s"), undefined, 0).kind).toBe(
       "instant_retry_same_auth",
     );
-    expect(decideAntigravity429(body("rate_limit_exceeded", "30s"))).toMatchObject({
+    expect(decideAntigravity429(body("rate_limit_exceeded", "30s"), undefined, 0)).toMatchObject({
       kind: "short_cooldown_switch_auth",
       retryAfterMs: 30_000,
     });
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "300s")).kind).toBe(
+    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "300s"), undefined, 0).kind).toBe(
       "full_quota_exhausted",
     );
     expect(
@@ -153,10 +171,16 @@ describe("429 decisions and retry delays", () => {
         JSON.stringify({
           error: { status: "RESOURCE_EXHAUSTED", message: "Quota exhausted today" },
         }),
+        undefined,
+        0,
       ).kind,
     ).toBe("full_quota_exhausted");
     expect(
-      decideAntigravity429(JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } })).kind,
+      decideAntigravity429(
+        JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }),
+        undefined,
+        0,
+      ).kind,
     ).toBe("soft_retry");
   });
 
@@ -178,6 +202,13 @@ describe("429 decisions and retry delays", () => {
   });
 });
 
+const envelopeOptions = (credentialId = "", sessionId = "", now = 1_700_000_000_000) => ({
+  credentialId,
+  org: "org-test",
+  sessionId,
+  now,
+});
+
 describe("envelope", () => {
   it("derives stable session ids from the first user text and completes the envelope", () => {
     const payload: Json = {
@@ -187,34 +218,121 @@ describe("envelope", () => {
     };
 
     expect(stableSessionId(payload)).toBe(stableSessionId(structuredClone(payload)));
-    expect(stableSessionId(payload)).toMatch(/^-\d+$/);
+    // Signed int64 (CLIProxyAPI 55e5a7ea): FNV-1a of "hello".
+    expect(stableSessionId(payload)).toBe("-6615550055289275125");
+    // Scoped per credential (3a24d03c).
+    expect(stableSessionId(payload, "auth-a")).not.toBe(stableSessionId(payload, "auth-b"));
     const before = structuredClone(payload);
-    const out = geminiToAntigravity("claude-sonnet-4-5", payload, "proj", "", 1_700_000_000_000);
+
+    const { payload: out, isAgent } = geminiToAntigravity(
+      "claude-sonnet-4-5",
+      payload,
+      "proj",
+      envelopeOptions(),
+    );
+
     expect(payload).toEqual(before);
+    expect(isAgent).toBe(true);
     expect(get(out, "project")).toBe("proj");
     expect(get(out, "requestType")).toBe("agent");
     expect(get(out, "request.safetySettings")).toBeUndefined();
     expect(get(out, "request.toolConfig.functionCallingConfig.mode")).toBe("AUTO");
     expect(get(out, "toolConfig")).toBeUndefined();
-    expect(asString(get(out, "requestId"))).toMatch(/^agent-[0-9a-f-]{36}$/);
+    expect(asString(get(out, "requestId"))).toMatch(
+      /^agent\/[0-9a-f-]{36}\/1700000000000\/[0-9a-f-]{36}\/1$/,
+    );
+    expect(get(out, "request.labels.used_claude")).toBe("true");
+    expect(get(out, "request.labels.used_non_gemini_model")).toBe("true");
+    expect(get(out, "request.labels.last_step_index")).toBe("0");
   });
 
-  it("keeps explicit and derived session ids, skips them for image and web search requests", () => {
+  it("scans every part of a user turn for the session text (CLIProxyAPI 18a03e40)", () => {
+    const payload: Json = {
+      request: {
+        contents: [{ role: "user", parts: [{ inlineData: { data: "AA" } }, { text: "hello" }] }],
+      },
+    };
+
+    expect(stableSessionId(payload)).toBe("-6615550055289275125");
+  });
+
+  it("keeps one cascade per credential session and counts the agent's steps", () => {
+    const payload: Json = {
+      request: {
+        contents: [
+          { role: "user", parts: [{ text: "go" }] },
+          { role: "model", parts: [{ functionCall: { name: "f", args: {} } }] },
+          { role: "user", parts: [{ functionResponse: { name: "f", response: {} } }] },
+        ],
+      },
+    };
+
+    const first = geminiToAntigravity("gemini-3-pro", payload, "p", envelopeOptions("a", "s", 5));
+    const again = geminiToAntigravity("gemini-3-pro", payload, "p", envelopeOptions("a", "s", 5));
+    const other = geminiToAntigravity("gemini-3-pro", payload, "p", envelopeOptions("b", "s", 5));
+    const cascade = get(first.payload, "request.labels.cascade_id");
+    expect(get(again.payload, "request.labels.cascade_id")).toBe(cascade);
+    expect(get(other.payload, "request.labels.cascade_id")).not.toBe(cascade);
+    expect(get(first.payload, "request.labels.last_step_index")).toBe("2");
+    // Two requests within one millisecond still get distinct request ids.
+    expect(get(again.payload, "requestId")).not.toBe(get(first.payload, "requestId"));
+    expect(get(first.payload, "request.labels.used_non_gemini_model")).toBe("false");
+  });
+
+  it("scopes the session per credential, prefers the request's own session, skips image and web search", () => {
     const explicit: Json = { request: { sessionId: "mine", contents: [] } };
-    const explicitOut = geminiToAntigravity("gemini-3-pro", explicit, "p", "derived");
-    expect(get(explicitOut, "request.sessionId")).toBe("mine");
-    const derived: Json = { request: { contents: [] } };
-    const derivedOut = geminiToAntigravity("gemini-3-pro", derived, "p", "derived");
-    expect(get(derivedOut, "request.sessionId")).toBe("derived");
+    const unscoped = geminiToAntigravity("gemini-3-pro", explicit, "p", envelopeOptions());
+    expect(get(unscoped.payload, "request.sessionId")).toBe("mine");
+    const scoped = geminiToAntigravity("gemini-3-pro", explicit, "p", envelopeOptions("auth-a"));
+
+    expect(get(scoped.payload, "request.sessionId")).toBe(
+      scopeAntigravitySessionIdForCredential("auth-a", "mine"),
+    );
+
+    const derived = geminiToAntigravity("gemini-3-pro", explicit, "p", envelopeOptions("a", "-9"));
+    expect(get(derived.payload, "request.sessionId")).toBe("-9");
     const image: Json = { request: { contents: [] } };
-    const imageOut = geminiToAntigravity("gemini-3.1-flash-image", image, "p", "", 5);
-    expect(get(imageOut, "requestType")).toBe("image_gen");
-    expect(asString(get(imageOut, "requestId"))).toMatch(/^image_gen\/5\/[0-9a-f-]{36}\/12$/);
-    expect(get(imageOut, "request.sessionId")).toBeUndefined();
+
+    const imageOut = geminiToAntigravity(
+      "gemini-3.1-flash-image",
+      image,
+      "p",
+      envelopeOptions("", "", 5),
+    );
+
+    expect(imageOut.isAgent).toBe(false);
+    expect(get(imageOut.payload, "requestType")).toBe("image_gen");
+
+    expect(asString(get(imageOut.payload, "requestId"))).toMatch(
+      /^image_gen\/5\/[0-9a-f-]{36}\/12$/,
+    );
+
+    expect(get(imageOut.payload, "request.sessionId")).toBeUndefined();
     const search: Json = { requestType: "web_search", request: { contents: [] } };
-    const searchOut = geminiToAntigravity("gemini-3-pro", search, "p");
-    expect(get(searchOut, "requestId")).toBeUndefined();
-    expect(get(searchOut, "request.sessionId")).toBeUndefined();
+    const searchOut = geminiToAntigravity("gemini-3-pro", search, "p", envelopeOptions("a"));
+    expect(get(searchOut.payload, "requestId")).toBeUndefined();
+    expect(get(searchOut.payload, "request.sessionId")).toBeUndefined();
+  });
+
+  it("orders agent requests like the native client and compacts the rest unchanged", () => {
+    const payload: Json = {
+      requestType: "agent",
+      model: "m",
+      request: {
+        sessionId: "s",
+        generationConfig: { thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: true } },
+        contents: [
+          { parts: [{ functionCall: { args: { b: 1, a: 2 }, name: "f" } }], role: "model" },
+        ],
+      },
+      project: "p",
+    };
+
+    expect(serializeAntigravityPayload(payload, true)).toBe(
+      '{"project":"p","request":{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f","args":{"a":2,"b":1}}}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"HIGH"}},"sessionId":"s"},"model":"m","requestType":"agent"}',
+    );
+
+    expect(serializeAntigravityPayload(payload, false)).toBe(JSON.stringify(payload));
   });
 
   it("selects the daily endpoint unless a base URL is configured", () => {
@@ -311,6 +429,46 @@ describe("Claude request constraints", () => {
         "request.generationConfig.thinkingConfig.thinkingBudget",
       ),
     ).toBe(100000);
+  });
+
+  // Go `CapAntigravityMaxOutputTokensDoc` on the static-catalog path (antigravity_executor_request.go).
+  it("merges the max_output_tokens alias and keeps a smaller caller limit when capping", () => {
+    const lookup = (id: string) =>
+      id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined;
+
+    const capped = withModelInfoLookup(lookup, () =>
+      constrainRequestPayload("claude-sonnet-4-5", {
+        request: { generationConfig: { maxOutputTokens: 128000, max_output_tokens: 500 } },
+      }),
+    );
+
+    expect(get(capped, "request.generationConfig.maxOutputTokens")).toBe(500);
+    expect(get(capped, "request.generationConfig.max_output_tokens")).toBeUndefined();
+  });
+
+  // CLIProxyAPI 18a03e40: model families match case-insensitively, with a lower-case catalog retry.
+  it("treats a mixed-case Claude model as Claude", () => {
+    const lookup = (id: string) =>
+      id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined;
+
+    const out = withModelInfoLookup(lookup, () =>
+      constrainRequestPayload("Claude-Sonnet-4-5", {
+        request: {
+          generationConfig: {
+            maxOutputTokens: 128000,
+            thinkingConfig: { thinkingBudget: 100000 },
+          },
+        },
+      }),
+    );
+
+    expect(get(out, "request.generationConfig.maxOutputTokens")).toBe(64000);
+    expect(get(out, "request.generationConfig.thinkingConfig.thinkingBudget")).toBe(63999);
+    expect(get(out, "request.toolConfig.functionCallingConfig.mode")).toBe("VALIDATED");
+    expect(aggregatesStream("Claude-Sonnet-4-5")).toBe(true);
+    expect(aggregatesStream("Gemini-3-Pro-High")).toBe(true);
+    expect(aggregatesStream("Gemini-3.1-Flash-Image")).toBe(true);
+    expect(aggregatesStream("gemini-2.5-flash")).toBe(false);
   });
 });
 
@@ -573,6 +731,11 @@ describe("Claude 5.5 structured output on Antigravity", () => {
     ["claude-opus-5-5", true],
     ["claude-sonnet-5-5-high", true],
     ["claude-opus-5-5-reasoning", true],
+    // The low, medium and max effort variants (CLIProxyAPI c813f779).
+    ["claude-opus-5-5-low", true],
+    ["claude-sonnet-5-5-medium", true],
+    ["claude-opus-5-5-max-20261001", true],
+    ["claude-opus-5-5-minimal", false],
     ["claude-sonnet-5-5(high)", true],
     ["claude-opus-5-5-20261001", true],
     ["claude-sonnet-5-5[1m]", true],
@@ -699,18 +862,28 @@ describe("SSE handling", () => {
     expect(filter.filter(terminal)).toBe(terminal);
   });
 
-  it("joins JSON split over several lines and turns error objects into status errors", () => {
+  it("joins JSON split over several lines like Go's SSE assembler (CLIProxyAPI 892fc486)", () => {
     const assembler = new JsonAssembler();
-    expect(assembler.push('data: {"response":')).toEqual({ kind: "none" });
-    expect(assembler.push('{"x":1}}')).toEqual({
-      kind: "payload",
-      payload: '{"response":\n{"x":1}}',
-    });
-    expect(assembler.push("")).toEqual({ kind: "none" });
-    const error = assembler.push(data({ error: { code: 503, message: "down" } }));
-    expect(error.kind === "error" && error.error.status).toBe(503);
-    const odd = assembler.push(data({ error: { code: 200, message: "?" } }));
-    expect(odd.kind === "error" && odd.error.status).toBe(502);
+    expect(assembler.push('data: {"response":')).toBeUndefined();
+    // Comments and other fields inside an event are skipped; a bare line does not continue a `data:` payload.
+    expect(assembler.push(": keep-alive")).toBeUndefined();
+    expect(assembler.push('{"ignored":1}')).toBeUndefined();
+    expect(assembler.push('data: {"x":1}}')).toBe('{"response":\n{"x":1}}');
+    // A malformed event ends at its empty line and does not swallow the next one.
+    expect(assembler.push('data: {"broken":')).toBeUndefined();
+    expect(assembler.push("")).toBeUndefined();
+    expect(assembler.push('data: {"ok":true}')).toBe('{"ok":true}');
+    // Raw JSON lines (no `data:`) continue with raw lines.
+    expect(assembler.push('{"a":')).toBeUndefined();
+    expect(assembler.push("2}")).toBe('{"a":\n2}');
+  });
+
+  it("reads in-band error objects as statuses (antigravityInBandErrorStatusCode)", () => {
+    expect(inBandErrorStatus({ error: { code: 503, message: "down" } })).toBe(503);
+    expect(inBandErrorStatus({ error: { code: 200, message: "?" } })).toBe(502);
+    expect(inBandErrorStatus({ error: "text" })).toBe(502);
+    expect(inBandErrorStatus({ error: null })).toBeUndefined();
+    expect(inBandErrorStatus({ response: {} })).toBeUndefined();
   });
 
   it("merges a streamed response: text runs, thoughts with signatures, calls and the last usage", () => {
@@ -1316,5 +1489,202 @@ describe("claude web search grounding", () => {
     );
 
     expect(last.join("")).toContain('"web_search_requests":1');
+  });
+});
+
+// CLIProxyAPI 85225381, 06225fcf (antigravitySignatureCacheScope): one credential's signatures stay its own.
+describe("antigravity signature scope", () => {
+  const grant = { refresh_token: "1//refresh", access_token: "ya29.first", project_id: "proj" };
+
+  it("keys the scope by credential, grant and stored project, and keeps it across an access-token refresh", () => {
+    const scope = antigravitySignatureScope("cred-a", grant);
+    expect(scope).toContain("id:cred-a");
+    expect(scope).not.toContain("1//refresh");
+    expect(antigravitySignatureScope("cred-a", { ...grant, access_token: "ya29.next" })).toBe(
+      scope,
+    );
+    expect(antigravitySignatureScope("cred-b", grant)).not.toBe(scope);
+    expect(antigravitySignatureScope("cred-a", { ...grant, project_id: "other" })).not.toBe(scope);
+    expect(antigravitySignatureScope("cred-a", { ...grant, refresh_token: "1//relogin" })).not.toBe(
+      scope,
+    );
+    // Without a refresh token the access token is the grant; without either there is no scope.
+    expect(antigravitySignatureScope("cred-a", { access_token: "ya29.x" })).not.toBe("");
+    expect(antigravitySignatureScope("cred-a", {})).toBe("");
+  });
+
+  it("isolates two credentials in one org cache and fails closed without a scope", async () => {
+    const base = new MemorySignatureCache();
+    const a = scopedSignatureCache(base, antigravitySignatureScope("cred-a", grant));
+    const b = scopedSignatureCache(base, antigravitySignatureScope("cred-b", grant));
+    const none = scopedSignatureCache(base, "");
+
+    expect(a.set("claude-x", "thought", LONG_SIGNATURE)).toBe(true);
+    expect(a.get("claude-x", "thought")).toBe(LONG_SIGNATURE);
+    expect(b.get("claude-x", "thought")).toBe("");
+    expect(base.get("claude-x", "thought")).toBe("");
+    expect(none.set("claude-x", "thought", LONG_SIGNATURE)).toBe(false);
+    expect(none.get("claude-x", "thought")).toBe("");
+
+    // The persisted key carries the scope too, so a prefetch for another credential finds nothing.
+    const store = makeMemorySignatureStore();
+    await flushSignatureWrites(base, store);
+    expect(store.entries.size).toBe(1);
+    expect(store.entries.has(signatureStoreKey("claude-x", "thought"))).toBe(false);
+    const fresh = new MemorySignatureCache();
+    const scopeB = antigravitySignatureScope("cred-b", grant);
+    await prefetchSignatures(fresh, store, "claude-x", [scopedSignatureText(scopeB, "thought")]);
+    expect(fresh.size).toBe(0);
+    const scopeA = antigravitySignatureScope("cred-a", grant);
+    await prefetchSignatures(fresh, store, "claude-x", [scopedSignatureText(scopeA, "thought")]);
+    expect(scopedSignatureCache(fresh, scopeA).get("claude-x", "thought")).toBe(LONG_SIGNATURE);
+  });
+});
+
+describe("Antigravity thinking groups (CLIProxyAPI 2f86992c, 14a95b19, b8e3bc66)", () => {
+  it("parses model enums, thinking groups and their web search members", () => {
+    expect(
+      parseModelHints(
+        JSON.stringify({
+          models: {
+            "gemini-x-low": { model: "M1", maxOutputTokens: 65536 },
+            "gemini-x-high": { model: "M2", maxOutputTokens: 0 },
+            "gemini-x-medium": { model: " " },
+            other: {},
+          },
+          groupedModels: {
+            "gemini-x": {
+              supportedThinkingLevels: [
+                { thinkingSuffix: "LOW" },
+                { thinkingSuffix: "high" },
+                { thinkingSuffix: "medium" },
+                { thinkingSuffix: "missing" },
+                { thinkingSuffix: "bad suffix" },
+              ],
+            },
+            lonely: { supportedThinkingLevels: [{ thinkingSuffix: "low" }] },
+          },
+          webSearchModelIds: ["gemini-x-low", "other"],
+        }),
+      ),
+    ).toEqual({
+      modelIds: ["gemini-x-low", "gemini-x-high", "gemini-x-medium", "other"],
+      webSearchModelIds: ["gemini-x-low", "other"],
+      modelEnums: { "gemini-x-low": "M1", "gemini-x-high": "M2" },
+      thinkingGroups: { "gemini-x": { low: 65536, high: 0, medium: 0 } },
+      thinkingWebSearch: ["gemini-x-low"],
+    });
+  });
+
+  const credential = (attributes: Record<string, string> = {}): CredentialSnapshot => ({
+    id: "ag-1",
+    provider: "antigravity",
+    kind: "oauth",
+    attributes,
+    metadata: { refresh_token: "r", project_id: "p" },
+  });
+
+  const high = "gemini-3.8-flash-high";
+  const low = "gemini-3.8-flash-low";
+
+  const record = (
+    enums: Record<string, string>,
+    groups?: Record<string, Record<string, number>>,
+    // `null`: a record stored before the scope existed.
+    scope: string | null = antigravityCatalogScope({}, { refresh_token: "r", project_id: "p" }),
+  ): ModelsRecord => ({
+    hints: {
+      webSearchModelIds: [],
+      modelEnums: enums,
+      ...(groups === undefined ? {} : { thinkingGroups: groups }),
+      thinkingWebSearch: [low],
+    },
+    ...(scope === null ? {} : { scope }),
+  });
+
+  const enums = {
+    [high]: "M321",
+    [low]: "M320",
+    "gemini-3.8-flash-tiered": "M322",
+    "gemini-3.8-flash-very-high": "M323",
+    "gemini-3.8-flash-medium": "M324",
+  };
+
+  const groups = {
+    "gemini-3.8-flash": { low: 65536, high: 32768, "very-high": 81920, medium: 0 },
+    "gemini-3.8-flash-very": { high: 0 },
+  };
+
+  // Go `TestAntigravityThinkingGroupsGenerate`.
+  it.each([
+    ["variant", high, "LOW", low, "M320", 65536],
+    ["group", "gemini-3.8-flash", "LOW", low, "M320", 65536],
+    ["same variant", low, "low", low, "M320", 65536],
+    [
+      "more-specific group owns a zero-limit member",
+      "gemini-3.8-flash-very-high",
+      "LOW",
+      "gemini-3.8-flash-very-high",
+      "M323",
+      0,
+    ],
+    ["zero limit is membership", "gemini-3.8-flash-medium", "LOW", low, "M320", 65536],
+    ["declared custom suffix", high, "VERY-HIGH", "gemini-3.8-flash-very-high", "M323", 81920],
+    [
+      "tiered is not a member",
+      "gemini-3.8-flash-tiered",
+      "LOW",
+      "gemini-3.8-flash-tiered",
+      "M322",
+      0,
+    ],
+    ["missing level", high, "MEDIUM", high, "M321", 0],
+    ["no thinking", high, "", high, "M321", 0],
+  ] as const)("%s", (_name, model, level, wantModel, wantEnum, wantMax) => {
+    const selection = selectAntigravityModel(record(enums, groups), credential(), model, level, []);
+
+    expect([selection.id, selection.enum, selection.maxOutputTokens]).toEqual([
+      wantModel,
+      wantEnum,
+      wantMax,
+    ]);
+  });
+
+  it("keeps the requested model without a target enum, groups, or a matching scope", () => {
+    const pick = (stored: ModelsRecord | undefined) =>
+      selectAntigravityModel(stored, credential(), high, "low", []);
+
+    expect(pick(record({ ...enums, [low]: " " }, groups)).id).toBe(high);
+    expect(pick(record({ [high]: "M321" }, groups)).id).toBe(high);
+    expect(pick(record(enums)).maxOutputTokens).toBe(0);
+    expect(pick(record(enums)).enum).toBe("M321");
+    // A record stored before the scope existed, or for another grant, selects nothing.
+    expect(pick(record(enums, groups, null))).toMatchObject({ id: high, enum: "" });
+    expect(pick(record(enums, groups, "other"))).toMatchObject({ id: high, enum: "" });
+    expect(pick(undefined)).toMatchObject({ id: high, enum: "" });
+    expect(pick(record(enums, groups)).webSearch).toBe(true);
+  });
+
+  // Go `TestAntigravityThinkingGroupsReviewExclusions`.
+  it("never switches to an excluded variant", () => {
+    const configWith = (excluded: Record<string, string[]>) =>
+      Effect.runSync(decodeConfig({ oauth: { "excluded-models": excluded } }));
+
+    const config = configWith({ antigravity: [" GEMINI-*-LO* "] });
+    const stored = record(enums, groups);
+
+    const pick = (attributes: Record<string, string>, from = config) =>
+      selectAntigravityModel(
+        stored,
+        credential(attributes),
+        high,
+        "low",
+        antigravityExcludedModels(credential(attributes), from),
+      ).id;
+
+    expect(pick({})).toBe(high);
+    expect(pick({ excluded_models: "another-*" })).toBe(low);
+    expect(pick({ excluded_models: "gemini-*low" }, configWith({}))).toBe(high);
+    expect(pick({}, configWith({}))).toBe(low);
   });
 });
