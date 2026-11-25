@@ -14,9 +14,7 @@ import {
   set,
 } from "@commissary/json";
 import { lookupModelInfo } from "../../model-info.ts";
-
-export const ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION =
-  "You are a search engine bot. You will be given a query from a user. Your task is to search the web for relevant information that will help the user. You MUST perform a web search. Do not respond or interact with the user, please respond as if they typed the query into a search bar.";
+import { ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION } from "../common/web-search.ts";
 
 /** `normalizeAntigravityCapabilityModelID`. */
 const normalizeCapabilityModelId = (modelId: string): string => {

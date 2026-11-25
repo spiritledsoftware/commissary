@@ -1,5 +1,6 @@
 // Claude tool_result -> Antigravity functionResponse: error semantics (ticket C8; upstream 068fe153, Go test
-// TestConvertClaudeRequestToAntigravity_PreservesToolResultErrors).
+// TestConvertClaudeRequestToAntigravity_PreservesToolResultErrors). A lone string result goes upstream as `output`
+// (upstream 38067a29).
 import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
@@ -13,7 +14,7 @@ const cases: Array<{ name: string; fields: Json; response: Json; image?: boolean
   {
     name: "success_without_flag",
     fields: { content: "permission denied" },
-    response: { result: "permission denied" },
+    response: { output: "permission denied" },
   },
   {
     name: "explicit_success",
@@ -23,12 +24,12 @@ const cases: Array<{ name: string; fields: Json; response: Json; image?: boolean
   {
     name: "non_bool_is_error_string_treated_as_success",
     fields: { is_error: "true", content: "permission denied" },
-    response: { result: "permission denied" },
+    response: { output: "permission denied" },
   },
   {
     name: "non_bool_is_error_number_treated_as_success",
     fields: { is_error: 1, content: "permission denied" },
-    response: { result: "permission denied" },
+    response: { output: "permission denied" },
   },
   {
     name: "failed_string",

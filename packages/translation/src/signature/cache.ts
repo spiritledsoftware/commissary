@@ -188,11 +188,17 @@ export const hasValidSignature = (modelName: string, signature: string): boolean
 interface SignatureContext {
   readonly cache: SignatureCache;
   readonly settings: SignatureSettings;
+  /** A cache was installed for the current attempt ({@link withSignatureContext}), rather than the isolate default. */
+  readonly scoped: boolean;
 }
 
 const isolateCache = new MemorySignatureCache();
 
-let current: SignatureContext = { cache: isolateCache, settings: defaultSignatureSettings };
+let current: SignatureContext = {
+  cache: isolateCache,
+  settings: defaultSignatureSettings,
+  scoped: false,
+};
 
 /**
  * The scope whose isolate-wide cache is the default of {@link currentSignatureCache}. The Worker scopes caches by org,
@@ -241,6 +247,7 @@ export const withSignatureContext = <T>(
   current = {
     cache: context.cache ?? previous.cache,
     settings: { ...previous.settings, ...context.settings },
+    scoped: context.cache !== undefined || previous.scoped,
   };
 
   try {
@@ -260,6 +267,12 @@ export const signatureCacheEnabled = (): boolean => current.settings.cacheEnable
 
 /** `cache.SignatureBypassStrictMode()`. */
 export const signatureBypassStrictMode = (): boolean => current.settings.bypassStrictMode;
+
+/**
+ * Whether the current attempt installed its own cache. Go's `RequireSignatureCacheScope`: request-time recovery on the
+ * Antigravity Claude path fails closed without one (CLIProxyAPI 85225381).
+ */
+export const signatureCacheScoped = (): boolean => current.scoped;
 
 /** `cache.GetCachedSignature`. */
 export const getCachedSignature = (modelName: string, text: string): string =>

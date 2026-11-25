@@ -145,28 +145,31 @@ export const convertStreamToNonStream = (lines: ReadonlyArray<string>): Json => 
   let responseId = "";
   let role = "";
   let usage: Json | undefined;
+  let groundingMetadata: Json | undefined;
   const parts: Json[] = [];
   let pendingKind = "";
   let pendingText = "";
   let pendingSignature = "";
+  // The pending text started in the chunk being read: parts of one chunk stay apart (CLIProxyAPI 9176cb22).
+  let pendingFromCurrentChunk = false;
 
   const resetPending = (): void => {
     pendingKind = "";
     pendingText = "";
     pendingSignature = "";
+    pendingFromCurrentChunk = false;
   };
 
+  /** Text and thoughts keep their signatures, and whitespace-only text stays (CLIProxyAPI 9176cb22). */
   const flushPending = (): void => {
     if (pendingKind === "") return;
 
-    if (pendingKind === "text") {
-      if (pendingText.trim() !== "") parts.push({ text: pendingText });
-    } else if (pendingText.trim() !== "" || pendingSignature !== "") {
-      parts.push(
-        pendingSignature !== ""
-          ? { text: pendingText, thought: true, thoughtSignature: pendingSignature }
-          : { text: pendingText, thought: true },
-      );
+    if (pendingText !== "" || pendingSignature !== "") {
+      const part: JsonObject =
+        pendingKind === "thought" ? { text: pendingText, thought: true } : { text: pendingText };
+
+      if (pendingSignature !== "") part["thoughtSignature"] = pendingSignature;
+      parts.push(part);
     }
 
     resetPending();
@@ -229,10 +232,15 @@ export const convertStreamToNonStream = (lines: ReadonlyArray<string>): Json => 
     const rootUsage = get(root, "usageMetadata");
 
     if (usage === undefined && rootUsage !== undefined) usage = structuredClone(rootUsage);
+    // Grounding from an earlier chunk survives a terminal chunk without it (CLIProxyAPI d0da9a9a).
+    const grounding = get(node, "candidates.0.groundingMetadata");
+
+    if (isJsonObject(grounding)) groundingMetadata = structuredClone(grounding);
 
     const nodeParts = get(node, "candidates.0.content.parts");
 
     if (!isJsonArray(nodeParts)) continue;
+    pendingFromCurrentChunk = false;
 
     for (const part of nodeParts) {
       const hasFunctionCall = get(part, "functionCall") !== undefined;
@@ -253,13 +261,36 @@ export const convertStreamToNonStream = (lines: ReadonlyArray<string>): Json => 
       }
 
       if (thought || get(part, "text") !== undefined) {
+        if (text === "" && signature === "") continue;
         const kind = thought ? "thought" : "text";
 
-        if (pendingKind !== "" && pendingKind !== kind) flushPending();
+        // An empty text part that only carries a signature stays a part of its own, so consecutive detached
+        // signatures never overwrite each other.
+        if (!thought && text === "" && signature !== "") {
+          flushPending();
+          parts.push({ text: "", thoughtSignature: signature });
+          continue;
+        }
+
+        const isThoughtTrailingSignature =
+          thought &&
+          text === "" &&
+          signature !== "" &&
+          pendingKind === "thought" &&
+          pendingSignature === "";
+
+        if (
+          pendingKind !== "" &&
+          (pendingKind !== kind ||
+            pendingSignature !== "" ||
+            (pendingFromCurrentChunk && !isThoughtTrailingSignature))
+        )
+          flushPending();
         pendingKind = kind;
         pendingText += text;
 
-        if (kind === "thought" && signature !== "") pendingSignature = signature;
+        if (signature !== "") pendingSignature = signature;
+        pendingFromCurrentChunk = true;
         continue;
       }
 
@@ -279,6 +310,12 @@ export const convertStreamToNonStream = (lines: ReadonlyArray<string>): Json => 
   if (role !== "") set(template, "candidates.0.content.role", role);
 
   if (finishReason !== "") set(template, "candidates.0.finishReason", finishReason);
+
+  if (
+    groundingMetadata !== undefined &&
+    get(template, "candidates.0.groundingMetadata") === undefined
+  )
+    set(template, "candidates.0.groundingMetadata", groundingMetadata);
 
   if (modelVersion !== "") set(template, "modelVersion", modelVersion);
 

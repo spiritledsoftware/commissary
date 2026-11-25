@@ -23,9 +23,11 @@ import {
   UserRun,
 } from "../../common/parts.ts";
 import {
+  mergeAdjacentGeminiUserContents,
   reorderGeminiUserParts,
   setGeminiFunctionResponseResult,
 } from "../../gemini/common/contents.ts";
+import { normalizeAntigravityRequest } from "../common/request-format.ts";
 import { normalizeOpenAIFileData } from "../../common/file-data.ts";
 import { attachDefaultSafetySettings } from "../../gemini/common/safety.ts";
 import { mapSanitizedFunctionName, sanitizedFunctionNameMap } from "../../common/tool-names.ts";
@@ -1014,13 +1016,15 @@ export const convertInteractionsRequestToAntigravity = (
   copySystem(out, root);
   copyGenerationConfig(out, root);
   const { items, run } = convertInput(get(root, "input"));
-  set(out, "request.contents", items);
+  // A multipart user turn arrives as consecutive user steps: they go upstream as one turn (CLIProxyAPI 0e981b9f).
+  set(out, "request.contents", mergeAdjacentGeminiUserContents(items));
   copyTools(out, root, nameMap);
 
   if (get(out, "request.toolConfig.functionCallingConfig.mode") === "NONE")
     del(out, "request.tools");
   rewriteFunctionNames(out, nameMap);
   attachDefaultSafetySettings(out, "request.safetySettings");
+  normalizeAntigravityRequest(out);
   const refusal = run.err(out);
 
   if (refusal !== undefined) throw refusal;

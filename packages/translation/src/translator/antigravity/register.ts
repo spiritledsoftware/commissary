@@ -11,7 +11,7 @@ import { convertInteractionsRequestToAntigravity } from "./interactions/request.
 import { antigravityToInteractionsResponse } from "./interactions/response.ts";
 import { convertGeminiRequestToAntigravity } from "./gemini/request.ts";
 import { antigravityToGeminiResponse } from "./gemini/response.ts";
-import { convertOpenAIRequestToAntigravity } from "./openai/chat-request.ts";
+import { convertOpenAIRequestEnvelopeToAntigravity } from "./openai/chat-request.ts";
 import { antigravityToOpenAIResponse } from "./openai/chat-response.ts";
 import { convertOpenAIResponsesRequestEnvelopeToAntigravity } from "./openai/responses-request.ts";
 import { antigravityToOpenAIResponsesResponse } from "./openai/responses-response.ts";
@@ -36,11 +36,11 @@ export const registerAntigravityTranslators = (registry: TranslatorRegistry): Tr
       convertInteractionsRequestToAntigravity,
       antigravityToInteractionsResponse,
     )
-    .register(
+    .register(Formats.OpenAI, Formats.Antigravity, undefined, antigravityToOpenAIResponse)
+    .registerRequestEnvelope(
       Formats.OpenAI,
       Formats.Antigravity,
-      convertOpenAIRequestToAntigravity,
-      antigravityToOpenAIResponse,
+      convertOpenAIRequestEnvelopeToAntigravity,
     )
     .register(
       Formats.OpenAIResponse,

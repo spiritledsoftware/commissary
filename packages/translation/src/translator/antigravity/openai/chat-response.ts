@@ -26,7 +26,23 @@ import {
   type NameMap,
   restoreSanitizedToolName,
 } from "../../common/tool-names.ts";
+import {
+  functionCallEndsContinuation,
+  functionCallWillContinue,
+} from "../../common/gemini-parts.ts";
 import { hasAntigravityResponsePayload } from "../common/payload.ts";
+
+/** One streamed tool call (`antigravityOpenAIToolCall`). */
+interface ToolCall {
+  readonly index: number;
+  readonly rawName: string;
+  readonly upstreamId: string;
+  /** Upstream announced more chunks for this call (`willContinue`). */
+  readonly streaming: boolean;
+  argumentsStarted: boolean;
+  argumentsHasItems: boolean;
+  argumentsClosed: boolean;
+}
 
 interface Params {
   unixTimestamp: number;
@@ -39,6 +55,9 @@ interface Params {
   responseId: string;
   pendingUsageMetadata: Json | undefined;
   sanitizedNameMap: NameMap | null;
+  activeToolCall: ToolCall | undefined;
+  toolCallsById: Map<string, ToolCall>;
+  toolCalls: ToolCall[];
 }
 
 const paramsOf = (context: ResponseContext): Params => {
@@ -54,6 +73,9 @@ const paramsOf = (context: ResponseContext): Params => {
       responseId: "",
       pendingUsageMetadata: undefined,
       sanitizedNameMap: null,
+      activeToolCall: undefined,
+      toolCallsById: new Map(),
+      toolCalls: [],
     };
 
     context.state.value = fresh;
@@ -65,12 +87,12 @@ const paramsOf = (context: ResponseContext): Params => {
 
 type ResolveFinishReasonResult = { finishReason: string; nativeFinishReason: string };
 
-/** `resolveOpenAIFinishReason`. */
+/** `resolveOpenAIFinishReason`: upstream `MAX_TOKENS` is OpenAI's `length` (CLIProxyAPI 07290e18). */
 const resolveFinishReason = (params: Params): ResolveFinishReasonResult => {
   let finishReason = "stop";
 
   if (params.sawToolCall) finishReason = "tool_calls";
-  else if (params.upstreamFinishReason === "MAX_TOKENS") finishReason = "max_tokens";
+  else if (params.upstreamFinishReason === "MAX_TOKENS") finishReason = "length";
   else if (isContentFilterFinishReason(params.upstreamFinishReason))
     finishReason = "content_filter";
 
@@ -83,7 +105,151 @@ const resolveFinishReason = (params: Params): ResolveFinishReasonResult => {
 
 const setUsage = (template: JsonObject, usage: Json): void => usageFields(usage, template);
 
-/** `ConvertAntigravityResponseToOpenAI`. */
+const chunkTemplate = (params: Params, created: number): JsonObject => {
+  const template: JsonObject = {
+    id: "",
+    object: "chat.completion.chunk",
+    created,
+    model: "model",
+    choices: [
+      {
+        index: 0,
+        delta: { role: null, content: null, reasoning_content: null },
+        finish_reason: null,
+        native_finish_reason: null,
+      },
+    ],
+  };
+
+  if (params.modelVersion !== "") template["model"] = params.modelVersion;
+
+  if (params.responseId !== "") template["id"] = params.responseId;
+
+  return template;
+};
+
+/** The first choice's delta of a template built by {@link chunkTemplate}. */
+const deltaOf = (template: JsonObject): JsonObject =>
+  // SAFETY: `chunkTemplate` builds `choices` as a one-element array whose choice has an object `delta`.
+  ((template["choices"] as JsonObject[])[0] as JsonObject)["delta"] as JsonObject;
+
+/**
+ * `buildAntigravityOpenAITerminalChunkDoc`: the finish reason goes in a chunk of its own, with an empty delta: strict
+ * Chat Completions parsers reject a delta payload beside a finish reason (CLIProxyAPI 8cd6817b).
+ */
+const terminalChunk = (params: Params, usage: Json | undefined): JsonObject => {
+  const { finishReason, nativeFinishReason } = resolveFinishReason(params);
+
+  const template: JsonObject = {
+    id: params.responseId,
+    object: "chat.completion.chunk",
+    created: params.unixTimestamp,
+    model: params.modelVersion !== "" ? params.modelVersion : "model",
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: finishReason,
+        native_finish_reason: nativeFinishReason,
+      },
+    ],
+  };
+
+  if (usage !== undefined) setUsage(template, usage);
+
+  return template;
+};
+
+/** The members of an argument object without its braces, or undefined for anything but an object. */
+const objectMembers = (args: Json | undefined): string | undefined => {
+  if (!isJsonObject(args)) return undefined;
+  const raw = JSON.stringify(args);
+
+  return raw.slice(1, -1).trim();
+};
+
+/** `antigravityOpenAIStartArguments`: the opening of a call's arguments that later chunks continue. */
+const startArguments = (call: ToolCall, args: Json | undefined): string => {
+  const members = objectMembers(args);
+
+  if (members === undefined) return "";
+  call.argumentsStarted = true;
+  call.argumentsHasItems = members !== "";
+
+  return `{${members}`;
+};
+
+/** `antigravityOpenAIContinuationArguments`: a continuation chunk's members, joined onto the open arguments. */
+const continuationArguments = (call: ToolCall, args: Json | undefined): string => {
+  if (call.argumentsClosed) return "";
+  const members = objectMembers(args);
+
+  if (members === undefined) return "";
+
+  if (!call.argumentsStarted) {
+    call.argumentsStarted = true;
+
+    if (members === "") return "{";
+    call.argumentsHasItems = true;
+
+    return `{${members}`;
+  }
+
+  if (members === "") return "";
+  const prefix = call.argumentsHasItems ? "," : "";
+  call.argumentsHasItems = true;
+
+  return prefix + members;
+};
+
+/** `antigravityOpenAILateContinuationArguments`: arguments that arrive after the call closed, sent whole. */
+const lateContinuationArguments = (args: Json | undefined): string => {
+  const members = objectMembers(args);
+
+  return members === undefined || members === "" ? "" : JSON.stringify(args);
+};
+
+/** `hasOpenAntigravityOpenAIToolArguments`. */
+const hasOpenToolArguments = (params: Params): boolean =>
+  params.toolCalls.some(
+    (call) => !call.argumentsClosed && (call.argumentsStarted || call.streaming),
+  );
+
+const appendToolCallDelta = (template: JsonObject, index: number, args: string): void => {
+  const delta = deltaOf(template);
+
+  const existing = delta["tool_calls"];
+  const calls: Json[] = isJsonArray(existing) ? existing : [];
+  delta["tool_calls"] = calls;
+  calls.push({ index, function: { arguments: args } });
+};
+
+/** `appendAntigravityOpenAIToolCallCloses`: closes every open call's arguments; true if any was closed. */
+const appendToolCallCloses = (template: JsonObject, params: Params): boolean => {
+  let appended = false;
+
+  for (const call of params.toolCalls) {
+    if (call.argumentsClosed || (!call.argumentsStarted && !call.streaming)) continue;
+    let closing = "}";
+
+    if (!call.argumentsStarted) {
+      closing = "{}";
+      call.argumentsStarted = true;
+    }
+
+    appendToolCallDelta(template, call.index, closing);
+    call.argumentsClosed = true;
+    appended = true;
+  }
+
+  return appended;
+};
+
+/**
+ * `ConvertAntigravityResponseToOpenAI`. A call streamed over several chunks (`willContinue`) is announced once and
+ * its arguments continue as deltas of the same index, closed when it ends, when text follows, or at the end of the
+ * stream (CLIProxyAPI fe571afe, 4df055de). Go's `partialArgs` assembly is not ported (docs/ARCHITECTURE.md).
+ */
 export const convertAntigravityResponseToOpenAI = (
   context: ResponseContext,
   line: string,
@@ -97,53 +263,28 @@ export const convertAntigravityResponseToOpenAI = (
     // Never finalize a stream that produced no response at all.
     if (!params.sawResponse || params.sawFinishReason) return [];
     params.sawFinishReason = true;
-    const { finishReason, nativeFinishReason } = resolveFinishReason(params);
+    const terminal = terminalChunk(params, params.pendingUsageMetadata);
 
-    const template: JsonObject = {
-      id: "",
-      object: "chat.completion.chunk",
-      created: params.unixTimestamp,
-      model: "model",
-      choices: [{ index: 0, delta: {}, finish_reason: "stop", native_finish_reason: "stop" }],
-    };
+    if (hasOpenToolArguments(params)) {
+      const close = chunkTemplate(params, params.unixTimestamp);
 
-    if (params.modelVersion !== "") template["model"] = params.modelVersion;
+      if (appendToolCallCloses(close, params)) {
+        params.activeToolCall = undefined;
 
-    if (params.responseId !== "") template["id"] = params.responseId;
+        return [JSON.stringify(close), JSON.stringify(terminal)];
+      }
+    }
 
-    if (params.pendingUsageMetadata !== undefined) setUsage(template, params.pendingUsageMetadata);
-    // SAFETY: `template` was built just above with `choices` a one-element array of objects.
-    const choice = (template["choices"] as JsonObject[])[0] as JsonObject;
-    choice["finish_reason"] = finishReason;
-    choice["native_finish_reason"] = nativeFinishReason;
-
-    return [JSON.stringify(template)];
+    return [JSON.stringify(terminal)];
   }
 
   const raw = tryParseJson(line);
 
   if (!params.sawResponse) params.sawResponse = hasAntigravityResponsePayload(raw);
 
-  // `tool_calls` is omitted unless the chunk carries calls (dfe0a0ef).
-  const delta: JsonObject = { role: null, content: null, reasoning_content: null };
-
-  const choice: JsonObject = { index: 0, delta, finish_reason: null, native_finish_reason: null };
-
-  const template: JsonObject = {
-    id: "",
-    object: "chat.completion.chunk",
-    created: 12345,
-    model: "model",
-    choices: [choice],
-  };
-
   const modelVersion = get(raw, "response.modelVersion");
 
-  if (modelVersion !== undefined) {
-    params.modelVersion = asString(modelVersion);
-    template["model"] = params.modelVersion;
-  }
-
+  if (modelVersion !== undefined) params.modelVersion = asString(modelVersion);
   const createTime = get(raw, "response.createTime");
 
   if (createTime !== undefined) {
@@ -152,13 +293,17 @@ export const convertAntigravityResponseToOpenAI = (
     if (!Number.isNaN(ms)) params.unixTimestamp = Math.floor(ms / 1000);
   }
 
-  template["created"] = params.unixTimestamp;
   const responseId = get(raw, "response.responseId");
 
-  if (responseId !== undefined) {
-    params.responseId = asString(responseId);
-    template["id"] = params.responseId;
-  }
+  if (responseId !== undefined) params.responseId = asString(responseId);
+
+  // `tool_calls` is omitted unless the chunk carries calls (dfe0a0ef). The model and id of earlier chunks carry over.
+  const template = chunkTemplate(params, params.unixTimestamp);
+
+  if (modelVersion !== undefined) template["model"] = params.modelVersion;
+
+  if (responseId !== undefined) template["id"] = params.responseId;
+  const delta = deltaOf(template);
 
   // The finish reason is cached and only emitted on the final chunk.
   const finishReason = get(raw, "response.candidates.0.finishReason");
@@ -173,10 +318,10 @@ export const convertAntigravityResponseToOpenAI = (
     const pending = get(raw, "response.cpaUsageMetadata");
 
     if (pending !== undefined) params.pendingUsageMetadata = structuredClone(pending);
-  } else {
-    setUsage(template, usage);
   }
 
+  let hasDeltaContent = false;
+  let hasNonEmptyDelta = false;
   const parts = get(raw, "response.candidates.0.content.parts");
 
   if (isJsonArray(parts)) {
@@ -185,6 +330,7 @@ export const convertAntigravityResponseToOpenAI = (
     let reasoningContent = "";
     let hasTextContent = false;
     let hasReasoningContent = false;
+    let imageCount = 0;
 
     for (const part of parts) {
       const text = get(part, "text");
@@ -204,44 +350,112 @@ export const convertAntigravityResponseToOpenAI = (
       if (hasThoughtSignature && !hasContentPayload) continue;
 
       if (text !== undefined) {
+        const value = asString(text);
+
+        // Text after a streamed call closes its arguments first.
+        if (value !== "" && hasOpenToolArguments(params)) {
+          appendToolCallCloses(template, params);
+          params.activeToolCall = undefined;
+        }
+
         if (asBool(get(part, "thought"))) {
           hasReasoningContent = true;
-          reasoningContent += asString(text);
+          reasoningContent += value;
         } else {
           hasTextContent = true;
-          textContent += asString(text);
+          textContent += value;
         }
 
         delta["role"] = "assistant";
       } else if (functionCall !== undefined) {
+        const rawName = asString(get(functionCall, "name")).trim();
+        const upstreamId = asString(get(functionCall, "id")).trim();
+        const args = get(functionCall, "args");
+        const continues = functionCallWillContinue(functionCall);
+        let active = params.activeToolCall;
+
+        if (upstreamId !== "") active = params.toolCallsById.get(upstreamId);
+
+        // A nameless chunk continues the active call (CLIProxyAPI 4df055de).
+        if (rawName === "") {
+          if (active !== undefined) {
+            params.sawToolCall = true;
+            let argumentDelta: string;
+
+            if (active.argumentsClosed) argumentDelta = lateContinuationArguments(args);
+            else {
+              argumentDelta = continuationArguments(active, args);
+
+              if (functionCallEndsContinuation(functionCall)) {
+                if (active.argumentsStarted) argumentDelta += "}";
+                else if (active.streaming) {
+                  argumentDelta = "{}";
+                  active.argumentsStarted = true;
+                }
+
+                active.argumentsClosed = true;
+              }
+            }
+
+            if (argumentDelta !== "") {
+              appendToolCallDelta(template, active.index, argumentDelta);
+              delta["role"] = "assistant";
+            }
+
+            params.activeToolCall = active;
+            continue;
+          }
+
+          if (args === undefined) continue;
+        }
+
         params.sawToolCall = true;
+
+        if (!isJsonArray(delta["tool_calls"])) delta["tool_calls"] = [];
         // Indices count calls across the whole stream, not within one chunk (80aa2b1d).
         const index = params.functionIndex;
         params.functionIndex++;
+        const name = restoreSanitizedToolName(params.sanitizedNameMap, rawName);
 
-        if (!isJsonArray(delta["tool_calls"])) delta["tool_calls"] = [];
+        const call: ToolCall = {
+          index,
+          rawName,
+          upstreamId,
+          streaming: continues,
+          argumentsStarted: false,
+          argumentsHasItems: false,
+          argumentsClosed: false,
+        };
 
-        const name = restoreSanitizedToolName(
-          params.sanitizedNameMap,
-          asString(get(functionCall, "name")),
-        );
+        // A call without arguments sends `{}`, never an empty string (CLIProxyAPI 28a00389).
+        let argumentsText = "{}";
 
-        const call: JsonObject = {
+        if (args !== undefined) {
+          if (continues) argumentsText = startArguments(call, args);
+          else {
+            argumentsText = asString(args);
+            call.argumentsStarted = true;
+            call.argumentsClosed = true;
+          }
+        } else if (continues) argumentsText = "";
+        else {
+          call.argumentsStarted = true;
+          call.argumentsClosed = true;
+        }
+
+        params.activeToolCall = call;
+        params.toolCalls.push(call);
+
+        if (upstreamId !== "") params.toolCallsById.set(upstreamId, call);
+        delta["role"] = "assistant";
+        delta["tool_calls"].push({
           id: functionCallId(name, get(functionCall, "id")),
           index,
           type: "function",
-          function: { name, arguments: "" },
-        };
-
-        const args = get(functionCall, "args");
-
-        if (args !== undefined)
-          // SAFETY: `call` was built just above with `function` set to an object literal.
-          (call["function"] as JsonObject)["arguments"] = asString(args);
-        delta["role"] = "assistant";
-        // SAFETY: `delta.tool_calls` is an array: it was already one or was set to `[]` above.
-        (delta["tool_calls"] as Json[]).push(call);
+          function: { name, arguments: argumentsText },
+        });
       } else if (inlineData !== undefined) {
+        if (asBool(get(part, "thought"))) continue;
         const data = asString(get(inlineData, "data"));
 
         if (data === "") continue;
@@ -257,26 +471,46 @@ export const convertAntigravityResponseToOpenAI = (
         images.push({
           type: "image_url",
           image_url: { url: `data:${mimeType};base64,${data}` },
-          index: images.length,
+          index: imageCount,
         });
+        imageCount++;
       }
     }
 
     if (hasTextContent) delta["content"] = textContent;
 
     if (hasReasoningContent) delta["reasoning_content"] = reasoningContent;
+    const hasToolCalls = isJsonArray(delta["tool_calls"]);
+    hasDeltaContent = hasTextContent || hasReasoningContent || hasToolCalls || imageCount > 0;
+
+    hasNonEmptyDelta =
+      textContent !== "" || reasoningContent !== "" || hasToolCalls || imageCount > 0;
   }
 
   // Only the chunk with both finishReason and usage is terminal; [DONE] synthesises one when upstream never sends it.
   const isFinalChunk =
-    params.upstreamFinishReason !== "" && get(raw, "response.usageMetadata") !== undefined;
+    !params.sawFinishReason && params.upstreamFinishReason !== "" && usage !== undefined;
+
+  if (isFinalChunk && appendToolCallCloses(template, params)) {
+    hasDeltaContent = true;
+    hasNonEmptyDelta = true;
+    params.activeToolCall = undefined;
+  }
 
   if (isFinalChunk) {
-    const reasons = resolveFinishReason(params);
-    choice["finish_reason"] = reasons.finishReason;
-    choice["native_finish_reason"] = reasons.nativeFinishReason;
     params.sawFinishReason = true;
+    const terminal = terminalChunk(params, usage);
+
+    return hasNonEmptyDelta
+      ? [JSON.stringify(template), JSON.stringify(terminal)]
+      : [JSON.stringify(terminal)];
   }
+
+  if (params.sawFinishReason && !hasNonEmptyDelta) return [];
+
+  if (usage !== undefined) setUsage(template, usage);
+
+  if (!hasDeltaContent && usage === undefined) return [];
 
   return [JSON.stringify(template)];
 };

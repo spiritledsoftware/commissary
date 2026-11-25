@@ -413,7 +413,7 @@
     "Summary of previous conversation"
    ],
    "seen": [
-    "{\"project\":\"test-proj\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"continue\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"Context summary from previous turns:\\nSummary of previous conversation\"}]},\"sessionId\":\"S\"},\"model\":\"gemini-3.7-flash\",\"userAgent\":\"antigravity\",\"requestType\":\"agent\",\"requestId\":\"R\"}"
+    "{\"project\":\"test-proj\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"continue\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"Context summary from previous turns:\\nSummary of previous conversation\"}],\"role\":\"user\"},\"sessionId\":\"S\"},\"model\":\"gemini-3.7-flash\",\"userAgent\":\"antigravity\",\"requestType\":\"agent\",\"requestId\":\"R\"}"
    ],
    "output": "{\"id\":\"resp_18e6fc7782a7bca0_4\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null,\"incomplete_details\":null,\"model\":\"gemini-3.7-flash\",\"output\":[{\"id\":\"msg_18e6fc7782a7bca0_4_0\",\"type\":\"message\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"annotations\":[],\"logprobs\":[],\"text\":\"Summary of previous conversation\"}],\"role\":\"assistant\"}],\"usage\":{\"input_tokens\":10,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":5,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":15}}"
   },
@@ -427,7 +427,7 @@
     "First summary"
    ],
    "seen": [
-    "{\"project\":\"test-proj\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"more work\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"done\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"Please provide a concise and comprehensive summary of the preceding conversation and task progress so far, including user goals, key findings, actions taken, and current status, so that work can continue smoothly.\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"Context summary from previous turns:\\nFirst summary\"}]},\"sessionId\":\"S\"},\"model\":\"gemini-3.7-flash\",\"userAgent\":\"antigravity\",\"requestType\":\"agent\",\"requestId\":\"R\"}"
+    "{\"project\":\"test-proj\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"more work\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"done\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"Please provide a concise and comprehensive summary of the preceding conversation and task progress so far, including user goals, key findings, actions taken, and current status, so that work can continue smoothly.\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"Context summary from previous turns:\\nFirst summary\"}],\"role\":\"user\"},\"sessionId\":\"S\"},\"model\":\"gemini-3.7-flash\",\"userAgent\":\"antigravity\",\"requestType\":\"agent\",\"requestId\":\"R\"}"
    ],
    "output": "{\"object\":\"response.compaction\",\"status\":\"completed\",\"id\":\"resp_ag_compact_N\",\"created_at\":0,\"model\":\"gemini-3.7-flash\",\"output\":[{\"type\":\"compaction\",\"status\":\"completed\",\"id\":\"cmp_ag_compact_N\",\"encrypted_content\":\"CAPSULE\"}],\"usage\":{\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0},\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}",
    "summaries": [

@@ -4,7 +4,8 @@
  * Go source: internal/translator/antigravity/claude/antigravity_claude_response.go. Thinking signatures are cached for
  * later turns (`signature/cache.ts`); Gemini signatures travel as carrier envelopes (`carrier.ts`). Tool arguments are
  * cleaned against the client's schemas (202b8b8c, e1fb2521, `../../common/claude-tool-args.ts`); safety and filter
- * finishReasons end as a refusal (24b04548).
+ * finishReasons end as a refusal (24b04548), and a malformed function call without visible output as an `api_error`
+ * (cf07c78a).
  */
 import {
   asBool,
@@ -22,12 +23,17 @@ import { bytesToBinaryString, decodeBase64Std } from "../../../signature/base64.
 import { cacheSignature, getModelGroup } from "../../../signature/cache.ts";
 import { signatureProviderFromModelName } from "../../../signature/provider.ts";
 import { sseEventLines, claudeInputTokensJson } from "../../common/bytes.ts";
-import { ToolInputTracker } from "../../common/claude-tool-input.ts";
 import {
   claudeToolIsParameterless,
   cleanClaudeToolArgumentsWithTranslated,
 } from "../../common/claude-tool-args.ts";
+import { MergingToolInputTracker } from "../../common/claude-tool-input.ts";
 import { geminiClaudeToolUseID } from "../../common/claude-util.ts";
+import {
+  isMalformedFunctionCallWithoutOutput,
+  isNonEmptyGeminiFunctionCall,
+  MALFORMED_FUNCTION_CALL_CLAUDE_ERROR,
+} from "../../common/gemini-parts.ts";
 import { sanitizeClaudeToolId } from "../../common/tool-names.ts";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import {
@@ -74,6 +80,19 @@ const formatCarrierValue = (
     ? encodeGeminiClaudeCarrierSignature(signature, direction, targetKind)
     : formatClaudeSignatureValue(modelName, signature);
 
+let claudeResponseIdCounter = 0;
+
+/** `resolveAntigravityClaudeMessageID`: the upstream response id, or a synthesized one (CLIProxyAPI da4396fd). */
+const resolveMessageId = (rawId: string): string => {
+  const trimmed = rawId.trim();
+
+  if (trimmed !== "") return trimmed;
+  claudeResponseIdCounter++;
+  const nanos = BigInt(Date.now()) * 1_000_000n;
+
+  return `msg_${nanos.toString(16)}_${claudeResponseIdCounter}`;
+};
+
 interface Params {
   hasFirstResponse: boolean;
   /** 0=none, 1=content, 2=thinking, 3=function. */
@@ -99,7 +118,12 @@ interface Params {
   currentThinkingSigned: boolean;
   toolNameMap: NameMap;
   /** The input_json_delta bookkeeping of the open tool_use block. */
-  tool: ToolInputTracker;
+  tool: MergingToolInputTracker;
+  modelName: string;
+  /** Non-thought output went out: non-blank text, a tool call or a web search result (cf07c78a). */
+  hasVisibleOutput: boolean;
+  /** The `api_error` of a malformed function call went out; nothing follows it. */
+  hasMalformedError: boolean;
 }
 
 let toolUseIdCounter = 0;
@@ -121,7 +145,10 @@ const claudeToolUseId = (modelName: string, functionCall: Json, fallback: string
   return sanitizeClaudeToolId(fallback);
 };
 
-/** `resolveAntigravityClaudeStopReason`: safety, filter and malformed finishReasons end as a refusal. */
+/**
+ * `resolveAntigravityClaudeStopReason`: safety, filter and malformed finishReasons end as a refusal (a malformed call
+ * without visible output never gets here: it is an `api_error`).
+ */
 const resolveStopReason = (finishReason: string, hasToolUse: boolean): string => {
   if (hasToolUse) return "tool_use";
 
@@ -147,6 +174,64 @@ const stop = (index: number): string => `{"type":"content_block_stop","index":${
 const deltaEvent = (index: number, delta: JsonObject): string =>
   JSON.stringify({ type: "content_block_delta", index, delta });
 
+/**
+ * `appendDeferredToolSignature`: the signature of a continuation part, as a carrier block after its tool_use block
+ * (CLIProxyAPI 3a353935).
+ */
+const deferredToolSignature = (params: Params): string => {
+  const signature = params.tool.signature;
+
+  if (signature === "") return "";
+  params.tool.signature = "";
+  const index = params.responseIndex;
+  params.responseIndex++;
+
+  return (
+    sseEventLines(
+      "content_block_start",
+      `{"type":"content_block_start","index":${index},"content_block":{"type":"thinking","thinking":""}}`,
+      3,
+    ) +
+    sseEventLines(
+      "content_block_delta",
+      deltaEvent(index, {
+        type: "signature_delta",
+        signature: formatCarrierValue(
+          params.modelName,
+          signature,
+          CarrierDirection.Previous,
+          CarrierKind.Function,
+        ),
+      }),
+      3,
+    ) +
+    sseEventLines("content_block_stop", stop(index), 3)
+  );
+};
+
+/** `appendBufferedWebSearchTextBlock`. */
+const bufferedWebSearchTextBlock = (params: Params): string => {
+  const text = params.webSearchTextBuffer;
+  params.webSearchTextBuffer = "";
+
+  if (text === "") return "";
+  params.responseType = 1;
+  params.hasContent = true;
+
+  return (
+    sseEventLines(
+      "content_block_start",
+      `{"type":"content_block_start","index":${params.responseIndex},"content_block":{"type":"text","text":""}}`,
+      3,
+    ) +
+    sseEventLines(
+      "content_block_delta",
+      deltaEvent(params.responseIndex, { type: "text_delta", text }),
+      3,
+    )
+  );
+};
+
 /** `appendFinalEvents`. */
 const appendFinalEvents = (params: Params, force: boolean): string => {
   if (params.hasSentFinalEvents) return "";
@@ -167,8 +252,12 @@ const appendFinalEvents = (params: Params, force: boolean): string => {
   }
 
   if (params.responseType !== 0) {
+    const wasToolUse = params.responseType === 3;
     output += sseEventLines("content_block_stop", stop(params.responseIndex), 3);
+    params.responseIndex++;
     params.responseType = 0;
+
+    if (wasToolUse) output += deferredToolSignature(params);
   }
 
   let usageOutputTokens = params.candidatesTokenCount + params.thoughtsTokenCount;
@@ -230,7 +319,10 @@ const paramsOf = (context: ResponseContext): Params => {
       currentThinkingText: "",
       currentThinkingSigned: false,
       toolNameMap: disambiguatedToolNameMap(context.originalRequest),
-      tool: new ToolInputTracker(),
+      tool: new MergingToolInputTracker(),
+      modelName: asString(get(context.translatedRequest, "model")),
+      hasVisibleOutput: false,
+      hasMalformedError: false,
     };
 
     context.state.value = fresh;
@@ -248,8 +340,40 @@ export const convertAntigravityResponseToClaude = (
   const params = paramsOf(context);
   const modelName = asString(get(context.translatedRequest, "model"));
 
+  // Everything after the error event of a malformed call is dropped.
+  if (params.hasMalformedError && params.hasSentFinalEvents) return [];
+
   if (line === "[DONE]") {
     let output = "";
+
+    if (isMalformedFunctionCallWithoutOutput(params.finishReason, params.hasVisibleOutput)) {
+      if (params.responseType !== 0) {
+        const deferred = params.responseType === 3 ? params.tool.flush() : undefined;
+
+        if (deferred !== undefined)
+          output += sseEventLines(
+            "content_block_delta",
+            deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: deferred }),
+            3,
+          );
+        output += sseEventLines("content_block_stop", stop(params.responseIndex), 3);
+        params.responseType = 0;
+      }
+
+      output += sseEventLines("error", JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR), 3);
+      params.hasSentFinalEvents = true;
+      params.hasMalformedError = true;
+
+      return [output];
+    }
+
+    // Search text still buffered when the stream ends without grounding is sent as text (CLIProxyAPI 7e2b6323).
+    if (
+      params.webSearchTextBuffer.length > 0 &&
+      !params.hasWebSearchTool &&
+      shouldTranslateWebSearchGrounding(context.originalRequest, context.translatedRequest)
+    )
+      output += bufferedWebSearchTextBlock(params);
 
     if (params.hasFirstResponse && !params.hasContent) {
       output += sseEventLines(
@@ -306,25 +430,30 @@ export const convertAntigravityResponseToClaude = (
     params.hasContent = true;
   };
 
-  /** Emits the deferred empty `{}` input once the tool_use block completes without other input (e1fb2521). */
+  const emitToolInput = (partialJson: string): void => {
+    appendEvent(
+      "content_block_delta",
+      deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: partialJson }),
+    );
+  };
+
+  /** Closes the open tool input, or emits the deferred empty `{}` once the block completes without other input. */
   const flushPendingToolInput = (): void => {
     const deferred = params.responseType === 3 ? params.tool.flush() : undefined;
 
-    if (deferred !== undefined) {
-      appendEvent(
-        "content_block_delta",
-        deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: deferred }),
-      );
-    }
+    if (deferred !== undefined) emitToolInput(deferred);
   };
 
   const closeCurrentBlock = (): void => {
     if (params.responseType === 0) return;
+    const wasToolUse = params.responseType === 3;
     flushPendingToolInput();
     appendEvent("content_block_stop", stop(params.responseIndex));
     params.responseIndex++;
     params.responseType = 0;
     params.currentThinkingSigned = false;
+
+    if (wasToolUse) output += deferredToolSignature(params);
   };
 
   const startEmptyThinkingBlock = (): void => {
@@ -382,7 +511,7 @@ export const convertAntigravityResponseToClaude = (
 
   if (!params.hasFirstResponse) {
     const message: JsonObject = {
-      id: "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY",
+      id: resolveMessageId(asString(get(raw, "response.responseId"))),
       type: "message",
       role: "assistant",
       content: [],
@@ -402,9 +531,6 @@ export const convertAntigravityResponseToClaude = (
     const modelVersion = get(raw, "response.modelVersion");
 
     if (modelVersion !== undefined) message["model"] = asString(modelVersion);
-    const responseId = get(raw, "response.responseId");
-
-    if (responseId !== undefined) message["id"] = asString(responseId);
     appendEvent("message_start", JSON.stringify({ type: "message_start", message }));
     params.hasFirstResponse = true;
   }
@@ -428,6 +554,7 @@ export const convertAntigravityResponseToClaude = (
       params.hasWebSearchTool = true;
       params.webSearchRequests = 1;
       params.hasContent = true;
+      params.hasVisibleOutput = true;
       params.responseType = 0;
       handledWebSearchGrounding = true;
     }
@@ -555,20 +682,36 @@ export const convertAntigravityResponseToClaude = (
             params.hasSemanticContent = true;
             params.lastSemanticKind = CarrierKind.Text;
 
+            if (partText.trim() !== "") params.hasVisibleOutput = true;
+
             if (signatureTargetsVisibleText) closeCurrentBlock();
           }
         }
       } else if (functionCall !== undefined) {
         const toolSignature = thoughtSignature;
 
-        if (getModelGroup(modelName) !== "claude")
-          appendPartSignature(toolSignature, CarrierDirection.Next, CarrierKind.Function);
-        params.hasToolUse = true;
-
         const fcName = restoreSanitizedToolName(
           params.toolNameMap,
           asString(get(functionCall, "name")),
         );
+
+        const isContinuation =
+          params.responseType === 3 && fcName === "" && params.tool.name !== "";
+
+        // An empty call carries only its signature, for whatever comes next (CLIProxyAPI f663935d).
+        if (
+          !isContinuation &&
+          !isNonEmptyGeminiFunctionCall(functionCall, { partialArgs: false })
+        ) {
+          if (toolSignature !== "")
+            appendPartSignature(toolSignature, CarrierDirection.Next, CarrierKind.Any);
+          continue;
+        }
+
+        if (!isContinuation && getModelGroup(modelName) !== "claude")
+          appendPartSignature(toolSignature, CarrierDirection.Next, CarrierKind.Function);
+        params.hasToolUse = true;
+        params.hasVisibleOutput = true;
 
         const cleaned = (toolName: string): string =>
           cleanClaudeToolArgumentsWithTranslated(
@@ -580,21 +723,13 @@ export const convertAntigravityResponseToClaude = (
 
         const args = get(functionCall, "args");
 
-        // A continuation part (no name) extends the open tool_use block instead of starting a new one.
-        if (params.responseType === 3 && fcName === "" && params.tool.name !== "") {
-          if (args !== undefined) {
-            const partialJson = params.tool.next(cleaned(params.tool.name));
+        // A continuation part (no name) extends the open tool_use block instead of starting a new one; its signature
+        // follows the block (CLIProxyAPI 3a353935).
+        if (isContinuation) {
+          if (toolSignature !== "") params.tool.signature = toolSignature;
 
-            if (partialJson !== undefined) {
-              appendEvent(
-                "content_block_delta",
-                deltaEvent(params.responseIndex, {
-                  type: "input_json_delta",
-                  partial_json: partialJson,
-                }),
-              );
-            }
-          }
+          if (args !== undefined)
+            params.tool.continuationArguments(cleaned(params.tool.name)).forEach(emitToolInput);
 
           params.hasContent = true;
           params.hasSemanticContent = true;
@@ -602,19 +737,8 @@ export const convertAntigravityResponseToClaude = (
           continue;
         }
 
-        // Close an existing function call block first, then any other block.
-        if (params.responseType === 3) {
-          flushPendingToolInput();
-          appendEvent("content_block_stop", stop(params.responseIndex));
-          params.responseIndex++;
-          params.responseType = 0;
-        }
-
-        if (params.responseType !== 0) {
-          flushPendingToolInput();
-          appendEvent("content_block_stop", stop(params.responseIndex));
-          params.responseIndex++;
-        }
+        // Close an existing block first.
+        closeCurrentBlock();
 
         params.tool.begin(fcName, claudeToolIsParameterless(fcName, context.originalRequest));
         toolUseIdCounter++;
@@ -640,19 +764,8 @@ export const convertAntigravityResponseToClaude = (
           }),
         );
 
-        if (args !== undefined) {
-          const partialJson = params.tool.next(cleaned(fcName));
-
-          if (partialJson !== undefined) {
-            appendEvent(
-              "content_block_delta",
-              deltaEvent(params.responseIndex, {
-                type: "input_json_delta",
-                partial_json: partialJson,
-              }),
-            );
-          }
-        }
+        if (args !== undefined)
+          params.tool.openingArguments(cleaned(fcName)).forEach(emitToolInput);
 
         params.responseType = 3;
         params.hasContent = true;
@@ -664,15 +777,12 @@ export const convertAntigravityResponseToClaude = (
 
   const finishReason = get(raw, "response.candidates.0.finishReason");
 
-  if (finishReason !== undefined) {
-    // A trailing chunk with an empty finishReason keeps the one already recorded (24b04548).
+  // Only a non-empty finishReason finishes the message: an empty one neither ends it nor replaces the one recorded
+  // (24b04548, CLIProxyAPI 7e2b6323).
+  if (typeof finishReason === "string" && finishReason.trim() !== "") {
     params.hasFinishReason = true;
-    const trimmed = asString(finishReason).trim();
-
-    if (trimmed !== "") {
-      params.finishReason = trimmed;
-      flushPendingToolInput();
-    }
+    params.finishReason = finishReason.trim();
+    flushPendingToolInput();
   }
 
   const usage = get(raw, "response.usageMetadata");
@@ -700,22 +810,24 @@ export const convertAntigravityResponseToClaude = (
     !params.hasWebSearchTool &&
     params.hasFinishReason &&
     params.webSearchTextBuffer.length > 0
-  ) {
-    const text = params.webSearchTextBuffer;
-    params.webSearchTextBuffer = "";
+  )
+    output += bufferedWebSearchTextBlock(params);
 
-    if (text !== "") {
-      appendEvent(
-        "content_block_start",
-        `{"type":"content_block_start","index":${params.responseIndex},"content_block":{"type":"text","text":""}}`,
-      );
-      appendEvent(
-        "content_block_delta",
-        deltaEvent(params.responseIndex, { type: "text_delta", text }),
-      );
-      params.responseType = 1;
-      params.hasContent = true;
+  if (
+    isMalformedFunctionCallWithoutOutput(params.finishReason, params.hasVisibleOutput) &&
+    !params.hasSentFinalEvents
+  ) {
+    if (params.responseType !== 0) {
+      flushPendingToolInput();
+      appendEvent("content_block_stop", stop(params.responseIndex));
+      params.responseType = 0;
     }
+
+    appendEvent("error", JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR));
+    params.hasSentFinalEvents = true;
+    params.hasMalformedError = true;
+
+    return [output];
   }
 
   if (params.hasUsageMetadata && params.hasFinishReason) output += appendFinalEvents(params, false);
@@ -737,19 +849,21 @@ export const convertAntigravityResponseToClaudeNonStream = (
   const thoughtTokens = asInt(get(root, "response.usageMetadata.thoughtsTokenCount"));
   const totalTokens = asInt(get(root, "response.usageMetadata.totalTokenCount"));
   const cachedTokens = asInt(get(root, "response.usageMetadata.cachedContentTokenCount"));
+  // promptTokenCount includes the cached prompt, which Claude reports apart (CLIProxyAPI 590284bd).
+  const inputTokens = Math.max(promptTokens - cachedTokens, 0);
   let outputTokens = candidateTokens + thoughtTokens;
 
   if (outputTokens === 0 && totalTokens > 0) outputTokens = Math.max(totalTokens - promptTokens, 0);
 
   const responseJson: JsonObject = {
-    id: asString(get(root, "response.responseId")),
+    id: resolveMessageId(asString(get(root, "response.responseId"))),
     type: "message",
     role: "assistant",
     model: asString(get(root, "response.modelVersion")),
     content: [],
     stop_reason: null,
     stop_sequence: null,
-    usage: { input_tokens: promptTokens, output_tokens: outputTokens },
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
   };
 
   // SAFETY: `responseJson` was built just above with `usage` set to an object literal.
@@ -785,8 +899,11 @@ export const convertAntigravityResponseToClaudeNonStream = (
   let thinkingTargetKind: string = CarrierKind.Text;
   let toolIdCounter = 0;
   let hasToolCall = false;
+  let hasVisibleOutput = false;
   let hasSemanticContent = false;
   let lastSemanticKind: string = CarrierKind.Any;
+  // The text of the last unsigned thinking block: a Claude signature that arrives after it is cached under it (85225381).
+  let pendingThinkingText = "";
 
   const flushText = (): void => {
     if (text === "") return;
@@ -805,7 +922,9 @@ export const convertAntigravityResponseToClaudeNonStream = (
         thinkingDirection,
         thinkingTargetKind,
       );
-    }
+      cacheSignature(modelName, thinking, thinkingSignature);
+      pendingThinkingText = "";
+    } else if (thinking !== "") pendingThinkingText = thinking;
 
     blocks.push(block);
     thinking = "";
@@ -827,6 +946,14 @@ export const convertAntigravityResponseToClaudeNonStream = (
     });
   };
 
+  /** A signature for the text before it: a Claude one belongs to the pending thinking text. */
+  const cachePrecedingTextSignature = (signature: string): void => {
+    if (getModelGroup(modelName) === "claude") {
+      cacheSignature(modelName, pendingThinkingText, signature);
+      pendingThinkingText = "";
+    } else cacheSignature(modelName, "", signature);
+  };
+
   if (isJsonArray(parts)) {
     for (const part of parts) {
       const signature = asString(get(part, "thoughtSignature") ?? get(part, "thought_signature"));
@@ -834,6 +961,14 @@ export const convertAntigravityResponseToClaudeNonStream = (
       const functionCall = get(part, "functionCall");
 
       if (functionCall !== undefined) {
+        pendingThinkingText = "";
+
+        // An empty call carries only its signature, for whatever comes next (CLIProxyAPI f663935d).
+        if (!isNonEmptyGeminiFunctionCall(functionCall, { partialArgs: false })) {
+          appendSignatureCarrier(signature, CarrierDirection.Next, CarrierKind.Any);
+          continue;
+        }
+
         let signatureAttachedToThought = false;
         const isClaudeTarget = getModelGroup(modelName) === "claude";
 
@@ -852,6 +987,7 @@ export const convertAntigravityResponseToClaudeNonStream = (
         flushThinking();
         flushText();
         hasToolCall = true;
+        hasVisibleOutput = true;
         const name = restoreSanitizedToolName(toolNameMap, asString(get(functionCall, "name")));
         toolIdCounter++;
 
@@ -915,7 +1051,7 @@ export const convertAntigravityResponseToClaudeNonStream = (
             thinkingTargetKind = CarrierKind.Text;
             flushThinking();
           } else if (hasSemanticContent && lastSemanticKind === CarrierKind.Text) {
-            cacheSignature(modelName, "", signature);
+            cachePrecedingTextSignature(signature);
           } else if (hasSemanticContent) {
             appendSignatureCarrier(signature, CarrierDirection.Previous, lastSemanticKind);
           } else {
@@ -942,7 +1078,7 @@ export const convertAntigravityResponseToClaudeNonStream = (
             appendSignatureCarrier(signature, CarrierDirection.Next, CarrierKind.Text);
             visibleSignatureCarrier = true;
           } else if (hasSemanticContent && lastSemanticKind === CarrierKind.Text) {
-            cacheSignature(modelName, "", signature);
+            cachePrecedingTextSignature(signature);
           } else if (hasSemanticContent) {
             appendSignatureCarrier(signature, CarrierDirection.Previous, lastSemanticKind);
           } else {
@@ -953,7 +1089,10 @@ export const convertAntigravityResponseToClaudeNonStream = (
 
       if (partText !== "") {
         flushThinking();
+        pendingThinkingText = "";
         text += partText;
+
+        if (partText.trim() !== "") hasVisibleOutput = true;
         hasSemanticContent = true;
         lastSemanticKind = CarrierKind.Text;
 
@@ -966,11 +1105,12 @@ export const convertAntigravityResponseToClaudeNonStream = (
   flushText();
 
   if (blocks.length > 0) responseJson["content"] = blocks;
+  const finishReason = asString(get(root, "response.candidates.0.finishReason"));
 
-  responseJson["stop_reason"] = resolveStopReason(
-    asString(get(root, "response.candidates.0.finishReason")),
-    hasToolCall,
-  );
+  if (isMalformedFunctionCallWithoutOutput(finishReason, hasVisibleOutput))
+    return JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR);
+
+  responseJson["stop_reason"] = resolveStopReason(finishReason, hasToolCall);
 
   if (
     promptTokens === 0 &&

@@ -3357,8 +3357,8 @@ silent (Go logs a warning).
 Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `internal/signature`, `internal/cache/signature_cache.go`,
 `internal/misc/antigravity_version.go` and `sdk/cliproxy/antigravity_models.go`.
 
-- **Translators** (`translator/antigravity/{gemini,openai,claude,interactions}/`, registered by `antigravity/register.ts`): gemini, openai,
-  openai-response (a request _envelope_ transform: native web search depends on the resolved model info), claude and interactions -> antigravity,
+- **Translators** (`translator/antigravity/{gemini,openai,claude,interactions}/`, registered by `antigravity/register.ts`): gemini, openai and
+  openai-response (request _envelope_ transforms: native web search depends on the resolved model info), claude and interactions -> antigravity,
   each with request, stream, non-stream (and token count) transforms, all golden-tested against Go (`corpus/antigravity-*.json`,
   `test/translator-fixtures{,-ids}.test.ts`). `ResponseContext.alt` carries the Gemini `alt` option the Go handlers put in the context
   (the Gemini response translator emits nothing without it; streams always use `""`). Claude clients get Gemini signatures as
@@ -3366,14 +3366,39 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   signatures, and `web_search_*` tools map to native Google Search (`claude/web-search.ts`, request building and grounding -> `web_search_tool_result`
   blocks; the capability comes from the registry record, `supportsWebSearch`).
 - **Responses and replay (C6, Go `24b04548`, `912a038b`, `da21f1e5`, `80aa2b1d`)**: Claude clients get `refusal` for safety/filter/
-  malformed finishReasons (web-search paths included; a trailing empty `finishReason` keeps the recorded one) and, unlike
-  the Gemini API route, `MALFORMED_FUNCTION_CALL` stays a refusal here (as in Go); usage falls back on the raw prompt count.
+  malformed finishReasons (web-search paths included; a trailing empty `finishReason` keeps the recorded one), except a
+  `MALFORMED_FUNCTION_CALL` without visible output, which is an `api_error` (see below); usage falls back on the raw prompt count.
   OpenAI chat clients' replay entries carry a versioned context hash (`openai-chat-v1:`: system instruction and preceding
   contents, not the tool declarations or choice) and `tool_choice: none` keeps `request.tools`, so a later turn under a
   different tool policy still gets its signatures back; the thought signature of a turn binds to the unsigned call after it,
   non-stream bodies count as complete without a `finishReason`, and explicit session alias headers key the ledger before the
   derived id. The Go fallback to the request's API key for caller isolation is not needed: the ledger is always
   namespaced by `metadata.callerScope`.
+- **Translators at `dd543d09` (SPI-1420)**: every request translator ends in Antigravity's native wire format
+  (`antigravity/common/request-format.ts`, Go `38067a29`: camelCase media fields, a text-only system instruction joined into one
+  user part, a lone string tool `result` sent as `output`).
+  - _OpenAI chat requests_ go through the request-envelope path (`convertOpenAIRequestEnvelopeToAntigravity`), like Responses: a
+    search-only request on a model with native search becomes a dedicated web search request (Go `28134004`), and that decision
+    needs the envelope's resolved model info, which a plain request transform does not see. The web search pieces both share live
+    in `antigravity/common/web-search.ts`; the tool-choice checks stay apart because Go's differ (chat folds case and accepts
+    `any` and `google_search`; Responses accepts the `web_search` types and `allowed_tools`). Unlike Go's chat translator, the
+    search instruction is not appended twice when the client's system prompt already carries it. Chat streams announce a
+    `willContinue` call once and stream its arguments into one object; Go's `partialArgs` assembly is not ported (see "Gemini
+    responses" above).
+  - _Malformed function calls_ (Go `cf07c78a`): a `MALFORMED_FUNCTION_CALL` finish without visible output (non-blank text, a
+    non-empty tool call or a web search result) ends a Claude client's stream with an `api_error` event and turns a non-stream
+    reply into the error body; text already sent is kept. The rule is the Gemini route's (`common/gemini-parts.ts`), except that
+    partial arguments do not count, as in Go. As in Go, the Antigravity executor passes the error to the client unchanged; it
+    does not fail over the way the Gemini executor does.
+  - _Signature cache_ (Go `85225381`): the Claude translator recovers a thinking signature from the cache only when the attempt
+    installed one (`signatureCacheScoped`): an unscoped call recovers nothing. Non-stream replies cache a Claude model's
+    signature under the thinking text before it, as streams do. The per-credential cache scope and the executor's
+    normalisation calls remain with the executor (SPI-1421).
+  - _Filter errors across terminal frames_: Go's pending filter-frame fixes (`c2dcf748`, `5ddbfbaf`) are not built, because
+    Commissary never holds back filter-block frames for Antigravity, as for Gemini (Go `c3938b72`, "Zero-output terminations"
+    above): a filter `finishReason` is translated in the frame it arrives in.
+  - _Schemas_: the cleaners drop `minProperties`/`maxProperties` (kept as description hints) and `prefixItems` (Go `65ba7863`),
+    for Gemini too, since the cleaner is shared.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
