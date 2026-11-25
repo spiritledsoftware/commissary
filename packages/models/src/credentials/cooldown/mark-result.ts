@@ -33,6 +33,7 @@ import {
   isCreditBalanceTooLow,
   isInvalidGrantError,
   isModelSupportError,
+  isTosViolationResult,
   shouldSkipCredentialCooldown,
 } from "./classify.ts";
 import { rejectedSignalsForCooldown } from "./claude-unified.ts";
@@ -838,6 +839,17 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
     } else {
       clearStateOnSuccess(state, now);
     }
+  } else if (
+    error !== undefined &&
+    (input.credential.disabled === true || state.status === "disabled")
+  ) {
+    // A disabled credential (operator action, terminal refresh failure or TOS_VIOLATION) stays as it is until it is
+    // enabled again: a late failure neither overwrites its state nor arms a cooldown (CLIProxyAPI 5a351d95).
+  } else if (error !== undefined && isTosViolationResult(error)) {
+    // A terminal TOS_VIOLATION disables the credential whatever its status and cooling setting (CLIProxyAPI 5a351d95,
+    // 14cc6ad1); the pool also sets the file flag and stores the appeal details. No cooldown: nothing to wait for.
+    applyTosViolation(state, error, modelKey, now);
+    modelState = modelKey === "" ? undefined : ensureModelState(state, modelKey);
   } else if (error !== undefined) {
     const failure = error;
     const classified = classifiable(failure);
@@ -1010,7 +1022,8 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
     }
   }
 
-  if (wasTerminalUnauthorized) {
+  // A credential a TOS_VIOLATION (or an operator) disabled keeps its disabled status.
+  if (wasTerminalUnauthorized && state.status !== "disabled") {
     state.unavailable = true;
     state.status = "error";
     state.nextRefreshAfter = 0;
@@ -1027,6 +1040,31 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
   }
 
   return { state, cooled: { credential: cooledCredential, models: cooledModels } };
+};
+
+/** The terminal state of a TOS_VIOLATION: the credential and the reporting model are disabled without a deadline. */
+const applyTosViolation = (
+  state: Draft,
+  failure: CredentialError,
+  modelKey: string,
+  now: number,
+): void => {
+  if (modelKey !== "") {
+    const model = ensureModelState(state, modelKey);
+    model.unavailable = true;
+    model.status = "disabled";
+    model.statusMessage = ErrorCode.tosViolation;
+    model.nextRetryAfter = 0;
+    model.lastError = cloneError(failure);
+    model.updatedAt = now;
+  }
+
+  state.lastError = cloneError(failure);
+  state.statusMessage = ErrorCode.tosViolation;
+  state.status = "disabled";
+  state.unavailable = true;
+  state.nextRetryAfter = 0;
+  state.updatedAt = now;
 };
 
 /** The 429 row, including credential-wide propagation for credential-scoped limits. */

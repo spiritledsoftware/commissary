@@ -32,6 +32,13 @@ export const ErrorCode = {
    * model cools until the provider hint, with no quota labelling or exponential backoff.
    */
   transientRateLimit: "transient_rate_limit",
+  /**
+   * A terminal Antigravity Terms-of-Service suspension (CLIProxyAPI 5a351d95, 14cc6ad1: 403 PERMISSION_DENIED with an
+   * ErrorInfo `TOS_VIOLATION`): the credential is disabled instead of cooled, whatever the status and cooling setting.
+   */
+  tosViolation: "tos_violation",
+  /** An Antigravity account validation challenge (403 `VALIDATION_REQUIRED`). */
+  validationRequired: "validation_required",
 } as const;
 
 export interface ClassifiableError {
@@ -643,6 +650,104 @@ export const isRequestScopedResult = (error: ClassifiableError): boolean =>
   (error.status === 404 && isItemNotPersisted(error.message)) ||
   isRequestInvalidError(error);
 
+/** The appeal link a TOS_VIOLATION writes to its credential's metadata (Go `Error.Metadata`). */
+export type TosAppealMetadata = {
+  tos_appeal_url?: string;
+  tos_appeal_url_text?: string;
+};
+
+/** `isTOSViolationResultError`: the failure was reported with the `tos_violation` code. */
+export const isTosViolationResult = (
+  error: { readonly code?: string | undefined } | undefined,
+): boolean => error?.code?.trim().toLowerCase() === ErrorCode.tosViolation;
+
+/** `isTOSViolationError`: the `tos_violation` code, or a 403/503 whose body names `tos_violation`. */
+export const isTosViolationError = (error: ClassifiableError): boolean =>
+  isTosViolationResult(error) ||
+  ((error.status === 403 || error.status === 503) &&
+    error.message.toLowerCase().includes("tos_violation"));
+
+const VALIDATION_DETAIL_PATHS = ["error.details", "details", "response.error.details"];
+
+const VALIDATION_CODE_PATHS = [
+  "error.code",
+  "error.type",
+  "error.status",
+  "code",
+  "type",
+  "status",
+  "response.error.code",
+  "response.error.type",
+  "response.error.status",
+];
+
+const VALIDATION_MESSAGE_PATHS = ["error.message", "message", "response.error.message"];
+
+const at = (root: Json | undefined, path: string): Json | undefined => {
+  let node = root;
+
+  for (const key of path.split(".")) {
+    if (!isJsonObject(node)) return undefined;
+    node = node[key];
+  }
+
+  return node;
+};
+
+/** gjson's `String()` of a scalar (objects and arrays are not read here). */
+const scalarText = (value: Json | undefined): string =>
+  typeof value === "string"
+    ? value
+    : typeof value === "number" || typeof value === "boolean"
+      ? String(value)
+      : "";
+
+/**
+ * `isAntigravityValidationRequiredError` (CLIProxyAPI d3e4db8b): a status of 0 or 403 with the `validation_required`
+ * code, or a 403 whose body names `VALIDATION_REQUIRED` as a detail reason, a code/type/status, or (without another
+ * reason) in its message; a body that is not JSON only has to contain it.
+ */
+export const isValidationRequiredError = (error: ClassifiableError): boolean => {
+  if (error.status !== 0 && error.status !== 403) return false;
+
+  if (error.code?.trim().toLowerCase() === ErrorCode.validationRequired) return true;
+
+  if (error.status !== 403) return false;
+  const body = error.message.trim();
+  const root = tryParseJson(body);
+
+  if (root === undefined) return body.toUpperCase().includes("VALIDATION_REQUIRED");
+  let otherReason = false;
+
+  for (const path of VALIDATION_DETAIL_PATHS) {
+    const details = at(root, path);
+
+    if (!Array.isArray(details)) continue;
+
+    for (const detail of details) {
+      const reason = scalarText(isJsonObject(detail) ? detail["reason"] : undefined).trim();
+
+      if (reason.toUpperCase() === "VALIDATION_REQUIRED") return true;
+
+      if (reason !== "") otherReason = true;
+    }
+  }
+
+  if (
+    VALIDATION_CODE_PATHS.some(
+      (path) => scalarText(at(root, path)).trim().toUpperCase() === "VALIDATION_REQUIRED",
+    )
+  )
+    return true;
+
+  return (
+    !otherReason &&
+    VALIDATION_MESSAGE_PATHS.some((path) =>
+      scalarText(at(root, path)).toUpperCase().includes("VALIDATION_REQUIRED"),
+    )
+  );
+};
+
 /**
  * `shouldSkipCredentialCooldown`: request-scoped, connection-lifecycle, transient-transport and stream-truncated
  * failures never cool a credential (unless forced).
@@ -650,7 +755,7 @@ export const isRequestScopedResult = (error: ClassifiableError): boolean =>
 export const shouldSkipCredentialCooldown = (error: ClassifiableError | undefined): boolean => {
   if (error === undefined) return false;
 
-  if (error.code === ErrorCode.forceCooldown) return false;
+  if (error.code === ErrorCode.forceCooldown || isTosViolationResult(error)) return false;
 
   return (
     error.code === ErrorCode.streamTruncated ||

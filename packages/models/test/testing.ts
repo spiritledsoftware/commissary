@@ -121,6 +121,7 @@ export {
 } from "../src/usage/d1.ts";
 
 export {
+  TOS_PAUSE_KV_KEY,
   antigravityStateFor,
   makeMemoryAntigravityState,
 } from "../src/executor/antigravity/state.ts";

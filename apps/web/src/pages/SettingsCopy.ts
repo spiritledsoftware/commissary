@@ -300,6 +300,12 @@ const COPY = {
   "oauth.providers.antigravity.signature-bypass-strict": flag(
     "Check the full signature structure when the cache is off",
   ),
+  "oauth.providers.antigravity.tos-pause-window": {
+    label: "Pause every Antigravity account after a TOS violation for",
+    hint: "Such as 30m. Off or empty = no pause; the flagged account is disabled either way.",
+    placeholder: "off",
+    size: "short",
+  },
   "oauth.providers.devin.sensitive-words": {
     label: "Sensitive words",
     hint: "One per line. A line of the system prompt holding one is left out of requests to Devin.",

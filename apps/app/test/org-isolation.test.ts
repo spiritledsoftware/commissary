@@ -24,6 +24,7 @@ import {
 import { CurrentOrg, GLOBAL_ORG, OrgId, orgKv } from "@commissary/core";
 import { controlPlaneOf, resolveBackend, stateAuthDirectory } from "@commissary/state";
 import {
+  TOS_PAUSE_KV_KEY,
   antigravityModelsName,
   antigravityStateFor,
   authIndexOf,
@@ -157,6 +158,9 @@ const managed = async (org: IsolationOrg, path: string, init: RequestInit = {}) 
     ...init,
     auth: await token(ADMIN),
   });
+
+/** When the TOS pause case pauses and reads, so a window reads back whole. */
+const TOS_PAUSE_AT = Date.now();
 
 const CREDITS = {
   creditAmount: 1,
@@ -439,6 +443,20 @@ const STORES: ReadonlyArray<StoreCase> = [
     write: async (org, name, value) =>
       await antigravityStateFor(env, org.id).setCredits(name, { ...CREDITS, paidTierId: value }),
     read: async (org, name) => (await antigravityStateFor(env, org.id).credits(name))?.paidTierId,
+  }),
+  // One key per org (no `name`): the pool-wide TOS pause, its window in minutes as the value.
+  storeCase("kv: Antigravity TOS pause", {
+    value: (index) => String(index),
+    write: async (org, _name, value) =>
+      await antigravityStateFor(env, org.id).pauseForTos(Number(value) * 60_000, TOS_PAUSE_AT),
+    read: async (org) => {
+      const remaining = await antigravityStateFor(env, org.id).tosPauseRemaining(TOS_PAUSE_AT);
+
+      return remaining === 0 ? undefined : String(remaining / 60_000);
+    },
+    after: async (orgs) => {
+      for (const org of orgs) await orgKv(env.CACHE, org.id).delete(TOS_PAUSE_KV_KEY);
+    },
   }),
   storeCase("kv: Antigravity model entitlements", {
     write: async (org, name, value) =>

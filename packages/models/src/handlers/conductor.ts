@@ -27,6 +27,7 @@ import {
   withErrorFields,
 } from "../executor/errors.ts";
 import {
+  classifiable,
   failureReport,
   isCompactRequestFault,
   isProviderSpecificRequest,
@@ -53,10 +54,16 @@ import {
   shouldAttemptCreditsFallback,
 } from "../executor/antigravity/credits.ts";
 import {
+  antigravityCreditsScope,
   antigravityStateFor,
   creditsAvailable,
   creditsRecordFresh,
 } from "../executor/antigravity/state.ts";
+import { grantDigestOf } from "../credentials/grant-digest.ts";
+import {
+  isTosViolationError,
+  isValidationRequiredError,
+} from "../credentials/cooldown/classify.ts";
 import { ExecutorRegistry } from "../executor/registry.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import type {
@@ -446,8 +453,11 @@ export const conduct = <T, R>(
 
             if (error !== undefined) usage.fail(error.status, error.message, error.code);
 
+            const grant = grantDigestOf(attempt.context.credential.metadata);
+
             const context = {
               provider: credential.provider,
+              ...(grant === undefined ? {} : { grantDigest: grant }),
               ...(stateModel === undefined ? {} : { stateModel }),
               ...(compact ? { compact: true } : {}),
               ...(prepared.countTokens === true ? { countTokens: true } : {}),
@@ -523,13 +533,15 @@ export const conduct = <T, R>(
       });
 
     /** Stored balance of a credential: `undefined` = unknown, otherwise whether it can pay (`creditsAvailable`). */
-    const creditsBalance = (credentialId: string) =>
+    const creditsBalance = (credential: CredentialSnapshot) =>
       Effect.gen(function* () {
         const env = yield* ModelsEnv;
         const org = yield* CurrentOrg;
 
         const record = yield* Effect.promise(() =>
-          antigravityStateFor(env, org).credits(credentialId),
+          antigravityStateFor(env, org).credits(
+            antigravityCreditsScope(credential.id, credential.metadata),
+          ),
         );
 
         if (record === undefined) return undefined;
@@ -594,7 +606,9 @@ export const conduct = <T, R>(
         /**
          * `findAllAntigravityCreditsCandidateAuths`: the credits round walks every Antigravity credential once, in a
          * fixed order: credentials whose stored balance can pay first, then those with an unknown balance (optimistic),
-         * each group sorted by id. Credentials known to be out of credits are not attempts and are never penalised.
+         * each group sorted by id. Credentials known to be out of credits, and those whose route does not reach a Claude
+         * model (`selectionModelKeyForAuth` contains `claude`, CLIProxyAPI e0a1e93d), are not attempts and are never
+         * penalised.
          */
         let creditsQueue: Array<PickResult> | undefined;
         let creditsFailure: ExecutionError | undefined;
@@ -614,7 +628,14 @@ export const conduct = <T, R>(
               }
 
               excluded.push(candidate.success.credential.id);
-              const available = yield* creditsBalance(candidate.success.credential.id);
+
+              const claude = candidate.success.route.upstreamModels.some((model) =>
+                creditsModel(parseSuffix(model).modelName),
+              );
+
+              const available = claude
+                ? yield* creditsBalance(candidate.success.credential)
+                : false;
 
               if (available === undefined) unknown.push(candidate.success);
               else if (available) known.push(candidate.success);
@@ -732,6 +753,17 @@ export const conduct = <T, R>(
             if (!providerSpecific) upstreamError = error;
 
             if (isStopAction(action)) return stopped(error);
+
+            // A TOS_VIOLATION ends the request: the credential is disabled, and its siblings are not swept for the
+            // same account policy (CLIProxyAPI 5a351d95; Go stops its stream and credits paths, Commissary every path).
+            if (isTosViolationError(classifiable(error))) return stopped(error);
+
+            // A validation challenge ends the credits round (`tryAntigravityCreditsExecute`) and is never replayed by a
+            // stream bootstrap retry (CLIProxyAPI d3e4db8b), unless a request-scoped rule decided otherwise.
+            if (action === undefined && isValidationRequiredError(classifiable(error))) {
+              if (credits) return stopped(error);
+              bootstrap = false;
+            }
 
             if (action === undefined && isCompactRequestFault(error, prepared.options.alt)) {
               return stopped(error);
@@ -854,7 +886,6 @@ export const conduct = <T, R>(
       error.status !== 499 &&
       creditsEnabled(prepared.config) &&
       prepared.providers.some((provider) => provider.trim().toLowerCase() === "antigravity") &&
-      creditsModel(parseSuffix(prepared.routeModel).modelName) &&
       shouldAttemptCreditsFallback(error)
     ) {
       const credited = yield* runRound(0, true);

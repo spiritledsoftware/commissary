@@ -54,6 +54,11 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>()("Execut
    * the upstream's, and the client is told when the pool recovers as for a `model_cooldown`.
    */
   modelCooldown: Schema.optional(Schema.Boolean),
+  /**
+   * Metadata the failure writes onto the credential (Go `Error.Metadata`, `persistTOSAppealMetadata`): a TOS_VIOLATION's
+   * `tos_appeal_url` and `tos_appeal_url_text`, kept with the disabled credential for the operator.
+   */
+  credentialMetadata: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** `upstream_websocket_lost` only: the other operations of the downstream socket that lose their outcome with it. */
   abandoned: Schema.optional(Schema.Array(AbandonedOperation)),
   cause: Schema.optional(Schema.Defect()),
@@ -116,6 +121,7 @@ export const withErrorFields = (
     safeHeaders: Record<string, string>;
     modelCooldown: boolean;
     abandoned: ReadonlyArray<AbandonedOperation>;
+    credentialMetadata: Record<string, string>;
     cause: unknown;
   }>,
 ): ExecutionError =>
@@ -133,6 +139,9 @@ export const withErrorFields = (
     ...(error.safeHeaders === undefined ? {} : { safeHeaders: error.safeHeaders }),
     ...(error.modelCooldown === undefined ? {} : { modelCooldown: error.modelCooldown }),
     ...(error.abandoned === undefined ? {} : { abandoned: error.abandoned }),
+    ...(error.credentialMetadata === undefined
+      ? {}
+      : { credentialMetadata: error.credentialMetadata }),
     ...(error.cause === undefined ? {} : { cause: error.cause }),
     ...fields,
   });

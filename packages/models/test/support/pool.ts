@@ -34,11 +34,15 @@ export class MemoryPoolStore implements PoolStore {
 
     return { record, created: existing === undefined, credentialsChanged: true };
   };
-  setDisabled = (id: string, disabled: boolean) => {
+  setDisabled = (
+    id: string,
+    disabled: boolean,
+    metadata: Readonly<Record<string, string>> = {},
+  ) => {
     const existing = this.credentials.get(id);
 
     if (existing === undefined) return undefined;
-    const record = { ...existing, metadata: { ...existing.metadata, disabled } };
+    const record = { ...existing, metadata: { ...existing.metadata, ...metadata, disabled } };
     this.credentials.set(id, record);
 
     return record;

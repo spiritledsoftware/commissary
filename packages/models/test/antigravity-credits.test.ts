@@ -5,6 +5,7 @@ import type { HttpServerRequest } from "effect/http";
 import { describe, expect, it } from "vite-plus/test";
 import { AccessPrincipal } from "@commissary/auth";
 import {
+  antigravityCreditsScope,
   antigravityStateFor,
   resetMemoryAntigravityState,
 } from "../src/executor/antigravity/state.ts";
@@ -58,6 +59,10 @@ const reply = {
   },
 };
 
+/** The credits key of the harness credential `name` (its grant is its access token). */
+const scopeOf = (name: string): string =>
+  antigravityCreditsScope(`antigravity-${name}.json`, { refresh_token: `refresh-${name}` });
+
 const bearer = (call: UpstreamCall): string =>
   (call.headers["authorization"] ?? "").replace("Bearer ", "");
 
@@ -71,17 +76,20 @@ const run = async (
   options: {
     names?: ReadonlyArray<string>;
     seed?: (state: ReturnType<typeof antigravityStateFor>) => Promise<void>;
+    /** A pool of an earlier run: a later request of the same deployment (no reset, no new credentials). */
+    harness?: Awaited<ReturnType<typeof makePool>>;
   } = {},
 ) => {
-  resetMemoryAntigravityState();
+  if (options.harness === undefined) resetMemoryAntigravityState();
 
   if (options.seed !== undefined) await options.seed(antigravityStateFor({}, GLOBAL_ORG));
-  const harness = await makePool(yaml);
+  const harness = options.harness ?? (await makePool(yaml));
 
-  for (const name of options.names ?? ["a", "b"]) {
+  for (const name of options.harness === undefined ? (options.names ?? ["a", "b"]) : []) {
     harness.store.upsert(`antigravity-${name}.json`, "antigravity", {
       type: "antigravity",
       access_token: `tok-${name}`,
+      refresh_token: `refresh-${name}`,
       project_id: `proj-${name}`,
       expired: new Date(harness.clock.now() + 3_600_000).toISOString(),
     });
@@ -215,11 +223,13 @@ describe("antigravity credits fallback", () => {
       {
         names: ["a", "b", "c", "d", "e"],
         seed: async (state) => {
-          await state.setCredits("antigravity-a.json", record(0)); // known empty: skipped
+          await state.setCredits(scopeOf("a"), record(0)); // known empty: skipped
           // Out of credits for longer than the 10 min refresh interval: unknown again, so it is retried.
-          await state.setCredits("antigravity-b.json", record(0, Date.now() - 10 * 60_000 - 1000));
-          await state.setCredits("antigravity-e.json", record(5)); // known available
-          await state.setCredits("antigravity-c.json", record(9)); // known available
+          await state.setCredits(scopeOf("b"), record(0, Date.now() - 10 * 60_000 - 1000));
+          await state.setCredits(scopeOf("e"), record(5)); // known available
+          await state.setCredits(scopeOf("c"), record(9)); // known available
+          // A balance stored under the bare id (an older key, or another grant) is not read (CLIProxyAPI 16bf182f).
+          await state.setCredits("antigravity-d.json", record(0));
         },
       },
     );
@@ -236,5 +246,246 @@ describe("antigravity credits fallback", () => {
     expect(
       outcome.calls.filter((call) => !hasCredits(call)).filter((call) => bearer(call) === "tok-a"),
     ).toHaveLength(1);
+  });
+
+  it("isolates a credential's credits balance by its grant (CLIProxyAPI 16bf182f)", async () => {
+    const empty = { creditAmount: 0, minCreditAmount: 0, paidTierId: "", updatedAt: Date.now() };
+
+    // A balance recorded for an earlier login of `antigravity-a.json` (another refresh token) is not this one's.
+    const outcome = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      (call) =>
+        hasCredits(call)
+          ? sseResponse([`data: ${JSON.stringify(reply)}\n\n`])
+          : jsonResponse(quotaExhausted, { status: 429 }),
+      {
+        names: ["a"],
+        seed: async (state) => {
+          await state.setCredits(
+            antigravityCreditsScope("antigravity-a.json", { refresh_token: "refresh-old" }),
+            empty,
+          );
+        },
+      },
+    );
+
+    expect(outcome.result._tag).toBe("Success");
+    expect(outcome.calls.filter(hasCredits).map(bearer)).toEqual(["tok-a"]);
+
+    // The same balance under the current grant keeps the credential out of the credits pass.
+    const known = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      () => jsonResponse(quotaExhausted, { status: 429 }),
+      {
+        names: ["a"],
+        seed: async (state) => {
+          await state.setCredits(scopeOf("a"), empty);
+        },
+      },
+    );
+
+    expect(known.calls.some(hasCredits)).toBe(false);
+  });
+
+  it("runs the credits pass only for credentials whose route reaches a Claude model", async () => {
+    // A rate limit with a short wait is no quota exhaustion: no credits pass (CLIProxyAPI e0a1e93d).
+    const rateLimited = await run(CREDITS, "claude-sonnet-4-5", () =>
+      jsonResponse(
+        {
+          error: {
+            code: 429,
+            status: "RESOURCE_EXHAUSTED",
+            message: "Too many requests per minute",
+            details: [
+              {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                reason: "RATE_LIMIT_EXCEEDED",
+              },
+            ],
+          },
+        },
+        { status: 429 },
+      ),
+    );
+
+    expect(rateLimited.calls.some(hasCredits)).toBe(false);
+  });
+});
+
+/** A 403 TOS_VIOLATION as Cloud Code answers it. */
+const tosViolation = {
+  error: {
+    code: 403,
+    status: "PERMISSION_DENIED",
+    message: "This service has been disabled for violating the Terms of Service.",
+    details: [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        reason: "TOS_VIOLATION",
+        metadata: {
+          appeal_url: "https://support.google.com/appeal?case=1",
+          appeal_url_link_text: "Appeal",
+        },
+      },
+    ],
+  },
+};
+
+const CREDITS = "oauth:\n  providers:\n    antigravity:\n      antigravity-credits: true\n";
+
+const PAUSE = `${CREDITS}      tos-pause-window: 1h\n`;
+
+describe("antigravity TOS_VIOLATION (CLIProxyAPI 5a351d95)", () => {
+  it("disables the credential with its appeal link, ends the request and keeps the credits pass out", async () => {
+    const first = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      (call) =>
+        bearer(call) === "tok-a"
+          ? jsonResponse(tosViolation, { status: 403 })
+          : sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+      { names: ["a"] },
+    );
+
+    expect(first.result._tag).toBe("Failure");
+    expect(Result.isFailure(first.result) ? first.result.failure.status : undefined).toBe(403);
+    // One attempt, no rotation, no credits pass.
+    expect(first.calls).toHaveLength(1);
+    expect(first.calls.some(hasCredits)).toBe(false);
+
+    const stored = first.harness.store.get("antigravity-a.json");
+
+    expect(stored?.metadata).toMatchObject({
+      disabled: true,
+      tos_appeal_url: "https://support.google.com/appeal?case=1",
+      tos_appeal_url_text: "Appeal",
+    });
+
+    const summary = first.harness.pool.list().find((item) => item.id === "antigravity-a.json");
+
+    expect(summary).toMatchObject({ status: "disabled", statusMessage: "tos_violation" });
+
+    // The disabled credential is never picked again; enabling it starts it afresh.
+    first.harness.store.upsert("antigravity-b.json", "antigravity", {
+      type: "antigravity",
+      access_token: "tok-b",
+      project_id: "proj-b",
+      expired: new Date(first.harness.clock.now() + 3_600_000).toISOString(),
+    });
+    first.harness.pool.invalidate();
+
+    const next = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      () => sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+      {
+        harness: first.harness,
+      },
+    );
+
+    expect(next.result._tag).toBe("Success");
+    expect(next.calls.map(bearer)).toEqual(["tok-b"]);
+
+    first.harness.pool.setDisabled("antigravity-a.json", false);
+    const enabled = first.harness.pool.list().find((item) => item.id === "antigravity-a.json");
+
+    expect(enabled).toMatchObject({ disabled: false, status: "active", unavailable: false });
+  });
+
+  it("keeps a late failure from changing the disabled state", async () => {
+    const first = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      () => jsonResponse(tosViolation, { status: 403 }),
+      {
+        names: ["a"],
+      },
+    );
+
+    const lease = {
+      id: "late",
+      credentialId: "antigravity-a.json",
+      credentialVersion: 1,
+      provider: "antigravity",
+      model: "claude-sonnet-4-5",
+      issuedAt: 0,
+    };
+
+    first.harness.pool.report(lease, {
+      success: false,
+      httpStatus: 429,
+      error: { message: "quota", retryable: false, httpStatus: 429 },
+      retryAfterMs: 60_000,
+    });
+
+    expect(first.harness.pool.list()[0]).toMatchObject({
+      status: "disabled",
+      statusMessage: "tos_violation",
+      nextRetryAfter: 0,
+    });
+  });
+
+  it("pauses the org's Antigravity pool for the configured window, without touching the other credentials", async () => {
+    const first = await run(
+      PAUSE,
+      "claude-sonnet-4-5",
+      (call) =>
+        bearer(call) === "tok-a"
+          ? jsonResponse(tosViolation, { status: 403 })
+          : sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+      { names: ["a"] },
+    );
+
+    expect(first.result._tag).toBe("Failure");
+
+    first.harness.store.upsert("antigravity-b.json", "antigravity", {
+      type: "antigravity",
+      access_token: "tok-b",
+      project_id: "proj-b",
+      expired: new Date(first.harness.clock.now() + 3_600_000).toISOString(),
+    });
+    first.harness.pool.invalidate();
+
+    const paused = await run(
+      PAUSE,
+      "claude-sonnet-4-5",
+      () => sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+      {
+        harness: first.harness,
+      },
+    );
+
+    // A request-scoped 503: no upstream call, and the healthy credential is not cooled.
+    expect(paused.calls).toHaveLength(0);
+    expect(Result.isFailure(paused.result) ? paused.result.failure : undefined).toMatchObject({
+      status: 503,
+      message: "antigravity pool paused after TOS_VIOLATION",
+    });
+
+    expect(
+      first.harness.pool.list().find((item) => item.id === "antigravity-b.json"),
+    ).toMatchObject({
+      status: "active",
+      unavailable: false,
+      nextRetryAfter: 0,
+      modelStates: {},
+    });
+  });
+
+  it("never pauses by default", async () => {
+    const first = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      (call) =>
+        bearer(call) === "tok-a"
+          ? jsonResponse(tosViolation, { status: 403 })
+          : sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+      { names: ["a"] },
+    );
+
+    expect(await antigravityStateFor({}, GLOBAL_ORG).tosPauseRemaining(Date.now())).toBe(0);
+    expect(first.result._tag).toBe("Failure");
   });
 });

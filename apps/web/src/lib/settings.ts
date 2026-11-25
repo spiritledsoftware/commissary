@@ -49,9 +49,11 @@ export type SectionId =
 
 /**
  * How a value is edited: `bool` a checkbox; `tristate` a checkbox over an unset Go pointer; `int` whole numbers ≥ 0;
- * `duration` a Go duration > 0; `bootstrap` a duration, whole seconds or 0 for unlimited; `text` trimmed text;
- * `model` a `gpt-` model or empty; `timezone` an IANA zone, `Local` or empty; `words` one entry
- * per line; `replacements` and `patterns` one `target => replacement` rule per line (split at the first `=>`); `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
+ * `duration` a Go duration > 0; `bootstrap` a duration, whole seconds or 0 for unlimited; `pause` a Go duration > 0,
+ * or empty or an off keyword for none; `text` trimmed text; `model` a `gpt-` model or empty; `timezone` an IANA zone,
+ * `Local` or empty; `words` one entry per line; `replacements` and `patterns` one `target => replacement` rule per line
+ * (split at the first `=>`); `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a
+ * radio list with a text field.
  */
 export type FieldKind =
   | "bool"
@@ -59,6 +61,7 @@ export type FieldKind =
   | "int"
   | "duration"
   | "bootstrap"
+  | "pause"
   | "text"
   | "model"
   | "timezone"
@@ -228,6 +231,12 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
     "tristate",
     "Antigravity strict signatures",
     false,
+  ),
+  field(
+    "providers",
+    "oauth.providers.antigravity.tos-pause-window",
+    "pause",
+    "Antigravity pause after a TOS violation",
   ),
   field("providers", "oauth.providers.devin.sensitive-words", "words", "Devin sensitive words"),
   field(
@@ -435,6 +444,9 @@ export const parseGoDuration = (input: string): number | undefined => {
 
 const BOOTSTRAP_UNLIMITED = new Set(["", "0", "none", "unlimited", "disabled", "off", "never"]);
 
+/** The `pause` values that mean no pause (the server's `TOS_PAUSE_OFF`, plus empty). */
+const PAUSE_OFF = new Set(["", "0", "off", "false", "none", "disabled"]);
+
 const isTimezone = (zone: string): boolean => {
   if (zone === "" || zone === "Local") return true;
 
@@ -507,6 +519,17 @@ export const parseInput = (spec: FieldSpec, input: Input): Parsed => {
       if (ms === undefined) return fail(`${quoted(text)} is not a duration.`);
 
       return ms > 0 ? ok(text) : fail(`${quoted(text)} is zero; it must be longer than that.`);
+    }
+
+    case "pause": {
+      const text = asText(input).trim();
+
+      if (PAUSE_OFF.has(text.toLowerCase())) return ok(text);
+      const ms = parseGoDuration(text);
+
+      return ms !== undefined && ms > 0
+        ? ok(text)
+        : fail(`${quoted(text)} is not a duration greater than zero or off.`);
     }
 
     case "bootstrap": {
@@ -915,6 +938,8 @@ export const spellDuration = (ms: number): string => {
 export const durationReading = (spec: FieldSpec, input: Input): string | undefined => {
   const text = asText(input).trim();
 
+  if (spec.kind === "pause" && PAUSE_OFF.has(text.toLowerCase())) return "= no pause";
+
   if (spec.kind === "bootstrap") {
     if (BOOTSTRAP_UNLIMITED.has(text.toLowerCase())) return "= no limit";
 
@@ -923,7 +948,8 @@ export const durationReading = (spec: FieldSpec, input: Input): string | undefin
 
   const ms = parseGoDuration(text);
 
-  if (ms === undefined || (spec.kind === "duration" && ms <= 0)) return undefined;
+  if (ms === undefined || ((spec.kind === "duration" || spec.kind === "pause") && ms <= 0))
+    return undefined;
 
   return ms === 0 ? "= no limit" : `= ${spellDuration(ms)}`;
 };

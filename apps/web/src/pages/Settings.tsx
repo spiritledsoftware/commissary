@@ -289,6 +289,7 @@ const Body = ({
                 disabled: input("oauth.providers.antigravity.signature-cache-enabled") !== false,
                 requires: "Only while the signature cache is off.",
               })}
+              {field("oauth.providers.antigravity.tos-pause-window")}
               {field("oauth.providers.antigravity.sensitive-words")}
               {field("oauth.providers.antigravity.sensitive-words-replace")}
               {field("oauth.providers.antigravity.sensitive-patterns-replace")}

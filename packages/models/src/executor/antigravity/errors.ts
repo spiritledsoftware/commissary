@@ -2,10 +2,15 @@
  * Antigravity upstream error handling: the 429 decision table, on the retry delays of `helps/google-retry.ts`.
  *
  * Go source: internal/runtime/executor/antigravity_executor_credits.go (`decideAntigravity429WithHeaders`,
- * `newAntigravityStatusErrWithHeaders`,
- * `antigravityHasExplicitCreditsBalanceExhaustedReason`).
+ * `newAntigravityStatusErrWithHeaders`, `antigravityHasExplicitCreditsBalanceExhaustedReason`,
+ * `parseAntigravityTOSViolation`, `redactTOSAppealURL`).
  */
-import { asString, get, isJsonArray, tryParseJson } from "@commissary/json";
+import { asInt, asString, get, isJsonArray, tryParseJson } from "@commissary/json";
+import {
+  ErrorCode,
+  isValidationRequiredError,
+  type TosAppealMetadata,
+} from "../../credentials/cooldown/classify.ts";
 import { ExecutionError, headersRecord } from "../errors.ts";
 import { ERROR_INFO, parseGoogleRetryDelayWithHeadersMs } from "../helps/google-retry.ts";
 
@@ -96,9 +101,67 @@ export const hasExplicitCreditsBalanceExhaustedReason = (body: string): boolean 
   );
 };
 
+/** A TOS_VIOLATION's appeal details (`antigravityTOSViolation`). */
+export interface TosViolation {
+  readonly appealUrl: string;
+  readonly appealUrlText: string;
+}
+
+/**
+ * `parseAntigravityTOSViolation` (CLIProxyAPI 5a351d95): a 403 `PERMISSION_DENIED` (or gRPC code 7) whose
+ * `error.details` carry an ErrorInfo with reason `TOS_VIOLATION`; `undefined` for any other body.
+ */
+export const parseTosViolation = (body: string): TosViolation | undefined => {
+  if (body === "") return undefined;
+  const root = tryParseJson(body);
+  const code = asInt(get(root, "error.code"));
+  const status = asString(get(root, "error.status")).trim().toUpperCase();
+  const httpForbidden = code === 403 && status === "PERMISSION_DENIED";
+  const grpcDenied = code === 7 && (status === "" || status === "PERMISSION_DENIED");
+
+  if (!httpForbidden && !grpcDenied) return undefined;
+  const details = get(root, "error.details");
+
+  if (!isJsonArray(details)) return undefined;
+
+  for (const detail of details) {
+    if (asString(get(detail, "@type")) !== ERROR_INFO) continue;
+
+    if (asString(get(detail, "reason")).trim().toUpperCase() !== "TOS_VIOLATION") continue;
+
+    return {
+      appealUrl: asString(get(detail, "metadata.appeal_url")).trim(),
+      appealUrlText: asString(get(detail, "metadata.appeal_url_link_text")).trim(),
+    };
+  }
+
+  return undefined;
+};
+
+/** `redactTOSAppealURL`: an appeal URL without its query and fragment, for logs (the record keeps the full URL). */
+export const redactTosAppealUrl = (raw: string): string => {
+  const trimmed = raw.trim();
+  const cut = trimmed.search(/[?#]/);
+
+  return cut >= 0 ? trimmed.slice(0, cut) : trimmed;
+};
+
+/** The credential metadata a TOS_VIOLATION writes (Go `Error.Metadata`); empty values are left out. */
+export const tosAppealMetadata = (violation: TosViolation): TosAppealMetadata => {
+  const metadata: TosAppealMetadata = {};
+
+  if (violation.appealUrl !== "") metadata.tos_appeal_url = violation.appealUrl;
+
+  if (violation.appealUrlText !== "") metadata.tos_appeal_url_text = violation.appealUrlText;
+
+  return metadata;
+};
+
 /**
  * `newAntigravityStatusErrWithHeaders`: the upstream body verbatim; a 429 or a 503 capacity error carries its retry
- * delay, from the body or the `Retry-After` header (CLIProxyAPI 84b838e1, ae3d80f7).
+ * delay, from the body or the `Retry-After` header (CLIProxyAPI 84b838e1, ae3d80f7). A 401 is credential-scoped; so is
+ * a 403 TOS_VIOLATION, which also carries the `tos_violation` code and its appeal details (CLIProxyAPI 5a351d95), and a
+ * 403 VALIDATION_REQUIRED challenge (CLIProxyAPI d3e4db8b).
  */
 export const antigravityStatusError = (
   status: number,
@@ -111,13 +174,23 @@ export const antigravityStatusError = (
       ? parseGoogleRetryDelayWithHeadersMs(headers, body, now)
       : undefined;
 
+  const violation = status === 403 ? parseTosViolation(body) : undefined;
+
+  const validation =
+    status === 403 &&
+    violation === undefined &&
+    isValidationRequiredError({ status, message: body });
+
   return new ExecutionError({
     status,
     message: body,
     headers: headersRecord(headers),
     ...(retryAfterMs !== undefined && retryAfterMs > 0 ? { retryAfterMs } : {}),
     // A rejected credential is credential-scoped: the conductor refreshes it or rotates.
-    ...(status === 401 ? { credentialScoped: true } : {}),
+    ...(status === 401 || violation !== undefined || validation ? { credentialScoped: true } : {}),
+    ...(violation === undefined
+      ? {}
+      : { code: ErrorCode.tosViolation, credentialMetadata: tosAppealMetadata(violation) }),
   });
 };
 
@@ -131,4 +204,56 @@ export const isInvalidSignatureBody = (status: number, body: string): boolean =>
     lower.includes("thought_signature") ||
     lower.includes("signature")
   );
+};
+
+/** What {@link prepareProjectIdError} reads of a failed discovery (`oauth/flows/antigravity.ts` `ProjectDiscoveryError`). */
+export interface ProjectDiscoveryFailure {
+  readonly message: string;
+  readonly status: number;
+  readonly retryAfterMs?: number | undefined;
+  readonly body: string;
+  readonly notFound: boolean;
+}
+
+/**
+ * `prepareAntigravityProjectIDError` (CLIProxyAPI 2f57a5a6, 204be8b9): a credential without `project_id` whose discovery
+ * failed. An upstream answer keeps its status, `Retry-After` (else a 429 body's delay) and TOS_VIOLATION details and is
+ * credential-scoped; a discovery without a project is a credential-scoped 503; a failure without an answer is a
+ * transient transport error (503 for the client) that cools nothing.
+ */
+export const prepareProjectIdError = (
+  failure: ProjectDiscoveryFailure | undefined,
+  now: number,
+): ExecutionError => {
+  const base = "antigravity auth missing project_id";
+
+  if (failure === undefined)
+    return new ExecutionError({ status: 503, message: base, credentialScoped: true });
+  const message = `${base}: ${failure.message}`;
+
+  if (failure.notFound) return new ExecutionError({ status: 503, message, credentialScoped: true });
+
+  if (failure.status === 0)
+    return new ExecutionError({ status: 503, message, code: ErrorCode.transientTransport });
+
+  const retryAfterMs =
+    failure.retryAfterMs ??
+    (failure.status === 429 && failure.body !== ""
+      ? parseGoogleRetryDelayWithHeadersMs(undefined, failure.body, now)
+      : undefined);
+
+  const violation = failure.status === 403 ? parseTosViolation(failure.body) : undefined;
+
+  return new ExecutionError({
+    status: failure.status,
+    message,
+    credentialScoped: true,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(retryAfterMs === undefined
+      ? {}
+      : { safeHeaders: { "retry-after": String(Math.ceil(retryAfterMs / 1000)) } }),
+    ...(violation === undefined
+      ? {}
+      : { code: ErrorCode.tosViolation, credentialMetadata: tosAppealMetadata(violation) }),
+  });
 };

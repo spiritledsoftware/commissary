@@ -168,6 +168,8 @@ export const SETTINGS_TREE = {
         "signature-cache-enabled": Tristate,
         /** `null` = off. */
         "signature-bypass-strict": Tristate,
+        /** A Go duration; empty, `0`, `off`, `false`, `none` or `disabled` = no pause. */
+        "tos-pause-window": GoDuration,
       },
       devin: {
         "sensitive-words": Strings,

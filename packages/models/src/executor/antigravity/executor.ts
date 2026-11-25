@@ -140,8 +140,12 @@ import {
   antigravityStatusError,
   decideAntigravity429,
   hasExplicitCreditsBalanceExhaustedReason,
+  parseTosViolation,
+  prepareProjectIdError,
+  redactTosAppealUrl,
 } from "./errors.ts";
-import { type AntigravityState, antigravityStateFor } from "./state.ts";
+import { type AntigravityState, antigravityCreditsScope, antigravityStateFor } from "./state.ts";
+import { antigravityTosPauseWindowMs } from "../../config/accessors.ts";
 import {
   convertStreamToNonStream,
   inBandErrorStatus,
@@ -240,6 +244,8 @@ interface Attempt {
   readonly accessToken: string;
   /** `project_id` of the credential (discovered through `loadCodeAssist` when the stored one is missing). */
   readonly project: string;
+  /** The key of the credential's credits, short cooldowns and probe slot (`antigravityCreditsScope`). */
+  readonly creditsScope: string;
 }
 
 export interface AntigravityExecutorOptions {
@@ -254,6 +260,59 @@ export const makeAntigravityExecutor = (
   const registry = settings.translators ?? builtinTranslators;
   const to = Formats.Antigravity;
   const ledger = settings.replayLedger ?? defaultReplayLedger;
+
+  /**
+   * `applyAntigravityTOSState` (CLIProxyAPI 5a351d95): a TOS_VIOLATION arms the org's pool pause when a window is
+   * configured, and is logged with the appeal URL cut at its query. The credential itself is disabled by the
+   * ControlPlane from the reported `tos_violation` result.
+   */
+  const armTosPause = (
+    context: ExecutionContext,
+    env: ModelsEnv["Service"] | undefined,
+    org: OrgId,
+    body: string,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const violation = parseTosViolation(body);
+
+      if (violation === undefined) return;
+      const windowMs = antigravityTosPauseWindowMs(context.config);
+
+      if (windowMs > 0) {
+        const now = yield* Clock.currentTimeMillis;
+        yield* Effect.promise(() => antigravityStateFor(env, org).pauseForTos(windowMs, now));
+        yield* Effect.logWarning(`antigravity: TOS_VIOLATION pause armed for ${windowMs} ms`);
+      }
+
+      yield* Effect.logWarning(
+        violation.appealUrl === ""
+          ? `antigravity: credential ${context.credential.id} suspended for TOS_VIOLATION`
+          : `antigravity: credential ${context.credential.id} suspended for TOS_VIOLATION; appeal: ${redactTosAppealUrl(violation.appealUrl)} (${violation.appealUrlText})`,
+      );
+    });
+
+  /**
+   * `antigravityInTOSPause` (CLIProxyAPI 5a351d95, 81018ba4): while the org's pool is paused after a TOS_VIOLATION,
+   * every generate, stream and token count answers a request-scoped 503 without touching the credential.
+   */
+  const tosPauseGate = Effect.fnUntraced(function* (context: ExecutionContext) {
+    if (antigravityTosPauseWindowMs(context.config) <= 0) return;
+    const env = Option.getOrUndefined(yield* Effect.serviceOption(ModelsEnv));
+    const org = yield* optionalRequestOrg;
+    const now = yield* Clock.currentTimeMillis;
+
+    const remaining = yield* Effect.promise(() =>
+      antigravityStateFor(env, org).tosPauseRemaining(now),
+    );
+
+    if (remaining > 0) {
+      return yield* new ExecutionError({
+        status: 503,
+        message: "antigravity pool paused after TOS_VIOLATION",
+        requestScoped: true,
+      });
+    }
+  });
 
   const resolve = Effect.fnUntraced(function* (
     context: ExecutionContext,
@@ -288,13 +347,13 @@ export const makeAntigravityExecutor = (
       const discovered = yield* fetchProjectId(accessToken).pipe(Effect.result);
 
       if (Result.isFailure(discovered) || discovered.success.trim() === "") {
-        const cause = Result.isFailure(discovered) ? `: ${discovered.failure.message}` : "";
+        const now = yield* Clock.currentTimeMillis;
+        const failure = Result.isFailure(discovered) ? discovered.failure : undefined;
 
-        return yield* new ExecutionError({
-          status: 400,
-          message: `antigravity auth missing project_id${cause}`,
-          requestScoped: true,
-        });
+        if (failure?.status === 403 && parseTosViolation(failure.body) !== undefined)
+          yield* armTosPause(context, env, org, failure.body);
+
+        return yield* prepareProjectIdError(failure, now);
       }
 
       project = discovered.success.trim();
@@ -320,6 +379,7 @@ export const makeAntigravityExecutor = (
       deploymentKv: deploymentKvIfBound(env),
       signatures: orgSignatureCache(org),
       signatureScope: antigravitySignatureScope(context.credential.id, context.credential.metadata),
+      creditsScope: antigravityCreditsScope(context.credential.id, context.credential.metadata),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
       accessToken,
@@ -517,7 +577,7 @@ export const makeAntigravityExecutor = (
       const now = yield* Clock.currentTimeMillis;
 
       const remaining = yield* Effect.promise(() =>
-        state.shortCooldownRemaining(context.credential.id, baseModel, now),
+        state.shortCooldownRemaining(attempt.creditsScope, baseModel, now),
       );
 
       if (remaining > 0) {
@@ -535,22 +595,29 @@ export const makeAntigravityExecutor = (
     agent: string,
   ): Effect.Effect<void, never, HttpClient.HttpClient> =>
     Effect.gen(function* () {
-      const { context, state } = attempt;
+      const { context, state, creditsScope } = attempt;
 
+      // Disabled credentials are never picked (Go `isAntigravityAuthDisabled` guards its background task instead).
       if (!creditsEnabled(context.config) || coolingDisabled(context)) return;
       const now = yield* Clock.currentTimeMillis;
 
-      const known = yield* Effect.promise(() => state.credits(context.credential.id));
+      const known = yield* Effect.promise(() => state.credits(creditsScope));
 
       if (known !== undefined && creditsRecordFresh(known, now)) return;
 
-      if (!(yield* Effect.promise(() => state.claimCreditsRefresh(context.credential.id, now))))
-        return;
+      if (!(yield* Effect.promise(() => state.claimCreditsRefresh(creditsScope, now)))) return;
       const client = yield* HttpClient.HttpClient;
+      const env = Option.getOrUndefined(yield* Effect.serviceOption(ModelsEnv));
 
-      const probe = probeCredits(context.credential, attempt.accessToken, agent, state, now).pipe(
-        Effect.provideService(HttpClient.HttpClient, client),
-      );
+      const probe = probeCredits(
+        context.credential,
+        creditsScope,
+        attempt.accessToken,
+        agent,
+        state,
+        now,
+        (body) => armTosPause(context, env, attempt.org, body),
+      ).pipe(Effect.provideService(HttpClient.HttpClient, client));
 
       if (attempt.waitUntil !== undefined) attempt.waitUntil(Effect.runPromise(probe));
     });
@@ -733,7 +800,7 @@ export const makeAntigravityExecutor = (
         !coolingDisabled(context)
       ) {
         yield* Effect.promise(() =>
-          state.markShortCooldown(context.credential.id, prepared.baseModel, retryAfterMs, now),
+          state.markShortCooldown(attempt.creditsScope, prepared.baseModel, retryAfterMs, now),
         );
       } else if (
         decision.kind === "full_quota_exhausted" &&
@@ -741,8 +808,13 @@ export const makeAntigravityExecutor = (
         hasExplicitCreditsBalanceExhaustedReason(text) &&
         !coolingDisabled(context)
       ) {
-        yield* Effect.promise(() => state.markCreditsExhausted(context.credential.id, now));
+        yield* Effect.promise(() => state.markCreditsExhausted(attempt.creditsScope, now));
       }
+    }
+
+    if (status === 403) {
+      const env = Option.getOrUndefined(yield* Effect.serviceOption(ModelsEnv));
+      yield* armTosPause(context, env, attempt.org, text);
     }
 
     return yield* antigravityStatusError(status, text, headers ?? new Headers(), now);
@@ -795,7 +867,7 @@ export const makeAntigravityExecutor = (
     prepared.useCredits
       ? Effect.promise(() =>
           attempt.state
-            .setCredits(attempt.context.credential.id, {
+            .setCredits(attempt.creditsScope, {
               creditAmount: 1,
               minCreditAmount: 1,
               paidTierId: "",
@@ -852,6 +924,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
+    yield* tosPauseGate(context);
     const attempt = yield* resolve(context, request, options);
     const baseModel = parseSuffix(request.model).modelName;
     const selection = yield* selectModel(attempt, baseModel, false);
@@ -1084,6 +1157,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
+    yield* tosPauseGate(context);
     const attempt = yield* resolve(context, request, options);
     const baseModel = parseSuffix(request.model).modelName;
     const selection = yield* selectModel(attempt, baseModel, false);
@@ -1265,6 +1339,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
+    yield* tosPauseGate(context);
     const attempt = yield* resolve(context, request, options);
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;

@@ -213,6 +213,17 @@ export const ReportResult = Schema.Struct({
   availabilityNeutral: optional(Schema.Boolean),
   /** What the attempt cost in micro-USD; charged to the Spend scopes of the lease (none when it has none). */
   costMicros: optional(Schema.Number),
+  /**
+   * A `tos_violation` failure's appeal details (`tos_appeal_url`, `tos_appeal_url_text`), stored in the disabled
+   * credential's metadata (Go `persistTOSAppealMetadata`).
+   */
+  credentialMetadata: optional(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * Digest of the refresh token the attempt ran with (`sha256Hex(...).slice(0, 16)`): a result for an older credential
+   * version still applies when it is an account-wide signal (TOS_VIOLATION, VALIDATION_REQUIRED) and the digest matches
+   * the current refresh token (Go `isStaleResultForCurrentAuth`).
+   */
+  grantDigest: optional(Schema.String),
 });
 
 export type ReportResult = typeof ReportResult.Type;

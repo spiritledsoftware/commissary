@@ -240,6 +240,11 @@ const oauth = section({
       /** Go pointer: missing means enabled. */
       "signature-cache-enabled": optional(Schema.Boolean),
       "signature-bypass-strict": optional(Schema.Boolean),
+      /**
+       * Pool-wide pause after a TOS_VIOLATION (Go `antigravity.tos-pause-window`, CLIProxyAPI 5a351d95, e96d4c48): a Go
+       * duration; empty, `0`, `off`, `false`, `none` or `disabled` (the default) keep the pool running.
+       */
+      "tos-pause-window": text(),
     }),
     devin: section({
       /** Lines of the system prompt holding one are dropped. */

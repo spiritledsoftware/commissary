@@ -20,6 +20,7 @@ import {
   isRequestFault,
   isRequestInvalidError,
   isRequestRetryRoundError,
+  isTosViolationResult,
   isTransientTransportError,
 } from "../credentials/cooldown/classify.ts";
 import type { ReportResult } from "../credentials/selection/types.ts";
@@ -169,6 +170,8 @@ export interface ReportContext {
   readonly countTokens?: boolean;
   /** Response headers of the attempt (success) — sent for providers that expose quota signals. */
   readonly headers?: Headers | undefined;
+  /** `ReportResult.grantDigest`: the attempt's refresh-token digest, for results that outlive a token refresh. */
+  readonly grantDigest?: string | undefined;
 }
 
 const SIGNAL_PROVIDERS = new Set(["claude", "codex", "devin"]);
@@ -272,7 +275,10 @@ export const failureReport = (error: ExecutionError, context: ReportContext): Re
   const classified = classifiable(error);
   let code = resultCode(error, classified);
 
-  if (context.action === "stop" || context.action === "continue") code = ErrorCode.requestScoped;
+  // A TOS_VIOLATION stays terminal whatever a request-scoped rule says (CLIProxyAPI 14cc6ad1).
+  if (isTosViolationResult(error)) code = ErrorCode.tosViolation;
+  else if (context.action === "stop" || context.action === "continue")
+    code = ErrorCode.requestScoped;
   else if (context.action === "stop-and-cooldown" || context.action === "continue-and-cooldown")
     code = ErrorCode.forceCooldown;
   const status = classified.status;
@@ -297,6 +303,10 @@ export const failureReport = (error: ExecutionError, context: ReportContext): Re
     ...(context.stateModel === undefined ? {} : { model: context.stateModel }),
     ...(context.countTokens === true ? { skipQuotaObservation: true } : {}),
     ...(neutral ? { availabilityNeutral: true } : {}),
+    ...(error.credentialMetadata === undefined || code !== ErrorCode.tosViolation
+      ? {}
+      : { credentialMetadata: error.credentialMetadata }),
+    ...(context.grantDigest === undefined ? {} : { grantDigest: context.grantDigest }),
     ...withProviderHeaders(context.provider, error.headers),
   };
 };
