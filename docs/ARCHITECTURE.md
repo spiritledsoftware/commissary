@@ -1205,7 +1205,10 @@ request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
   continuations, payload rules on that body and then `type` (framing only). The transcript records the `input` from before
   the rules, so replaying it into a later request does not apply a rule twice. Downstream response ids are mapped to upstream ids
   (`-xai-<seq>` suffix for repeats; `previous_response_id` dropped and the recorded transcript prepended when the upstream target
-  changed). `generate:false` warm-ups end after `response.created` with a synthesised `response.completed`.
+  changed). `generate:false` warm-ups end after `response.created` with a synthesised `response.completed`. The id state of
+  a socket is dropped with the socket, or after 24 h idle with no turn in flight (Go 679166b8; evicted lazily on the next
+  access, as a Worker has no background ticker). Go's eviction of ephemeral states has no counterpart: every state belongs
+  to a downstream socket.
 - **Local requests**: an executor that answers a request without the upstream socket (local compaction on any route)
   reports it through `WebsocketExecution`; the executor also reports when it started a duplex stream, and the handler
   no longer infers duplex from the selected credential. After a local compaction the socket is in HTTP mode, keeps a

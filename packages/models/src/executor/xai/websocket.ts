@@ -221,8 +221,14 @@ export const makeXaiWebsocketStream =
 
       const store = deps.store ?? xaiSessionStore;
 
+      const idStates = deps.idStates ?? xaiIdStates;
+
+      // Held in flight until the stream ends, so the 24 h idle eviction never drops it mid-turn (Go 679166b8). A turn
+      // that fails before its stream exists leaves it held; the socket's close deletes it.
       const state =
-        sessionId === undefined ? undefined : (deps.idStates ?? xaiIdStates).get(sessionId);
+        sessionId === undefined
+          ? undefined
+          : idStates.acquire(sessionId, yield* Clock.currentTimeMillis);
 
       const mapper =
         state === undefined ? undefined : new XaiRequestIdMapper(state, request.payload);
@@ -447,6 +453,13 @@ export const makeXaiWebsocketStream =
             ),
           );
         }),
+      ).pipe(
+        Stream.ensuring(
+          Effect.gen(function* () {
+            if (sessionId !== undefined && state !== undefined)
+              idStates.release(sessionId, state, yield* Clock.currentTimeMillis);
+          }),
+        ),
       );
 
       return { headers: new Headers(), chunks } satisfies StreamResult;

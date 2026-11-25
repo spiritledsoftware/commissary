@@ -7,7 +7,8 @@
  * dropped and the recorded transcript is prepended to `input` ("replay"); downstream ids that would repeat an upstream
  * id get a `-xai-<seq>` suffix. A turn is recorded with its `input` from before the payload rules (`recordTranscriptTurn`'s
  * input snapshot, CLIProxyAPI b4410dd5). State lives per isolate, keyed by the downstream socket id (the socket keeps its
- * isolate alive), and is released with the execution session.
+ * isolate alive), and is released with the execution session or after 24 h idle (Go 679166b8). Every state belongs to a
+ * downstream socket, so Go's eviction of ephemeral states (a turn without an execution session) has no counterpart.
  */
 import {
   asString,
@@ -91,26 +92,91 @@ export class XaiIdState {
   }
 }
 
-/** Process-wide (per isolate) id states, like Go's `globalXAIWebsocketIDStates`. */
-export class XaiIdStateStore {
-  private readonly states = new Map<string, XaiIdState>();
+/** `defaultXAIWebsocketIDStateIdleTTL` (Go 679166b8): an id state unused this long is dropped. */
+export const XAI_ID_STATE_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
-  get(sessionId: string): XaiIdState | undefined {
+interface StoredIdState {
+  readonly state: XaiIdState;
+  lastUsedMs: number;
+  inFlight: number;
+}
+
+/**
+ * Process-wide (per isolate) id states, like Go's `globalXAIWebsocketIDStates`. A state unused for 24 h with no
+ * stream in flight is evicted (Go 679166b8), lazily on the next access: a Worker has no background ticker. Map order is
+ * the least recently used first.
+ */
+export class XaiIdStateStore {
+  private readonly states = new Map<string, StoredIdState>();
+
+  constructor(private readonly idleTtlMs = XAI_ID_STATE_IDLE_TTL_MS) {}
+
+  /** `evictExpiredLocked`: drops idle states from the least recently used end; one still fresh ends the scan. */
+  private evictExpired(nowMs: number): void {
+    for (const [id, entry] of this.states) {
+      if (nowMs - entry.lastUsedMs < this.idleTtlMs) break;
+
+      if (entry.inFlight === 0) this.states.delete(id);
+    }
+  }
+
+  private touch(id: string, entry: StoredIdState, nowMs: number): void {
+    entry.lastUsedMs = nowMs;
+    this.states.delete(id);
+    this.states.set(id, entry);
+  }
+
+  /** `getOrCreateLocked`: the session's state (a fresh one after 24 h idle), marked as used now. */
+  private entry(id: string, nowMs: number): StoredIdState {
+    this.evictExpired(nowMs);
+    const current = this.states.get(id);
+
+    const entry =
+      current !== undefined && (current.inFlight > 0 || nowMs - current.lastUsedMs < this.idleTtlMs)
+        ? current
+        : { state: new XaiIdState(), lastUsedMs: nowMs, inFlight: 0 };
+
+    this.touch(id, entry, nowMs);
+
+    return entry;
+  }
+
+  get(sessionId: string, nowMs: number): XaiIdState | undefined {
+    const id = sessionId.trim();
+
+    return id === "" ? undefined : this.entry(id, nowMs).state;
+  }
+
+  /** `acquireXAIWebsocketIDState`: the state, held in flight (never evicted) until `release`. */
+  acquire(sessionId: string, nowMs: number): XaiIdState | undefined {
     const id = sessionId.trim();
 
     if (id === "") return undefined;
-    let state = this.states.get(id);
+    const entry = this.entry(id, nowMs);
+    entry.inFlight++;
 
-    if (state === undefined) {
-      state = new XaiIdState();
-      this.states.set(id, state);
-    }
+    return entry.state;
+  }
 
-    return state;
+  /** `releaseXAIWebsocketIDState`: ends one in-flight use; the state counts as used now. */
+  release(sessionId: string, state: XaiIdState, nowMs: number): void {
+    const id = sessionId.trim();
+    const entry = this.states.get(id);
+
+    if (entry === undefined || entry.state !== state) return;
+
+    if (entry.inFlight > 0) entry.inFlight--;
+    this.touch(id, entry, nowMs);
+    this.evictExpired(nowMs);
   }
 
   delete(sessionId: string): void {
     this.states.delete(sessionId.trim());
+  }
+
+  /** The number of states held (tests). */
+  get size(): number {
+    return this.states.size;
   }
 }
 

@@ -831,7 +831,11 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
     options: ExecutorOptions,
   ) {
     const sessionId = options.metadata.websocket?.sessionId;
-    const state = sessionId === undefined ? undefined : xaiIdStates.get(sessionId);
+
+    const state =
+      sessionId === undefined
+        ? undefined
+        : xaiIdStates.get(sessionId, yield* Clock.currentTimeMillis);
 
     if (state === undefined) {
       return yield* new ExecutionError({
