@@ -21,6 +21,12 @@ import { ConfigValidationError } from "./errors.ts";
 
 type Move = readonly [from: string, to: string];
 
+/**
+ * The one v8 leaf under `oauth.providers.claude` (d0ee9ca7): the historical `oauth.providers.claude` -> `upstream.claude`
+ * move leaves it in place.
+ */
+const CLAUDE_LOGIN_SCOPE = "oauth.providers.claude.oauth-include-create-api-key";
+
 /** Historical v8 spellings (`v8ClientPaths`, `v8SharedPaths`, `v8SharedStructPaths`). */
 const V8_ALIASES: readonly Move[] = [
   ["oauth.providers.codex.optimize-multi-agent-v2", "client.codex.optimize-multi-agent-v2"],
@@ -69,6 +75,7 @@ const LEGACY_MOVES: readonly Move[] = [
   ["codex.model-level-cooling", "upstream.codex.model-level-cooling"],
   ["codex.response-steering", "upstream.codex.response-steering"],
   ["codex-header-defaults", "oauth.providers.codex.header-defaults"],
+  ["claude.oauth-include-create-api-key", CLAUDE_LOGIN_SCOPE],
   ["claude", "upstream.claude"],
   ["claude-code", "upstream.claude"],
   ["disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"],
@@ -322,7 +329,13 @@ export const prepareDocument = (raw: Json): JsonObject => {
     if (get(doc, "access.api-keys") === undefined) set(doc, "access.api-keys", clientKeys);
   }
 
+  const loginScope = get(doc, CLAUDE_LOGIN_SCOPE);
+
+  if (loginScope !== undefined) del(doc, CLAUDE_LOGIN_SCOPE);
+
   for (const [from, to] of [...V8_ALIASES, ...LEGACY_MOVES]) moveMerge(doc, from, to);
+
+  if (loginScope !== undefined) set(doc, CLAUDE_LOGIN_SCOPE, loginScope);
 
   for (const [legacy, family] of LEGACY_FAMILIES) {
     const entries = doc[legacy];

@@ -417,6 +417,8 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     this.#oauth = makeOAuthService({
       org: this.#org,
       metaMintUrl: env.META_MINT_URL,
+      claudeIncludeCreateApiKey: () =>
+        this.#currentConfig().config.oauth.providers.claude["oauth-include-create-api-key"],
       sessions: this.#sessions,
       sink: {
         get: (name, owner) => {

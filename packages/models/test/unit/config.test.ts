@@ -137,6 +137,8 @@ describe("config schema and normalisation", () => {
       assert.deepStrictEqual(config["api-keys"].claude, []);
       assert.deepStrictEqual(config.upstream.claude["header-defaults"]["native-entrypoints"], []);
       assert.strictEqual(config.upstream.claude["tool-search"], false);
+      assert.strictEqual(config.upstream.claude["server-side-fallback"], false);
+      assert.strictEqual(config.oauth.providers.claude["oauth-include-create-api-key"], true);
       assert.isUndefined(config.oauth.providers.antigravity["signature-cache-enabled"]);
     }),
   );
@@ -165,6 +167,46 @@ api-keys:
 
         assert.deepStrictEqual(Schema.decodeUnknownSync(Config)(encodeConfig(config)), config);
       }),
+  );
+
+  // Go: claude_code_test.go (d0ee9ca7) and config.example.yaml `upstream.claude.server-side-fallback` (fa11a573).
+  it.effect("keeps the Claude login scope and server-side fallback switches", () =>
+    Effect.gen(function* () {
+      const config = yield* parse(`
+upstream:
+  claude:
+    server-side-fallback: true
+oauth:
+  providers:
+    claude:
+      oauth-include-create-api-key: false
+`);
+
+      assert.strictEqual(config.upstream.claude["server-side-fallback"], true);
+      assert.strictEqual(config.oauth.providers.claude["oauth-include-create-api-key"], false);
+      assert.deepStrictEqual(Schema.decodeUnknownSync(Config)(encodeConfig(config)), config);
+
+      // The legacy layout and the historical oauth.providers.claude spelling of the upstream settings.
+      const legacy = yield* parse(`
+claude:
+  oauth-include-create-api-key: false
+  tool-search: true
+`);
+
+      assert.strictEqual(legacy.oauth.providers.claude["oauth-include-create-api-key"], false);
+      assert.strictEqual(legacy.upstream.claude["tool-search"], true);
+
+      const shared = yield* parse(`
+oauth:
+  providers:
+    claude:
+      oauth-include-create-api-key: false
+      model-level-cooling: true
+`);
+
+      assert.strictEqual(shared.oauth.providers.claude["oauth-include-create-api-key"], false);
+      assert.strictEqual(shared.upstream.claude["model-level-cooling"], true);
+    }),
   );
 
   it.effect("decodes and normalises a v8 document", () =>

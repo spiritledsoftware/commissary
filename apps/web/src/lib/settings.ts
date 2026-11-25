@@ -106,6 +106,12 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
   field("providers", "upstream.claude.cloak-level", "choice", "Claude cloak level"),
   field("providers", "upstream.claude.tool-search", "bool", "Claude tool search"),
   field("providers", "upstream.claude.server-side-fallback", "bool", "Claude server-side fallback"),
+  field(
+    "providers",
+    "oauth.providers.claude.oauth-include-create-api-key",
+    "bool",
+    "Claude login scope",
+  ),
   field("providers", "upstream.claude.disable-cloaking-model-list", "bool", "Claude model list"),
   field("providers", "upstream.claude.header-defaults.user-agent", "text", "Claude User-Agent"),
   field(

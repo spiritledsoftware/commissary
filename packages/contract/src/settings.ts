@@ -164,6 +164,7 @@ export const SETTINGS_TREE = {
         "signature-bypass-strict": Tristate,
       },
       devin: { "sensitive-words": Strings },
+      claude: { "oauth-include-create-api-key": Schema.Boolean },
     },
   },
   multimedia: {

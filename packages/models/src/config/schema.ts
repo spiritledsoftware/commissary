@@ -237,6 +237,10 @@ const oauth = section({
     devin: section({
       "sensitive-words": list(Schema.String),
     }),
+    claude: section({
+      /** New logins also ask for `org:create_api_key`, like native Claude Code (CLIProxyAPI d0ee9ca7). */
+      "oauth-include-create-api-key": flag(true),
+    }),
   }),
 });
 

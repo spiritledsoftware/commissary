@@ -98,6 +98,7 @@ const DEFAULTS: SettingsValues = {
         "signature-bypass-strict": null,
       },
       devin: { "sensitive-words": [] },
+      claude: { "oauth-include-create-api-key": true },
     },
   },
   multimedia: {
