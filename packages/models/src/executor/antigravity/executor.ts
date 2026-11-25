@@ -1282,7 +1282,7 @@ export const makeAntigravityExecutor = (
       return new ExecutionError({ status: 502, message });
     };
 
-    if (raw.length > COUNT_TOKENS_MAX_RESPONSE_BYTES) {
+    if (new TextEncoder().encode(raw).length > COUNT_TOKENS_MAX_RESPONSE_BYTES) {
       return yield* invalid(
         `antigravity count_tokens response exceeded ${COUNT_TOKENS_MAX_RESPONSE_BYTES} bytes`,
       );
@@ -1296,12 +1296,14 @@ export const makeAntigravityExecutor = (
     const status = inBandErrorStatus(root);
 
     if (status !== undefined) return yield* upstreamError(attempt, prepared, status, headers, raw);
-    const total = root["totalTokens"];
 
-    if (typeof total !== "number")
+    if (typeof root["totalTokens"] !== "number")
       return yield* invalid("antigravity count_tokens response missing numeric totalTokens");
 
-    if (!Number.isSafeInteger(total) || total < 0)
+    // `strconv.ParseUint(raw, 10, 63)`: the number as written must be plain digits (`1.0` and `1e3` are not).
+    const total = parseCountTokensTotal(raw);
+
+    if (total === undefined)
       return yield* invalid("antigravity count_tokens response has invalid totalTokens");
     const payload = registry.translateTokenCount(responseFormatOf(options), to, total, raw);
 
@@ -1313,6 +1315,32 @@ export const makeAntigravityExecutor = (
 
 /** `antigravityCountTokensMaxResponseBytes`: the largest `countTokens` body accepted (1 MiB). */
 const COUNT_TOKENS_MAX_RESPONSE_BYTES = 1 << 20;
+
+/**
+ * The top-level `totalTokens` of a `countTokens` body, read from its source text as Go's `strconv.ParseUint(raw, 10,
+ * 63)` does: only decimal digits, within JavaScript's safe integers (the counts are far below either bound).
+ */
+export const parseCountTokensTotal = (raw: string): number | undefined => {
+  // The source text of every `totalTokens` member, by the object that holds it (JSON source text access).
+  const sources = new Map<Json, string>();
+
+  const root: Json = JSON.parse(
+    raw,
+    function (this: Json, key: string, value: Json, context?: { readonly source?: string }) {
+      if (key === "totalTokens" && context?.source !== undefined && !sources.has(this))
+        sources.set(this, context.source);
+
+      return value;
+    },
+  );
+
+  const source = sources.get(root);
+
+  if (source === undefined || !/^[0-9]+$/.test(source)) return undefined;
+  const total = Number(source);
+
+  return Number.isSafeInteger(total) ? total : undefined;
+};
 
 /** `formatAntigravityCountTokensModel`: a bare model id becomes `models/<id>`; resource names stay as they are. */
 const countTokensModel = (model: string): string => {

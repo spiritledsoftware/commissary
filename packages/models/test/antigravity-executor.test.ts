@@ -732,6 +732,45 @@ describe("antigravity executor: token counting", () => {
     expect(negative.text).toContain("invalid totalTokens");
   });
 
+  // Go `strconv.ParseUint(totalTokens.Raw, 10, 63)`: the count as written must be plain digits.
+  it("rejects a count written as a fraction or an exponent (CLIProxyAPI 9bce4825)", async () => {
+    for (const [written, name] of [
+      ["1.0", "count-fraction"],
+      ["1e3", "count-exponent"],
+    ] as const) {
+      const result = await count(
+        () =>
+          new Response(`{"totalTokens":${written}}`, {
+            headers: { "content-type": "application/json" },
+          }),
+        name,
+      );
+
+      expect(result.status).toBe(502);
+      expect(result.text).toContain("invalid totalTokens");
+    }
+
+    // A nested `totalTokens` is not the count.
+    const nested = await count(
+      () =>
+        new Response('{"meta":{"totalTokens":1.5},"totalTokens":7}', {
+          headers: { "content-type": "application/json" },
+        }),
+      "count-nested",
+    );
+
+    expect(nested.status).toBe(200);
+  });
+
+  it("limits the body by its UTF-8 bytes, not its characters", async () => {
+    // 400,000 three-byte characters: 1.2 MB, under a million characters.
+    const padding = "€".repeat(400_000);
+    const result = await count(() => jsonResponse({ totalTokens: 3, padding }), "count-utf8");
+
+    expect(result.status).toBe(502);
+    expect(result.text).toContain("exceeded 1048576 bytes");
+  });
+
   it("answers an in-band error with its status (CLIProxyAPI 4087007c)", async () => {
     const result = await count(
       () => jsonResponse({ error: { code: 400, message: "bad request" } }),
