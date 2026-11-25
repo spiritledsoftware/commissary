@@ -125,6 +125,58 @@ describe("static lookups", () => {
     expect(lookupStaticModelInfo(catalogs, "gpt-6-astra[1m]")).toBeUndefined();
   });
 
+  it("serves Gemini 4 and GPT-6.2 on their routes", () => {
+    const ids = (section: Parameters<typeof sectionModels>[1]) =>
+      sectionModels(catalogs, section).map((model) => model.id);
+
+    for (const plan of ["codex-team", "codex-plus", "codex-pro"] as const) {
+      expect(ids(plan), plan).toEqual(expect.arrayContaining(["gpt-6.2-astra", "gpt-6.2-sol"]));
+    }
+
+    expect(ids("codex-free")).not.toContain("gpt-6.2-sol");
+
+    for (const section of ["gemini", "vertex", "aistudio"] as const) {
+      for (const id of [
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-hydrogen",
+        "gemini-4-neon",
+      ]) {
+        const model = sectionModels(catalogs, section).find((entry) => entry.id === id);
+        expect(model, `${section} ${id}`).toBeDefined();
+        expect(model?.maxCompletionTokens ?? 0, `${section} ${id}`).toBeLessThanOrEqual(65536);
+      }
+    }
+
+    expect(ids("antigravity")).toEqual(
+      expect.arrayContaining([
+        "gemini-4-carbon-high",
+        "gemini-4-neon-xhigh",
+        "gemini-4-hydrogen-xhigh",
+        "gemini-3.8-flash-tiered",
+      ]),
+    );
+    expect(ids("devin")).toEqual(
+      expect.arrayContaining(["devin/gpt-6-2-sol", "devin/gemini-4-neon", "devin/swe-2-1"]),
+    );
+    expect(
+      sectionModels(catalogs, "meta").find((model) => model.id === "muse-ember-1.0")
+        ?.nativeCapabilities,
+    ).toEqual({ webSearch: true });
+  });
+
+  it("a channel-qualified id also matches the channel's bare catalog id", () => {
+    expect(lookupStaticModelInfoByChannel(catalogs, "Vertex/gemini-4-neon", "vertex")?.id).toBe(
+      "vertex/gemini-4-neon",
+    );
+    expect(lookupStaticModelInfo(catalogs, "vertex/gemini-4-neon")?.id).toBe(
+      "vertex/gemini-4-neon",
+    );
+    expect(lookupStaticModelInfoByChannel(catalogs, "gemini/gemini-4-neon", "vertex")).toBe(
+      undefined,
+    );
+  });
+
   it("an exact id wins over its family", () => {
     // claude-opus-4-5-20251101 and claude-opus-4-5 are both catalog entries: neither answers for the other.
     expect(lookupStaticModelInfo(catalogs, "claude-opus-4-5-20251101")?.id).toBe(
