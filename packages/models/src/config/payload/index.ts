@@ -10,4 +10,11 @@ export { type HeaderInput, matchModelPattern, payloadModelCandidates } from "./m
 
 export { buildPayloadPath, resolvePayloadRulePaths } from "./paths.ts";
 
-export { PayloadConfig, PayloadFilterRule, PayloadModelRule, PayloadRule } from "./schema.ts";
+export {
+  PayloadConfig,
+  PayloadFilterRule,
+  PayloadModelRule,
+  PayloadReplaceRule,
+  PayloadReplacement,
+  PayloadRule,
+} from "./schema.ts";

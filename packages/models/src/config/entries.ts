@@ -55,6 +55,7 @@ export const PAYLOAD_KINDS = [
   "default-raw",
   "override",
   "override-raw",
+  "replace",
   "filter",
 ] as const;
 

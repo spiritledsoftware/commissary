@@ -5,9 +5,10 @@
  * ExecuteStream), claude_executor_tokens.go (countTokensUpstream). Order (ARCHITECTURE.md "Request pipeline"):
  * translate -> upstream model -> forced tool_choice rewrite on Claude 5.5 -> Thinking.apply -> cloaking -> provider
  * shaping (context management, diagnostics, max tokens, sampling, cache control, tool aliases, tool property-name
- * fallback, sanitising, identity, CCH placeholder, preserved-thinking binding) -> user payload rules
- * (the last semantic mutation) -> betas extraction / `prompt_cache_options` removal -> serialise + CCH signature.
- * Nothing after the payload rules changes business fields except the caller-betas extraction and the signature.
+ * fallback, sanitising, identity, CCH placeholder, preserved-thinking binding, `prompt_cache_options` removal) -> user
+ * payload rules (the last semantic mutation) -> betas extraction -> serialise + CCH signature. Nothing after the payload
+ * rules changes business fields except the caller-betas extraction and the signature (CLIProxyAPI b4410dd5: a rule may
+ * set `prompt_cache_options`, and it goes upstream).
  */
 import {
   modelIsCompat as requestIsCompat,
@@ -705,7 +706,6 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
     if (cpaOwnsCacheControl) ensureCacheControl(body);
     enforceCacheControlLimit(body, 4);
-    stripPromptCacheOptions(body);
     const subagent = isSubagentRequest(options.headers, body);
     const subagent1h = subagent && subagentRequests1h(options.headers, body);
 
@@ -772,6 +772,8 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
     if (input.compactionSummary === true) finalizeClaudeCompactionSummaryBody(body);
     applyPreservedThinkingBinding(body);
+    // Built-in cleanup stays before the user payload rules.
+    stripPromptCacheOptions(body);
 
     // User payload rules: the final semantic mutation of the business payload (AGENTS.md).
     const requestedModel =
@@ -794,7 +796,6 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
     const finalBody = payloadBody(rules.payload);
     const extraBetas = extractAndRemoveBetas(finalBody);
-    stripPromptCacheOptions(finalBody);
     const midSystemError = validateMidSystemMessageModel(finalBody, confirmed, firstParty);
 
     if (midSystemError !== undefined) throw midSystemError;
@@ -943,14 +944,11 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
     enforceCacheControlLimit(body, 4);
 
     if (!explicitCacheMode) normalizeCacheControlTTL(body);
-    const extraBetas = extractAndRemoveBetas(body);
-    extraBetas.push(BETA.tokenCounting);
 
     if (fingerprint.mcpAlias && cloaked && !minimalCloak)
       remapToolNames(body, aliasSecret(options));
     normalizeClaudeToolPropertyNames(body);
     sanitizeForClaudeUpstream(body, baseModel, isCompat);
-    stripPromptCacheOptions(body);
 
     if (firstParty || fingerprint.profileClaudeCodeCLI) {
       delete body.metadata;
@@ -963,8 +961,9 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
 
     if (midSystemError !== undefined) throw midSystemError;
     applyPreservedThinkingBinding(body);
+    stripPromptCacheOptions(body);
 
-    // User payload rules last (final barrier), then the final removal of cache options.
+    // User payload rules last (final barrier).
     const requestedModel =
       options.metadata.requestedModel !== "" ? options.metadata.requestedModel : request.model;
 
@@ -984,7 +983,9 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
       ).payload,
     );
 
-    stripPromptCacheOptions(finalBody);
+    // The configured betas become headers after the rules, without changing business fields.
+    const extraBetas = extractAndRemoveBetas(finalBody);
+    extraBetas.push(BETA.tokenCounting);
 
     const headers = buildClaudeHeaders({
       config,
@@ -1104,6 +1105,7 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
     normalizeClaudeToolPropertyNames(thinkingBody);
     sanitizeForClaudeUpstream(thinkingBody, baseModel, isCompat);
     applyPreservedThinkingBinding(thinkingBody);
+    stripPromptCacheOptions(thinkingBody);
 
     const requestedModel =
       options.metadata.requestedModel !== "" ? options.metadata.requestedModel : request.model;
@@ -1124,7 +1126,6 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
       ).payload,
     );
 
-    stripPromptCacheOptions(finalBody);
     validateTokenCountRequest(finalBody);
 
     return finalBody;

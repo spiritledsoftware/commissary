@@ -7,7 +7,7 @@
 import { get, isJsonArray, type Json } from "@commissary/json";
 
 /** Splits on `.` outside parentheses and quotes. */
-const splitPayloadRulePath = (path: string): string[] => {
+export const splitPayloadRulePath = (path: string): string[] => {
   const parts: string[] = [];
   let start = 0;
   let depth = 0;
@@ -106,7 +106,7 @@ interface QueryPart {
   readonly allMatches: boolean;
 }
 
-const parsePayloadQueryPathPart = (part: string): QueryPart | undefined => {
+export const parsePayloadQueryPathPart = (part: string): QueryPart | undefined => {
   if (!part.startsWith("#(")) return undefined;
   const closeIndex = findPayloadQueryClose(part);
 
@@ -176,7 +176,7 @@ const payloadQueryTermMatches = (item: Json, term: string): boolean => {
   return get([item], `#(${trimmed})`) !== undefined;
 };
 
-const payloadQueryMatches = (item: Json, query: string): boolean =>
+export const payloadQueryMatches = (item: Json, query: string): boolean =>
   splitPayloadLogical(query, "||").some((orPart) => {
     const parts = splitPayloadLogical(orPart, "&&");
 

@@ -229,6 +229,48 @@ describe("response steering (full duplex)", () => {
     client.close();
   });
 
+  it("lets an append inherit the instructions before the payload rules, so a rule does not compound", async () => {
+    const ruled = await loadConfig(`${STEERING}
+requests:
+  payload:
+    replace:
+      - models: [{ name: "*", protocol: codex }]
+        target: { role: system, positions: [1] }
+        replacements: [{ "sys": "sys!" }]
+`);
+
+    const s = setup(
+      [wsCredential()],
+      {
+        onConnection: scripted((_frame, index, send) => {
+          const id = `resp_${index + 1}`;
+          send(created(id));
+          send(done(id));
+        }),
+      },
+      ruled,
+    );
+
+    const client = await s.connect();
+    client.send(create("one", { instructions: "sys" }));
+    await client.until("response.completed");
+
+    for (const text of ["two", "three"]) {
+      client.send({
+        type: "response.append",
+        input: [{ type: "message", role: "user", content: text }],
+      });
+      await client.until("response.completed");
+    }
+
+    expect(frames(s.mock.connections[0]).map((frame) => frame["instructions"])).toEqual([
+      "sys!",
+      "sys!",
+      "sys!",
+    ]);
+    client.close();
+  });
+
   it("answers malformed and unsupported frames locally and keeps the socket", async () => {
     const s = setup([wsCredential()], {
       onConnection: scripted((_frame, _index, send) => send(created("resp_1"))),

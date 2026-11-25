@@ -242,6 +242,107 @@ api-keys:
     }),
   );
 
+  it.effect("keeps replace rules, with empty replacements, and drops the invalid ones", () =>
+    Effect.gen(function* () {
+      const config = yield* parse(`
+requests:
+  payload:
+    replace:
+      - models: [{ name: "*" }]
+        target: { role: user, positions: [1, 3] }
+        replacements:
+          - "you are hero": "you are fool"
+          - "remove this phrase": ""
+          - pattern: '(?i)\\bhero\\b'
+            replacement: ""
+          - pattern: "lazy(?=x)"
+            replacement: "x"
+      - models: [{ name: "*" }]
+        target: { paths: ['tools.#(type=="function")#.description'] }
+        replacements: [{ "old": "new" }]
+      - models: [{ name: "*" }]
+        target: { role: assistant, all: true }
+        replacements: [{ "a": "b" }]
+      - models: [{ name: "*" }]
+        target: { role: user, all: true }
+        replacements: [{ pattern: "(", replacement: "x" }]
+`);
+
+      assert.deepStrictEqual(config.requests.payload.replace, [
+        {
+          models: [{ name: "*" }],
+          target: { role: "user", positions: [1, 3] },
+          replacements: [
+            { "you are hero": "you are fool" },
+            { "remove this phrase": "" },
+            { pattern: "(?i)\\bhero\\b", replacement: "" },
+          ],
+        },
+        {
+          models: [{ name: "*" }],
+          target: { paths: ['tools.#(type=="function")#.description'] },
+          replacements: [{ old: "new" }],
+        },
+      ]);
+
+      const out = applyPayloadRules(
+        { requests: config.requests, multimedia: config.multimedia },
+        { model: "m", protocol: "openai" },
+        {
+          messages: [
+            { role: "user", content: "you are hero, remove this phrase now" },
+            { role: "user", content: "hero" },
+            { role: "user", content: "a Hero b" },
+          ],
+          tools: [{ type: "function", description: "old" }],
+        },
+      );
+
+      assert.deepStrictEqual(get(out.payload, "messages.#.content"), [
+        "you are fool,  now",
+        "hero",
+        "a  b",
+      ]);
+      assert.deepStrictEqual(get(out.payload, "tools.0.description"), "new");
+    }),
+  );
+
+  it.effect("rejects replacement entries that are neither a mapping nor a pattern", () =>
+    Effect.gen(function* () {
+      // A single key is a literal mapping, even `pattern` (as in Go).
+      for (const entry of [
+        '{ a: "b", c: "d" }',
+        "{}",
+        "{ a: 1 }",
+        '{ pattern: "a", replacement: "b", extra: "c" }',
+      ]) {
+        const message = yield* failure(
+          parse(`
+requests:
+  payload:
+    replace:
+      - target: { role: user, all: true }
+        replacements: [${entry}]
+`),
+        );
+
+        assert.include(message, "requests.payload.replace");
+      }
+
+      const fractional = yield* failure(
+        parse(`
+requests:
+  payload:
+    replace:
+      - target: { role: user, positions: [1.5] }
+        replacements: [{ a: b }]
+`),
+      );
+
+      assert.include(fractional, "target.positions");
+    }),
+  );
+
   it.effect("accepts the legacy flat layout and maps it onto v8", () =>
     Effect.gen(function* () {
       const legacy = yield* parse(`

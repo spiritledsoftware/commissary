@@ -11,6 +11,7 @@ import {
   payloadModelCandidates,
   resolvePayloadRulePaths,
 } from "../../src/config/payload/index.ts";
+import { compileGoRegex, replaceAllGo } from "../../src/config/payload/re2.ts";
 import fixtures from "../fixtures/payload-rules.json";
 
 const decodePayload = Schema.decodeUnknownSync(PayloadConfig);
@@ -502,5 +503,80 @@ describe("payload rules engine details", () => {
     ]);
     expect(resolvePayloadRulePaths(body, " plain.path ")).toEqual(["plain.path"]);
     expect(resolvePayloadRulePaths(body, "  ")).toEqual([]);
+  });
+});
+
+describe("payload replace rules", () => {
+  it("translates RE2 syntax to JavaScript with RE2's meaning", () => {
+    const replace = (pattern: string, text: string, template = "#"): string | undefined => {
+      const re = compileGoRegex(pattern);
+
+      return re === undefined ? undefined : replaceAllGo(re, text, template);
+    };
+
+    // `.` and the (?m) anchors know only `\n`; (?s) makes `.` match it too.
+    expect(replace(".", "a\r\u2028\n")).toBe("###\n");
+    expect(replace("(?s).", "a\n")).toBe("##");
+    expect(replace("(?m)^x|x$", "ax\rxa\u2029xa\nx")).toBe("ax\rxa\u2029xa\n#");
+    // ASCII classes, octal, \Q…\E, scripts and POSIX classes, negated ones too.
+    expect(replace("\\s", " \t\u00a0\v")).toBe("##\u00a0\v");
+    expect(replace("[\\S]", " \u00a0")).toBe(" #");
+    expect(replace("(?i)\\W", "sſK!")).toBe("sſK#");
+    expect(replace("(?i)[[:^lower:]]", "aAſ1")).toBe("aAſ#");
+    expect(replace("\\12|\\0", "\n\u0000")).toBe("##");
+    expect(replace("\\Qa.b\\E+", "a.bbb axb")).toBe("# axb");
+    expect(replace("\\p{Greek}+|\\pN", "αβ 1")).toBe("# #");
+    expect(replace("a{2}|{x}", "aa {x} a")).toBe("# # a");
+    // Scoped flags: (?i) holds across `|` to the end of its group; (?U) swaps greedy and lazy.
+    expect(replace("(a(?i)b|c)C", "aBC cC Cc")).toBe("# # Cc");
+    expect(replace("(?U)a+", "aaa")).toBe("###");
+    expect(replace("(?U)a+?", "aaa")).toBe("#");
+    expect(replace("(?i:K)\\b", "k\u212a")).toBe("#\u212a");
+
+    // Syntax RE2 rejects.
+    for (const pattern of [
+      "",
+      "(",
+      ")",
+      "a(?=b)",
+      "(?<!a)b",
+      "(a)\\1",
+      "\\k<a>",
+      "a**",
+      "a{1001}",
+      "(?)",
+      "(?i-)",
+      "\\8",
+      "[[:nope:]]",
+    ])
+      expect(compileGoRegex(pattern)).toBeUndefined();
+  });
+
+  it("rewrites a role's text in place and reports the written paths", () => {
+    const payload: Json = {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hello hero" }] },
+        { role: "user", content: "hero again" },
+      ],
+    };
+
+    const result = applyPayloadRules(
+      makeConfig({
+        replace: [
+          {
+            models: [{ name: "*" }],
+            target: { role: "user", all: true },
+            replacements: [{ pattern: "h(er)o", replacement: "${1}!" }],
+          },
+        ],
+      }),
+      { model: "m", protocol: "claude", trackedPaths: ["messages.0", "messages.1.content"] },
+      payload,
+    );
+
+    expect(result.payload).toBe(payload);
+    expect(get(payload, "messages.0.content.0.text")).toBe("hello er!");
+    expect(get(payload, "messages.1.content")).toBe("er! again");
+    expect([...result.touched].toSorted()).toEqual(["messages.0", "messages.1.content"]);
   });
 });

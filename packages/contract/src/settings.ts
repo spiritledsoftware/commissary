@@ -236,6 +236,7 @@ export const PayloadCounts = Schema.Struct({
   "default-raw": Schema.Int,
   override: Schema.Int,
   "override-raw": Schema.Int,
+  replace: Schema.Int,
   filter: Schema.Int,
 });
 

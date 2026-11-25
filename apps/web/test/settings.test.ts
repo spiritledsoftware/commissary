@@ -131,7 +131,7 @@ const view = (overrides: Partial<SettingsView> = {}): SettingsView => ({
   updated_at: "2026-10-11T11:00:00Z",
   values: DEFAULTS,
   defaults: DEFAULTS,
-  payload: { default: 0, "default-raw": 0, override: 0, "override-raw": 0, filter: 0 },
+  payload: { default: 0, "default-raw": 0, override: 0, "override-raw": 0, replace: 0, filter: 0 },
   prefixed_credentials: 0,
   request_scoped_errors: {},
   ...overrides,

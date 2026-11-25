@@ -522,6 +522,54 @@ describe("compaction_trigger over the xAI socket", () => {
     client.close();
   });
 
+  it("records the transcript input before the payload rules, so replaying it applies a rule once", async () => {
+    const ruled = await loadConfig(`
+requests:
+  payload:
+    replace:
+      - models: [{ name: "grok-4.3" }]
+        target: { role: user, all: true }
+        replacements: [{ "one": "one!" }]
+`);
+
+    const s = setup(
+      {
+        onConnection: (connection) => {
+          void (async () => {
+            await connection.next();
+            connection.server.send(JSON.stringify(created("resp_1")));
+            connection.server.send(JSON.stringify(completed("resp_1", [ITEM])));
+          })();
+        },
+      },
+      [wsCredential()],
+      ruled,
+      () => jsonResponse(compaction),
+    );
+
+    const client = await s.connect();
+    client.send({
+      type: "response.create",
+      model: "grok-4.3",
+      input: [{ type: "message", role: "user", content: "one" }],
+    });
+    await client.until("response.completed");
+    expect(frames(s.mock)[0]?.["input"]).toEqual([
+      { type: "message", role: "user", content: "one!" },
+    ]);
+    client.send({
+      type: "response.create",
+      model: "grok-4.3",
+      input: [{ type: "compaction_trigger" }],
+    });
+    await client.until("response.completed");
+    const compactCall = s.calls.find((call) => call.url.endsWith("/responses/compact"));
+    const body = JSON.parse(compactCall?.body ?? "{}") as { input: unknown[] };
+
+    expect(body.input).toEqual([{ type: "message", role: "user", content: "one!" }, ITEM]);
+    client.close();
+  });
+
   it("rejects a malformed compaction answer with a 502", async () => {
     const s = setup({}, [wsCredential()], undefined, () =>
       jsonResponse({ id: "x", output: [{ type: "message" }] }),

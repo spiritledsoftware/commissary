@@ -82,6 +82,7 @@ describe("management settings", () => {
       "default-raw": 0,
       override: 0,
       "override-raw": 0,
+      replace: 0,
       filter: 0,
     });
     expect(view.prefixed_credentials).toBe(0);
@@ -94,7 +95,16 @@ describe("management settings", () => {
       access: { "api-keys": [SECRETS.client] },
       requests: {
         "proxy-url": SECRETS.proxy,
-        payload: { default: [{ models: [{ name: "gpt-*" }], params: { temperature: 0 } }] },
+        payload: {
+          default: [{ models: [{ name: "gpt-*" }], params: { temperature: 0 } }],
+          replace: [
+            {
+              models: [{ name: "*" }],
+              target: { role: "user", all: true },
+              replacements: [{ "drop me": "" }],
+            },
+          ],
+        },
       },
       upstream: { codex: { "response-steering": true } },
       observability: { logs: { debug: true } },
@@ -132,6 +142,7 @@ describe("management settings", () => {
     // Response steering is effective on Workers: a value, not an inert key.
     expect(view.values.upstream.codex["response-steering"]).toBe(true);
     expect(view.payload.default).toBe(1);
+    expect(view.payload.replace).toBe(1);
     expect(view.prefixed_credentials).toBe(1);
     expect(view.request_scoped_errors).toEqual({
       claude: [{ status: 400, match: ["overloaded"], "match-regexr": [], action: "continue" }],

@@ -187,6 +187,11 @@ export interface PreparedRequest {
   readonly nativeOutput: boolean;
   /** The collaboration namespace was renamed for the upstream: restore it in the answer. */
   readonly multiAgentV2: boolean;
+  /**
+   * `instructions` before the payload rules, when the request had them (not a built-in empty default): what a duplex
+   * `response.append` inherits, so a rule is neither applied twice nor accumulated across turns (CLIProxyAPI b4410dd5).
+   */
+  readonly unconfiguredInstructions: Json | undefined;
 }
 
 export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): ProviderExecutor => {
@@ -415,6 +420,8 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       }
     }
 
+    // A built-in empty default must not become caller-provided on the next duplex turn.
+    const hadInstructions = get(body, "instructions") !== undefined;
     body = normalizeCodexInstructions(body, nativeOutput);
 
     // Replayed `web_search_call` history needs a declaration (or, on Responses-Lite, no search items). A summary asks
@@ -489,6 +496,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     if (cacheId !== "") body = setIfDifferent(body, "prompt_cache_key", cacheId);
     body = sanitizeCodexInputItemIds(body);
+
+    // What a duplex append inherits: the instructions before the payload rules.
+    const instructions = hadInstructions ? get(body, "instructions") : undefined;
+
+    const unconfiguredInstructions =
+      instructions === undefined ? undefined : cloneJson(instructions);
+
     body = finalize(context, options, baseModel, request.model, to, original.body, body);
     body = retractAutoInjectedImageGeneration(
       body,
@@ -558,6 +572,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       cacheId,
       nativeOutput,
       multiAgentV2: multiAgent.optimized,
+      unconfiguredInstructions,
     } satisfies PreparedRequest;
   });
 

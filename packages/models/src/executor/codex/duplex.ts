@@ -2,7 +2,9 @@
  * Codex WebSocket full duplex / response steering (`upstream.codex.response-steering`).
  *
  * Go source: internal/runtime/executor/codex_websockets_duplex.go (`streamCodexDuplex`, `codexDuplexConnectionError`),
- * wired from codex_websockets_stream.go (ExecuteStream) and sdk/cliproxy/executor/websocket_input.go.
+ * wired from codex_websockets_stream.go (ExecuteStream) and sdk/cliproxy/executor/websocket_input.go. An append inherits
+ * the instructions captured before the payload rules (codex_websockets_stream.go `unconfiguredInstructions`,
+ * CLIProxyAPI b4410dd5).
  *
  * The executor owns the upstream socket until the downstream socket goes away. A terminal event of one response is not a
  * connection terminal event: accepted steering (`response.steer`) may produce an automatic successor response or wait for
@@ -117,31 +119,23 @@ interface Settings {
   readonly nativeOutput: boolean;
   readonly multiAgentV2: boolean;
   readonly reasoning: Json | undefined;
-  readonly instructions: Json | undefined;
-  /** The client's own `instructions` (only the initial request keeps its original payload). */
-  readonly originalInstructions: Json | undefined;
+  /** `instructions` before the payload rules (`PreparedRequest.unconfiguredInstructions`): what an append inherits. */
+  readonly unconfiguredInstructions: Json | undefined;
+  /** The final body had `instructions` (a caller value, a built-in default or one a payload rule wrote). */
+  readonly finalInstructions: boolean;
   /** `event_id` of the client frame the request came from (an error about it is correlated to it). */
   readonly eventId: string;
 }
 
-const settingsOf = (
-  prepared: PreparedRequest,
-  original: Json | undefined,
-  eventId = "",
-): Settings => ({
+/** Settings keep reasoning and instructions only, no request history or authorization headers. */
+const settingsOf = (prepared: PreparedRequest, eventId = ""): Settings => ({
   replayScope: prepared.replayScope,
   nativeOutput: prepared.nativeOutput,
   multiAgentV2: prepared.multiAgentV2,
   reasoning: get(prepared.body, "reasoning"),
-  instructions: get(prepared.body, "instructions"),
-  originalInstructions: get(original, "instructions"),
+  unconfiguredInstructions: prepared.unconfiguredInstructions,
+  finalInstructions: get(prepared.body, "instructions") !== undefined,
   eventId,
-});
-
-/** Retained copy: reasoning and instructions only, no request history or authorization headers. */
-const snapshotOf = (settings: Settings): Settings => ({
-  ...settings,
-  originalInstructions: undefined,
 });
 
 type Inbox = Data.TaggedEnum<{
@@ -208,7 +202,7 @@ export const startCodexDuplex = (
     const inbox = yield* Queue.unbounded<Inbox>();
     const inputReady = yield* Deferred.make<void>();
 
-    const initialSettings = settingsOf(initial, request.payload);
+    const initialSettings = settingsOf(initial);
     // Explicit creates have their own settings; automatic successors inherit the preceding response's.
     const pending: Settings[] = [initialSettings];
     const unacknowledgedSteers: string[] = [];
@@ -348,9 +342,13 @@ export const startCodexDuplex = (
         }
 
         if (isAppend && get(payload, "instructions") === undefined) {
-          const target = responseSettings.get(previous) ?? initialSettings;
-          let instructions = target.instructions ?? target.originalInstructions;
-          instructions ??= initialSettings.instructions ?? initialSettings.originalInstructions;
+          // Inherit the parent's instructions before the payload rules, never its final (configured) text. The
+          // initial request's apply only when the parent has no final `instructions` at all.
+          const parent = responseSettings.get(previous);
+          let instructions = parent?.unconfiguredInstructions;
+
+          if (instructions === undefined && parent?.finalInstructions !== true)
+            instructions = initialSettings.unconfiguredInstructions;
 
           if (instructions !== undefined)
             payload = set(payload, "instructions", cloneJson(instructions));
@@ -377,9 +375,7 @@ export const startCodexDuplex = (
           return false;
         }
 
-        pending.push(
-          settingsOf(prepared.success, undefined, asString(get(payload, "event_id")).trim()),
-        );
+        pending.push(settingsOf(prepared.success, asString(get(payload, "event_id")).trim()));
 
         if (prepared.success.multiAgentV2) connectionMultiAgentV2 = true;
 
@@ -586,7 +582,7 @@ export const startCodexDuplex = (
             responseId = asString(get(event, "response.id"));
             // Retain response settings, not request history or authorization headers. In-flight steering pins its
             // parent's settings independently of this window.
-            responseSettings.set(responseId, snapshotOf(current));
+            responseSettings.set(responseId, current);
             responseOrder.push(responseId);
 
             const oldestResponse =

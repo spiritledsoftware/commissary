@@ -3,7 +3,7 @@
  *
  * Go source: internal/runtime/executor/helps/payload_helpers.go (ApplyPayloadConfigWithTrackedPathsForExecutor) and
  * payload_finalizer.go. Order: built-in `disable-image-generation` stripping, then `default`, `default-raw`,
- * `override`, `override-raw` and `filter` rules. Rule conditions (`match`, `not-match`, `exist`, `not-exist`) are
+ * `override`, `override-raw`, `replace` (`replace.ts`) and `filter` rules. Rule conditions (`match`, `not-match`, `exist`, `not-exist`) are
  * evaluated against the payload as modified by the earlier rules.
  *
  * Executors must call {@link applyPayloadRules} exactly once per attempt, on a body rebuilt from scratch, after all
@@ -33,6 +33,7 @@ import {
   type PayloadMatchContext,
 } from "./match.ts";
 import { buildPayloadPath, payloadRuleTargetsPath, resolvePayloadRulePaths } from "./paths.ts";
+import { applyPayloadReplaceRule, payloadReplaceRuleError } from "./replace.ts";
 
 /** `multimedia.disable-image-generation`: `false` (default), `true`, `"chat"` or `"passthrough"`. */
 export type DisableImageGenerationMode = boolean | "chat" | "passthrough";
@@ -190,6 +191,7 @@ export const applyPayloadRules = (
       rules["default-raw"].length +
       rules.override.length +
       rules["override-raw"].length +
+      rules.replace.length +
       rules.filter.length >
     0;
 
@@ -296,6 +298,12 @@ export const applyPayloadRules = (
   applyDefaults(rules["default-raw"], true);
   applyOverrides(rules.override, false);
   applyOverrides(rules["override-raw"], true);
+
+  // Replace selected strings after overrides and before the final field deletion.
+  for (const rule of rules.replace) {
+    if (payloadReplaceRuleError(rule) !== undefined || !matches(rule)) continue;
+    applyPayloadReplaceRule(out, request.protocol, root, rule, markTouched);
+  }
 
   for (const rule of rules.filter) {
     if (!matches(rule)) continue;

@@ -208,6 +208,53 @@ describe("Provider key credential (caller-owned mode)", () => {
     });
   });
 
+  it("applies payload replace rules and keeps prompt_cache_options a rule sets (final barrier)", async () => {
+    const config = await loadConfig(`${API_KEY_YAML}
+requests:
+  payload:
+    override:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params: { prompt_cache_options: { mode: "explicit", source: "rule" } }
+    replace:
+      - models: [{ name: "*", protocol: claude }]
+        target: { role: user, all: true }
+        replacements:
+          - "you are hero": "you are friend"
+          - pattern: '(?i)\\s*<debug>.*?</debug>'
+            replacement: ""
+      - models: [{ name: "*" }]
+        target: { role: system, positions: [1] }
+        replacements: [{ "brief": "concise" }]
+`);
+
+    const p = makePipeline({ config, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+    await p.call(
+      "/v1/messages",
+      postJson({
+        model: "sonnet",
+        max_tokens: 8,
+        system: "be brief",
+        prompt_cache_options: { mode: "explicit" },
+        messages: [
+          { role: "user", content: "you are hero <DEBUG>x</debug>" },
+          { role: "assistant", content: "you are hero" },
+        ],
+      }),
+    );
+    expect(JSON.parse(p.calls[0]!.body)).toEqual({
+      model: "claude-sonnet-4-5",
+      max_tokens: 8,
+      system: "be concise",
+      prompt_cache_options: { mode: "explicit", source: "rule" },
+      messages: [
+        { role: "user", content: "you are friend" },
+        { role: "assistant", content: "you are hero" },
+      ],
+      stream: false,
+    });
+  });
+
   it("streams Claude events through unchanged and records usage", async () => {
     const p = makePipeline({
       config: providerKeyConfig,

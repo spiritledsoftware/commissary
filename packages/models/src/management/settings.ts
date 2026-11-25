@@ -337,6 +337,7 @@ export const settingsView = (input: SettingsViewInput): SettingsView => {
       "default-raw": payload["default-raw"].length,
       override: payload.override.length,
       "override-raw": payload["override-raw"].length,
+      replace: payload.replace.length,
       filter: payload.filter.length,
     },
     prefixed_credentials: input.prefixedCredentials,

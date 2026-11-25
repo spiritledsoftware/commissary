@@ -4067,6 +4067,3548 @@
   "touched": []
  },
  {
+  "name": "replace user positions literal",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         2,
+         5
+        ]
+       },
+       "replacements": [
+        {
+         "u2": "second user"
+        },
+        {
+         "second": "2nd"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "u1",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    },
+    {
+     "content": "2nd user",
+     "role": "user"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "f1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "f2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace user all claude blocks",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        },
+        {
+         "remove ": ""
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "claude"
+  },
+  "payload": {
+   "model": "claude",
+   "system": [
+    {
+     "type": "text",
+     "text": "You are hero. hero!"
+    },
+    {
+     "type": "text",
+     "text": "Be a hero"
+    }
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "hello hero"
+      },
+      {
+       "type": "image",
+       "source": {
+        "type": "base64",
+        "data": "hero"
+       }
+      },
+      {
+       "type": "text",
+       "text": "second hero"
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "hero reply"
+      },
+      {
+       "type": "thinking",
+       "thinking": "hero"
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "content": "plain hero"
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "tool_result",
+       "tool_use_id": "t",
+       "content": "hero"
+      },
+      {
+       "type": "text",
+       "text": "third hero",
+       "thought": true
+      }
+     ]
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "hello fool",
+       "type": "text"
+      },
+      {
+       "source": {
+        "data": "hero",
+        "type": "base64"
+       },
+       "type": "image"
+      },
+      {
+       "text": "second fool",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "hero reply",
+       "type": "text"
+      },
+      {
+       "thinking": "hero",
+       "type": "thinking"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": "plain fool",
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "content": "hero",
+       "tool_use_id": "t",
+       "type": "tool_result"
+      },
+      {
+       "text": "third hero",
+       "thought": true,
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "claude",
+   "system": [
+    {
+     "text": "You are hero. hero!",
+     "type": "text"
+    },
+    {
+     "text": "Be a hero",
+     "type": "text"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace claude system array counts once",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\bhero\\b",
+         "replacement": "friend"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "claude"
+  },
+  "payload": {
+   "model": "claude",
+   "system": [
+    {
+     "type": "text",
+     "text": "You are hero. hero!"
+    },
+    {
+     "type": "text",
+     "text": "Be a hero"
+    }
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "hello hero"
+      },
+      {
+       "type": "image",
+       "source": {
+        "type": "base64",
+        "data": "hero"
+       }
+      },
+      {
+       "type": "text",
+       "text": "second hero"
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "hero reply"
+      },
+      {
+       "type": "thinking",
+       "thinking": "hero"
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "content": "plain hero"
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "tool_result",
+       "tool_use_id": "t",
+       "content": "hero"
+      },
+      {
+       "type": "text",
+       "text": "third hero",
+       "thought": true
+      }
+     ]
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "hello hero",
+       "type": "text"
+      },
+      {
+       "source": {
+        "data": "hero",
+        "type": "base64"
+       },
+       "type": "image"
+      },
+      {
+       "text": "second hero",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "hero reply",
+       "type": "text"
+      },
+      {
+       "thinking": "hero",
+       "type": "thinking"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": "plain hero",
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "content": "hero",
+       "tool_use_id": "t",
+       "type": "tool_result"
+      },
+      {
+       "text": "third hero",
+       "thought": true,
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "claude",
+   "system": [
+    {
+     "text": "You are friend. friend!",
+     "type": "text"
+    },
+    {
+     "text": "Be a friend",
+     "type": "text"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace claude system second position misses",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "positions": [
+         2
+        ]
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "claude"
+  },
+  "payload": {
+   "model": "claude",
+   "system": [
+    {
+     "type": "text",
+     "text": "You are hero. hero!"
+    },
+    {
+     "type": "text",
+     "text": "Be a hero"
+    }
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "hello hero"
+      },
+      {
+       "type": "image",
+       "source": {
+        "type": "base64",
+        "data": "hero"
+       }
+      },
+      {
+       "type": "text",
+       "text": "second hero"
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "hero reply"
+      },
+      {
+       "type": "thinking",
+       "thinking": "hero"
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "content": "plain hero"
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "tool_result",
+       "tool_use_id": "t",
+       "content": "hero"
+      },
+      {
+       "type": "text",
+       "text": "third hero",
+       "thought": true
+      }
+     ]
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "hello hero",
+       "type": "text"
+      },
+      {
+       "source": {
+        "data": "hero",
+        "type": "base64"
+       },
+       "type": "image"
+      },
+      {
+       "text": "second hero",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "hero reply",
+       "type": "text"
+      },
+      {
+       "thinking": "hero",
+       "type": "thinking"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": "plain hero",
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "content": "hero",
+       "tool_use_id": "t",
+       "type": "tool_result"
+      },
+      {
+       "text": "third hero",
+       "thought": true,
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "claude",
+   "system": [
+    {
+     "text": "You are hero. hero!",
+     "type": "text"
+    },
+    {
+     "text": "Be a hero",
+     "type": "text"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace claude system string",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "all": true
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "claude"
+  },
+  "payload": {
+   "system": "be a hero",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hero"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "hero",
+     "role": "user"
+    }
+   ],
+   "system": "be a fool"
+  },
+  "touched": []
+ },
+ {
+  "name": "replace openai system and developer messages",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "all": true
+       },
+       "replacements": [
+        {
+         "s": "system text"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "developer",
+        "positions": [
+         2
+        ]
+       },
+       "replacements": [
+        {
+         "dev": "DEV"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "developer",
+     "content": "dev one"
+    },
+    {
+     "role": "system",
+     "content": [
+      {
+       "type": "text",
+       "text": "s block"
+      },
+      {
+       "type": "image_url",
+       "image_url": {
+        "url": "s"
+       }
+      }
+     ]
+    },
+    {
+     "role": "developer",
+     "content": "dev two"
+    },
+    {
+     "role": "user",
+     "content": "s"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "system text",
+     "role": "system"
+    },
+    {
+     "content": "dev one",
+     "role": "developer"
+    },
+    {
+     "content": [
+      {
+       "text": "system text block",
+       "type": "text"
+      },
+      {
+       "image_url": {
+        "url": "s"
+       },
+       "type": "image_url"
+      }
+     ],
+     "role": "system"
+    },
+    {
+     "content": "DEV two",
+     "role": "developer"
+    },
+    {
+     "content": "s",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace responses roles",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "hero": "guide"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "developer",
+        "all": true
+       },
+       "replacements": [
+        {
+         "pattern": "^dev",
+         "replacement": "DEV"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "gpt-5",
+   "protocol": "codex"
+  },
+  "payload": {
+   "model": "gpt-5",
+   "instructions": "Act as hero",
+   "input": [
+    {
+     "type": "message",
+     "role": "developer",
+     "content": [
+      {
+       "type": "input_text",
+       "text": "dev hero"
+      }
+     ]
+    },
+    {
+     "type": "message",
+     "role": "user",
+     "content": [
+      {
+       "type": "input_text",
+       "text": "user hero"
+      },
+      {
+       "type": "input_image",
+       "image_url": "hero"
+      },
+      {
+       "type": "output_text",
+       "text": "hero"
+      }
+     ]
+    },
+    {
+     "type": "function_call",
+     "role": "user",
+     "name": "hero",
+     "arguments": "hero"
+    },
+    {
+     "role": "user",
+     "content": "bare hero"
+    },
+    {
+     "type": "message",
+     "role": "assistant",
+     "content": [
+      {
+       "type": "output_text",
+       "text": "hero"
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "name": "f",
+     "description": "hero tool"
+    }
+   ]
+  },
+  "out": {
+   "input": [
+    {
+     "content": [
+      {
+       "text": "DEV hero",
+       "type": "input_text"
+      }
+     ],
+     "role": "developer",
+     "type": "message"
+    },
+    {
+     "content": [
+      {
+       "text": "user fool",
+       "type": "input_text"
+      },
+      {
+       "image_url": "hero",
+       "type": "input_image"
+      },
+      {
+       "text": "hero",
+       "type": "output_text"
+      }
+     ],
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "hero",
+     "name": "hero",
+     "role": "user",
+     "type": "function_call"
+    },
+    {
+     "content": "bare fool",
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "hero",
+       "type": "output_text"
+      }
+     ],
+     "role": "assistant",
+     "type": "message"
+    }
+   ],
+   "instructions": "Act as guide",
+   "model": "gpt-5",
+   "tools": [
+    {
+     "description": "hero tool",
+     "name": "f",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace responses input string",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "gpt-5",
+   "protocol": "openai-response"
+  },
+  "payload": {
+   "instructions": "hero",
+   "input": "hero input"
+  },
+  "out": {
+   "input": "fool input",
+   "instructions": "hero"
+  },
+  "touched": []
+ },
+ {
+  "name": "replace gemini parts",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "all": true
+       },
+       "replacements": [
+        {
+         "sys": "SYS"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "gemini-3",
+   "protocol": "gemini"
+  },
+  "payload": {
+   "systemInstruction": {
+    "parts": [
+     {
+      "text": "sys hero"
+     },
+     {
+      "text": "thought hero",
+      "thought": true
+     }
+    ]
+   },
+   "contents": [
+    {
+     "role": "user",
+     "parts": [
+      {
+       "text": "hi hero"
+      },
+      {
+       "functionCall": {
+        "name": "hero"
+       },
+       "text": "hero"
+      },
+      {
+       "inlineData": {
+        "data": "hero"
+       }
+      }
+     ]
+    },
+    {
+     "role": "model",
+     "parts": [
+      {
+       "text": "hero"
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "parts": [
+      {
+       "text": "again hero"
+      }
+     ]
+    }
+   ]
+  },
+  "out": {
+   "contents": [
+    {
+     "parts": [
+      {
+       "text": "hi fool"
+      },
+      {
+       "functionCall": {
+        "name": "hero"
+       },
+       "text": "hero"
+      },
+      {
+       "inlineData": {
+        "data": "hero"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      {
+       "text": "hero"
+      }
+     ],
+     "role": "model"
+    },
+    {
+     "parts": [
+      {
+       "text": "again fool"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "systemInstruction": {
+    "parts": [
+     {
+      "text": "SYS hero"
+     },
+     {
+      "text": "thought hero",
+      "thought": true
+     }
+    ]
+   }
+  },
+  "touched": []
+ },
+ {
+  "name": "replace antigravity root snake system",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "system",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "rules": "RULES"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         2
+        ]
+       },
+       "replacements": [
+        {
+         "b": "B"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "gemini-3",
+   "protocol": "antigravity",
+   "root": "request"
+  },
+  "payload": {
+   "request": {
+    "system_instruction": {
+     "parts": [
+      {
+       "text": "rules"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "a b"
+       }
+      ]
+     },
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "b"
+       }
+      ]
+     }
+    ]
+   },
+   "model": "x"
+  },
+  "out": {
+   "model": "x",
+   "request": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "a b"
+       }
+      ],
+      "role": "user"
+     },
+     {
+      "parts": [
+       {
+        "text": "B"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "system_instruction": {
+     "parts": [
+      {
+       "text": "RULES"
+      }
+     ]
+    }
+   }
+  },
+  "touched": []
+ },
+ {
+  "name": "replace unknown protocol role target is skipped",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "u1": "x"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "interactions"
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "u1",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    },
+    {
+     "content": "u2",
+     "role": "user"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "f1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "f2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace regex templates",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "pattern": "user-(\\d+)",
+         "replacement": "account-${1}"
+        },
+        {
+         "pattern": "(?P\u003cword\u003e[a-z]+)=(\\w+)",
+         "replacement": "$2:${word}"
+        },
+        {
+         "pattern": "x(y)",
+         "replacement": "$1z $$ $9 $1z ${1}z $"
+        },
+        {
+         "pattern": "(?s)\u003cdebug\u003e.*?\u003c/debug\u003e",
+         "replacement": ""
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "user-42 key=val xy \u003cdebug\u003ea\nb\u003c/debug\u003edone"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "account-42 val:key  $   yz $ done",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace regex empty matches",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "b*",
+         "replacement": "-"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         2
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "x*",
+         "replacement": "-"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "abc"
+    },
+    {
+     "role": "user",
+     "content": "a😀é"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "-a-c-",
+     "role": "user"
+    },
+    {
+     "content": "-a-😀-é-",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace regex syntax translations",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "pattern": "[[:digit:]]+",
+         "replacement": "#"
+        },
+        {
+         "pattern": "\\pL+\\z",
+         "replacement": "END"
+        },
+        {
+         "pattern": "\\Astart",
+         "replacement": "BEGIN"
+        },
+        {
+         "pattern": "(?im)^line",
+         "replacement": "LINE"
+        },
+        {
+         "pattern": "a\\-b\\:c",
+         "replacement": "dash"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "start 123 line\nLine a-b:c 45 tail"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "BEGIN # line\nLINE dash # END",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace regex RE2 semantics",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "a.b",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         2
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?s)a.b",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         3
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?m)^x|x$",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         4
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\s+",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         5
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "[\\S]+",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         6
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\p{Greek}+|\\pN|\\P{Latin}",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         7
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\w",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         8
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\W",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         9
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)k\\b",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         10
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)[[:^lower:]]",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         11
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\12|\\0|\\101",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         12
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\Qa.b\\E+",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         13
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "a{2}|{x}|]",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         14
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(a(?i)b|c)C",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         15
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?U)a+|(?U:b+?)",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         16
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "a(?=b)",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         17
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(a)\\1",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         18
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\pL",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         19
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\P{Lu}",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         20
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "^*x|\\b+y",
+         "replacement": "#"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "a\rb a\u2028b a\nb"
+    },
+    {
+     "role": "user",
+     "content": "a\rb a\nb"
+    },
+    {
+     "role": "user",
+     "content": "ax\rxa\u2029xa\nx"
+    },
+    {
+     "role": "user",
+     "content": "a\u00a0b c\u2003d\te"
+    },
+    {
+     "role": "user",
+     "content": "a\u00a0b c"
+    },
+    {
+     "role": "user",
+     "content": "\u03b1\u03b2\u03b3 x 1 \u0436"
+    },
+    {
+     "role": "user",
+     "content": "\u017f\u212a k!"
+    },
+    {
+     "role": "user",
+     "content": "\u017f\u212a k!"
+    },
+    {
+     "role": "user",
+     "content": "k\u212a k\u017f k"
+    },
+    {
+     "role": "user",
+     "content": "aA\u017f1"
+    },
+    {
+     "role": "user",
+     "content": "\n\u0000A"
+    },
+    {
+     "role": "user",
+     "content": "a.bbb axb"
+    },
+    {
+     "role": "user",
+     "content": "aa {x} ] a"
+    },
+    {
+     "role": "user",
+     "content": "aBC cC Cc"
+    },
+    {
+     "role": "user",
+     "content": "aaa bbb"
+    },
+    {
+     "role": "user",
+     "content": "ab"
+    },
+    {
+     "role": "user",
+     "content": "aa"
+    },
+    {
+     "role": "user",
+     "content": "\u00e9"
+    },
+    {
+     "role": "user",
+     "content": "aA\u017f s*"
+    },
+    {
+     "role": "user",
+     "content": "xa y"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "# # a\nb",
+     "role": "user"
+    },
+    {
+     "content": "# #",
+     "role": "user"
+    },
+    {
+     "content": "ax\rxa\u2029xa\n#",
+     "role": "user"
+    },
+    {
+     "content": "a b#c d#e",
+     "role": "user"
+    },
+    {
+     "content": "# #",
+     "role": "user"
+    },
+    {
+     "content": "##x####",
+     "role": "user"
+    },
+    {
+     "content": "## #!",
+     "role": "user"
+    },
+    {
+     "content": "ſK#k#",
+     "role": "user"
+    },
+    {
+     "content": "#K #ſ #",
+     "role": "user"
+    },
+    {
+     "content": "aAſ#",
+     "role": "user"
+    },
+    {
+     "content": "###",
+     "role": "user"
+    },
+    {
+     "content": "# axb",
+     "role": "user"
+    },
+    {
+     "content": "# # # a",
+     "role": "user"
+    },
+    {
+     "content": "# # Cc",
+     "role": "user"
+    },
+    {
+     "content": "### #",
+     "role": "user"
+    },
+    {
+     "content": "ab",
+     "role": "user"
+    },
+    {
+     "content": "aa",
+     "role": "user"
+    },
+    {
+     "content": "#",
+     "role": "user"
+    },
+    {
+     "content": "aAſ#s#",
+     "role": "user"
+    },
+    {
+     "content": "#a #",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace invalid regex entry is skipped",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "pattern": "(",
+         "replacement": "x"
+        },
+        {
+         "pattern": "",
+         "replacement": "y"
+        },
+        {
+         "u1": "one"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "one",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    },
+    {
+     "content": "u2",
+     "role": "user"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "f1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "f2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace literal is not a template",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "u": "$1 $$"
+        },
+        {
+         "(": "[.*]"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "u (u)"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "$1 $$ [.*]$1 $$)",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace invalid rules are skipped",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "assistant",
+        "all": true
+       },
+       "replacements": [
+        {
+         "a": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true,
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "u1": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user"
+       },
+       "replacements": [
+        {
+         "u1": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         0
+        ]
+       },
+       "replacements": [
+        {
+         "u1": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": []
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "paths": [
+         "messages.0.content"
+        ]
+       },
+       "replacements": [
+        {
+         "s": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": []
+       },
+       "replacements": [
+        {
+         "s": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         " "
+        ]
+       },
+       "replacements": [
+        {
+         "s": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "u2": "kept"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "u1",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    },
+    {
+     "content": "kept",
+     "role": "user"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "f1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "f2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace model gate",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "claude-*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "u1": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "gpt-*",
+         "protocol": "openai",
+         "match": [
+          {
+           "stream": true
+          }
+         ]
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "u2": "y"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "gpt-5",
+   "protocol": "openai"
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "u1",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    },
+    {
+     "content": "y",
+     "role": "user"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "f1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "f2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace runs after override and before filter",
+  "config": {
+   "requests": {
+    "payload": {
+     "override": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "params": {
+        "messages.1.content": "override hero"
+       }
+      }
+     ],
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "all": true
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        }
+       ]
+      }
+     ],
+     "filter": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "params": [
+        "messages.3"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai",
+   "trackedPaths": [
+    "messages",
+    "tools"
+   ]
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "override fool",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "f1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "f2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": [
+   "messages"
+  ]
+ },
+ {
+  "name": "replace tracked paths",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "u1": "x"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "tools.#(type==\"function\")#.name"
+        ]
+       },
+       "replacements": [
+        {
+         "f": "g"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai",
+   "trackedPaths": [
+    "messages.1",
+    "messages.3",
+    "tools.0.name",
+    "tools.1"
+   ]
+  },
+  "payload": {
+   "model": "gpt-5",
+   "temperature": 0.5,
+   "max_tokens": 100,
+   "stream": true,
+   "metadata": {
+    "a": 1
+   },
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1",
+     "strict": true
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "s"
+    },
+    {
+     "role": "user",
+     "content": "u1"
+    },
+    {
+     "role": "assistant",
+     "content": "a"
+    },
+    {
+     "role": "user",
+     "content": "u2"
+    }
+   ],
+   "nothing": null
+  },
+  "out": {
+   "max_tokens": 100,
+   "messages": [
+    {
+     "content": "s",
+     "role": "system"
+    },
+    {
+     "content": "x",
+     "role": "user"
+    },
+    {
+     "content": "a",
+     "role": "assistant"
+    },
+    {
+     "content": "u2",
+     "role": "user"
+    }
+   ],
+   "metadata": {
+    "a": 1
+   },
+   "model": "gpt-5",
+   "nothing": null,
+   "stream": true,
+   "temperature": 0.5,
+   "tools": [
+    {
+     "name": "g1",
+     "strict": true,
+     "type": "function"
+    },
+    {
+     "type": "image_generation"
+    },
+    {
+     "name": "g2",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": [
+   "messages.1",
+   "tools.0.name"
+  ]
+ },
+ {
+  "name": "replace path targets",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "tools.#(type==\"function\")#.description",
+         "metadata.description",
+         "metadata.count",
+         "metadata.nested",
+         "missing.path",
+         "tools.0.description"
+        ]
+       },
+       "replacements": [
+        {
+         "hero": "fool"
+        },
+        {
+         "pattern": "(?i)user-(\\d+)",
+         "replacement": "account-${1}"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "codex"
+  },
+  "payload": {
+   "tools": [
+    {
+     "type": "function",
+     "description": "hero User-7"
+    },
+    {
+     "type": "web_search",
+     "description": "hero"
+    },
+    {
+     "type": "function",
+     "description": "no change"
+    },
+    {
+     "type": "function",
+     "description": 7
+    }
+   ],
+   "metadata": {
+    "description": "hero",
+    "count": 3,
+    "nested": {
+     "description": "hero"
+    }
+   }
+  },
+  "out": {
+   "metadata": {
+    "count": 3,
+    "description": "fool",
+    "nested": {
+     "description": "hero"
+    }
+   },
+   "tools": [
+    {
+     "description": "fool account-7",
+     "type": "function"
+    },
+    {
+     "description": "hero",
+     "type": "web_search"
+    },
+    {
+     "description": "no change",
+     "type": "function"
+    },
+    {
+     "description": 7,
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace path first match and projection",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "messages.#(role==\"user\").content",
+         "messages.#.name",
+         "items.#.tags.#"
+        ]
+       },
+       "replacements": [
+        {
+         "a": "A"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "a",
+     "name": "an"
+    },
+    {
+     "role": "user",
+     "content": "ua",
+     "name": "bob"
+    },
+    {
+     "role": "user",
+     "content": "ub",
+     "name": "ann"
+    }
+   ],
+   "items": [
+    {
+     "tags": [
+      "a",
+      "b"
+     ]
+    }
+   ]
+  },
+  "out": {
+   "items": [
+    {
+     "tags": [
+      "a",
+      "b"
+     ]
+    }
+   ],
+   "messages": [
+    {
+     "content": "a",
+     "name": "An",
+     "role": "system"
+    },
+    {
+     "content": "uA",
+     "name": "bob",
+     "role": "user"
+    },
+    {
+     "content": "ub",
+     "name": "Ann",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace path compound query and wildcard",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "tools.#(type==\"function\" \u0026\u0026 name==\"f2\")#.name",
+         "meta*.note",
+         "conf?g.*.value"
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "[0-9]",
+         "replacement": "N"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "tools": [
+    {
+     "type": "function",
+     "name": "f1"
+    },
+    {
+     "type": "function",
+     "name": "f2"
+    }
+   ],
+   "metax": {
+    "other": "1"
+   },
+   "metadata": {
+    "note": "n1"
+   },
+   "config": {
+    "a": {
+     "value": "v1"
+    },
+    "b": {
+     "value": "v2"
+    }
+   }
+  },
+  "out": {
+   "config": {
+    "a": {
+     "value": "vN"
+    },
+    "b": {
+     "value": "v2"
+    }
+   },
+   "metadata": {
+    "note": "nN"
+   },
+   "metax": {
+    "other": "1"
+   },
+   "tools": [
+    {
+     "name": "f1",
+     "type": "function"
+    },
+    {
+     "name": "fN",
+     "type": "function"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace path modifiers select nothing",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "list|@reverse",
+         "list.@reverse.0",
+         "@this.title",
+         "name|@this",
+         "messages.#.content|@this"
+        ]
+       },
+       "replacements": [
+        {
+         "a": "A"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "list": [
+    "a",
+    "b"
+   ],
+   "title": "a title",
+   "name": "a name",
+   "messages": [
+    {
+     "content": "a"
+    }
+   ]
+  },
+  "out": {
+   "list": [
+    "a",
+    "b"
+   ],
+   "messages": [
+    {
+     "content": "a"
+    }
+   ],
+   "name": "a name",
+   "title": "A title"
+  },
+  "touched": []
+ },
+ {
+  "name": "replace path duplicates are replaced once",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "a",
+         "a",
+         "list.0",
+         "list.#(=\"x\")",
+         "list.#"
+        ]
+       },
+       "replacements": [
+        {
+         "x": "xx"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "a": "x",
+   "list": [
+    "x",
+    "y"
+   ]
+  },
+  "out": {
+   "a": "xx",
+   "list": [
+    "xx",
+    "y"
+   ]
+  },
+  "touched": []
+ },
+ {
+  "name": "replace path escaped keys",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "a\\.b",
+         "c.d\\:e",
+         "weird key"
+        ]
+       },
+       "replacements": [
+        {
+         "v": "V"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "a.b": "v",
+   "c": {
+    "d:e": "v"
+   },
+   "weird key": "v"
+  },
+  "out": {
+   "a.b": "V",
+   "c": {
+    "d:e": "V"
+   },
+   "weird key": "V"
+  },
+  "touched": []
+ },
+ {
+  "name": "replace path with root",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "paths": [
+         "generationConfig.label",
+         ".contents.0.parts.0.text"
+        ]
+       },
+       "replacements": [
+        {
+         "a": "Z"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "gemini",
+   "protocol": "antigravity",
+   "root": "request"
+  },
+  "payload": {
+   "request": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "a"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "label": "aa"
+    }
+   },
+   "label": "a"
+  },
+  "out": {
+   "label": "a",
+   "request": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "Z"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "generationConfig": {
+     "label": "ZZ"
+    }
+   }
+  },
+  "touched": []
+ },
+ {
   "name": "disable image generation all",
   "config": {
    "requests": {
