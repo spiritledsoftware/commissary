@@ -250,6 +250,31 @@ describe("xAI apply_patch bridge", () => {
     expect(await response.text()).not.toContain("secret text");
   });
 
+  it("reports an unclosed answer without patch activity as unclosed, not as an apply_patch failure (Go 949b43b3)", async () => {
+    const declared = {
+      model: "grok-4.3",
+      input: "go",
+      tools: [{ type: "custom", name: "apply_patch" }],
+    };
+
+    const quiet = pipeline(() => stream());
+    const unclosed = await quiet.call("/v1/responses", postJson(declared));
+    expect(unclosed.status).toBe(502);
+    expect(await unclosed.text()).toContain("stream closed before response.completed");
+
+    const patching = pipeline(() =>
+      stream({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: call("apply_patch", "", { status: "in_progress" }),
+      }),
+    );
+
+    const failed = await patching.call("/v1/responses", postJson(declared));
+    expect(failed.status).toBe(502);
+    expect(await failed.text()).not.toContain("stream closed before response.completed");
+  });
+
   it("leaves ordinary function calls untouched when no apply_patch tool is declared", async () => {
     const item = call("lookup", '{"q":1}');
 

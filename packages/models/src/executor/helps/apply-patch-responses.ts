@@ -145,6 +145,8 @@ const isDone = (event: Json | undefined): boolean =>
 const toError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error(String(cause));
 
+const CUSTOM_INPUT_PREFIX = "response.custom_tool_call_input.";
+
 export class ApplyPatchResponsesState {
   readonly bridge: ApplyPatchResponsesBridge;
   readonly #tools: Map<string, ResponsesToolDescriptor>;
@@ -155,6 +157,8 @@ export class ApplyPatchResponsesState {
   #eventLine: string | undefined;
   #active = false;
   #failed = false;
+  /** The upstream emitted a custom apply_patch call (Go 949b43b3 `sawPatch`). */
+  #sawPatch = false;
   #closed = false;
   #transportDone = false;
 
@@ -687,11 +691,20 @@ export class ApplyPatchResponsesState {
     const out: Json[] = [];
 
     for (const candidate of events) {
+      if (this.#isCustomPatchEvent(candidate)) this.#sawPatch = true;
       const converted = this.bridge.transform(candidate);
+
+      if (
+        !this.#sawPatch &&
+        !str(candidate, "type").startsWith(CUSTOM_INPUT_PREFIX) &&
+        converted.events.some((event) => str(event, "type").startsWith(CUSTOM_INPUT_PREFIX))
+      )
+        this.#sawPatch = true;
       out.push(...converted.events);
 
       if (converted.error !== undefined) {
         this.#failed = true;
+        this.#sawPatch = true;
         this.#reset();
 
         return { events: out, error: converted.error };
@@ -709,6 +722,40 @@ export class ApplyPatchResponsesState {
     }
 
     return { events: out };
+  }
+
+  /** `isCustomPatchEvent`: the event names a declared custom apply_patch tool (not an already-custom call). */
+  #isCustomPatchEvent(event: Json): boolean {
+    if (!this.#active) return false;
+    const item = get(event, "item");
+
+    const isPatch = (namespace: string, name: string): boolean => {
+      const descriptor = this.#tools.get(qualifyResponsesNamespaceToolName(namespace, name));
+
+      return descriptor !== undefined && isApplyPatchCustomTool(descriptor.tool);
+    };
+
+    if (item !== undefined) {
+      if (str(item, "type") === "custom_tool_call") return false;
+
+      return isPatch(str(item, "namespace"), str(item, "name"));
+    }
+
+    const name = str(event, "name");
+
+    return name !== "" && isPatch(str(event, "namespace"), name);
+  }
+
+  /**
+   * `HasPatchActivity` (Go 949b43b3): the upstream emitted a custom apply_patch call or left a patch namespace dispatcher
+   * unfinished, so an unclosed response is an apply_patch failure rather than an empty or incomplete stream.
+   */
+  hasPatchActivity(): boolean {
+    if (!this.#active) return false;
+
+    if (this.#failed || this.#sawPatch || this.#unfinishedDispatcher()) return true;
+
+    return this.bridge.finish() !== undefined;
   }
 
   /**

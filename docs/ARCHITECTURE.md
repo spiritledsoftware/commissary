@@ -1039,7 +1039,10 @@ WebSocket transports"). Reuses the Codex translators
   `tool_choice`, `web_search` client alias, optional `x_search` injection) -> reasoning replay -> input normalisation
   (`input.ts`) -> `prompt_cache_key`/`x-grok-conv-id` -> `finalizePayload` (user payload rules, last). Response events
   (`response.ts`, `stream.ts`) get reasoning-text -> summary normalisation, namespace/alias restoration, hidden X Search trace
-  filtering and a rebuilt `response.output`. Non-stream requests still stream upstream and aggregate; truncated streams answer 408.
+  filtering and a rebuilt `response.output`. Non-stream requests still stream upstream and aggregate (Go 949b43b3): an
+  `error`/`response.failed` event, or a plain JSON error body, fails with a status mapped from its type and code (policy
+  blocks are 400s through the shared table in `http/upstream-error.ts`); an empty or unclosed 2xx stream is a
+  request-scoped 502, and an apply_patch failure only when the answer had apply_patch activity.
 - **Compaction**: `responses/compact` posts to the official API; a streaming request with a `compaction_trigger` input item is
   executed through compact and re-emitted as a synthetic Responses SSE stream (`compact.ts`).
 - **Reasoning replay** (`replay.ts`): Claude/Responses callers get cached encrypted reasoning, assistant text and tool calls of the

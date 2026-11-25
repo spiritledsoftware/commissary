@@ -241,12 +241,69 @@ describe("POST /v1/responses (non-stream)", () => {
     expect("stop" in upstream).toBe(false);
   });
 
-  it("answers 408 when the stream ends without a terminal event", async () => {
+  it("answers a request-scoped 502 when the stream ends without a terminal event (Go 949b43b3)", async () => {
     const p = pipeline(() => sseResponse([frame(created)]));
     const response = await p.call("/v1/responses", postJson({ model: "grok-4.3", input: "hi" }));
-    expect(response.status).toBe(408);
-    expect(await response.text()).toContain("stream disconnected before response.completed");
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain(
+      "xai stream error: stream closed before response.completed or response.incomplete",
+    );
     expect(p.log.reports[0]?.result.success).toBe(false);
+  });
+
+  it("answers a request-scoped 502 for an empty 2xx stream", async () => {
+    const p = pipeline(() => sseResponse([]));
+    const response = await p.call("/v1/responses", postJson({ model: "grok-4.3", input: "hi" }));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("xai stream error: empty upstream stream");
+  });
+
+  it.each([
+    [
+      "an error event mapped by its code",
+      [frame(created), frame({ type: "error", code: "rate_limit_exceeded", message: "slow down" })],
+      429,
+      "slow down",
+    ],
+    [
+      "a response.failed event with an explicit status",
+      [
+        frame(created),
+        frame({
+          type: "response.failed",
+          response: { error: { code: "server_error", message: "boom", status: 503 } },
+        }),
+      ],
+      503,
+      "boom",
+    ],
+    [
+      "a policy block named only by its code",
+      [frame({ type: "error", error: { code: "bio_policy" } })],
+      400,
+      "bio_policy",
+    ],
+    [
+      "an invalid payload of an event named error",
+      ["event: error\ndata: upstream exploded\n\n"],
+      502,
+      "upstream exploded",
+    ],
+  ])("classifies %s (Go 949b43b3, 1f76e479)", async (_, frames, status, text) => {
+    const p = pipeline(() => sseResponse(frames));
+    const response = await p.call("/v1/responses", postJson({ model: "grok-4.3", input: "hi" }));
+    expect(response.status).toBe(status);
+    expect(await response.text()).toContain(text);
+  });
+
+  it("classifies a plain JSON error body answered with 200", async () => {
+    const p = pipeline(() =>
+      jsonResponse({ error: { type: "authentication_error", message: "bad key" } }),
+    );
+
+    const response = await p.call("/v1/responses", postJson({ model: "grok-4.3", input: "hi" }));
+    expect(response.status).toBe(401);
+    expect(await response.text()).toContain("bad key");
   });
 });
 
