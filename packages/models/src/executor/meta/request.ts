@@ -3,7 +3,8 @@
  *
  * Go source: internal/runtime/executor/meta_executor_execute.go (`prepareResponsesRequest`),
  * helps/meta_tools.go (`SanitizeMetaWebSearchTools`), helps/meta_muse_tools.go
- * (`EnsureMetaMuseToolNamespace`, run before the payload rules). The shared Responses shaping (translate -> thinking ->
+ * (`EnsureMetaMuseToolNamespace`, run before the payload rules), f77a3c10 (`syncMetaPromptCacheRetentionDoc`: an explicit
+ * client `prompt_cache_retention` passes through, none is injected). The shared Responses shaping (translate -> thinking ->
  * model/stream fields -> instructions -> reasoning sanitising -> tool sanitising -> payload rules) lives in
  * `helps/responses-request.ts`; Meta adds its web-search tool sanitising and passes its executor identifier as the
  * payload-rule protocol (as Go does).
@@ -68,6 +69,7 @@ export const prepareMetaRequest = (
       prepareTools: prepareMetaTools,
       signatureTargetModel: resolveMetaSignatureTargetModel,
       reasoning: (ctx) => reasoningOptionsForMeta(metaCreds(ctx.credential).baseUrl),
+      promptCacheRetention: true,
     },
     stream,
   );

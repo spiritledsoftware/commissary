@@ -222,6 +222,39 @@ describe("the Free plan's limit", () => {
     expect(await used(org)).toBe(FREE_USAGE.requests);
   });
 
+  it("refuses a Muse Code relay call at the limit the same way, before any upstream call", async () => {
+    const { org, key } = await configuredOrg("muse-limit@example.com");
+
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests);
+    upstream.length = 0;
+
+    const refused = await call("/muse-code/search", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: "q" }),
+    });
+
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+
+    const body = await refused.json<{ error: { code: string } }>();
+
+    expect(body.error.code).toBe("plan_limit_reached");
+    expect(upstream).toEqual([]);
+    expect(await used(org)).toBe(FREE_USAGE.requests);
+  });
+
+  it("does not count a Muse Code relay call no Meta credential can serve", async () => {
+    const { org, key } = await configuredOrg("muse-none@example.com");
+
+    const refused = await call("/muse-code/config", {
+      headers: { authorization: `Bearer ${key}` },
+    });
+
+    expect(refused.status).toBe(503);
+    expect(await used(org)).toBe(0);
+  });
+
   it("does not stop a Pay as you go org at its free usage", async () => {
     const { org, key } = await configuredOrg("paying@example.com");
 

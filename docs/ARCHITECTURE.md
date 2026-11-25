@@ -1039,7 +1039,10 @@ WebSocket transports"). Reuses the Codex translators
   `tool_choice`, `web_search` client alias, optional `x_search` injection) -> reasoning replay -> input normalisation
   (`input.ts`) -> `prompt_cache_key`/`x-grok-conv-id` -> `finalizePayload` (user payload rules, last). Response events
   (`response.ts`, `stream.ts`) get reasoning-text -> summary normalisation, namespace/alias restoration, hidden X Search trace
-  filtering and a rebuilt `response.output`. Non-stream requests still stream upstream and aggregate; truncated streams answer 408.
+  filtering and a rebuilt `response.output`. Non-stream requests still stream upstream and aggregate (Go 949b43b3): an
+  `error`/`response.failed` event, or a plain JSON error body, fails with a status mapped from its type and code (policy
+  blocks are 400s through the shared table in `http/upstream-error.ts`); an empty or unclosed 2xx stream is a
+  request-scoped 502, and an apply_patch failure only when the answer had apply_patch activity.
 - **Compaction**: `responses/compact` posts to the official API; a streaming request with a `compaction_trigger` input item is
   executed through compact and re-emitted as a synthetic Responses SSE stream (`compact.ts`).
 - **Reasoning replay** (`replay.ts`): Claude/Responses callers get cached encrypted reasoning, assistant text and tool calls of the
@@ -1202,7 +1205,10 @@ request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
   continuations, payload rules on that body and then `type` (framing only). The transcript records the `input` from before
   the rules, so replaying it into a later request does not apply a rule twice. Downstream response ids are mapped to upstream ids
   (`-xai-<seq>` suffix for repeats; `previous_response_id` dropped and the recorded transcript prepended when the upstream target
-  changed). `generate:false` warm-ups end after `response.created` with a synthesised `response.completed`.
+  changed). `generate:false` warm-ups end after `response.created` with a synthesised `response.completed`. The id state of
+  a socket is dropped with the socket, or after 24 h idle with no turn in flight (Go 679166b8; evicted lazily on the next
+  access, as a Worker has no background ticker). Go's eviction of ephemeral states has no counterpart: every state belongs
+  to a downstream socket.
 - **Local requests**: an executor that answers a request without the upstream socket (local compaction on any route)
   reports it through `WebsocketExecution`; the executor also reports when it started a duplex stream, and the handler
   no longer infers duplex from the selected credential. After a local compaction the socket is in HTTP mode, keeps a
@@ -2010,6 +2016,26 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
 - **Meta subscription telemetry** (`executor/meta/subscription-usage.ts`): `response.subscription_usage` frames are dropped
   from streams and aggregated answers by a line filter the shared Responses SSE code applies; an `event:` line is held
   until its data line passes the upstream error check.
+- **Meta stream terminal** (`helps/responses-sse.ts` `strictTerminal`, `helps/responses-synthesis.ts`; Go ca459712, 32625f13):
+  before `response.completed`/`response.incomplete` the stream gets the item, part, text or refusal delta/done events of each
+  message only the terminal event carries, so stream clients see it (refusals included); a clean EOF before the terminal
+  event fails the stream with a `stream_truncated` 502. OpenCode shares the SSE code but keeps neither (no Go counterpart).
+- **Meta `prompt_cache_retention`** (Go f77a3c10): a client's explicit non-empty string passes through, trimmed; none is
+  injected (a `default` payload rule with `protocol: meta` opts into one), and other values are dropped.
+- **Muse Code relay** (`handlers/meta/muse-code.ts`; Go 7fd90c7a, `internal/client/musecode/relay.go`): the client API
+  relays `GET /muse-code/config`, `POST /muse-code/search` and `POST /muse-code/browser_open` (other paths and methods
+  are 404s) to the origin of a Meta credential's base URL, with the query minus `key`/`auth_token`, the allowlisted
+  request headers (`Accept`, `Content-Type`, `Traceparent`, `If-None-Match`, `X-Tbh-*`, `X-Meta-Ai-*`), the Muse identity
+  (the client's `X-Tbh-*` session when it sent one) and the credential's bearer token; the answer keeps only
+  `Content-Type`, `Cache-Control`, `ETag`, `Last-Modified` and `Retry-After`. A credential is picked through the usual
+  selection for any Meta model (sorted, as Go's `metaCandidateModels`), refreshed on a 401, and its result recorded
+  without a model, so a 401/402/403/429 or 5xx cools the whole credential down, for the upstream's `Retry-After` when
+  it sent one; other 4xx are relayed as they come (request-scoped rules still apply). Every upstream answer, a 401 the
+  refresh did not cure included, goes back with its status, allowlisted headers and raw body; the request body is
+  forwarded as raw bytes. An invalid base URL or an upstream answer over 16 MiB is a 502 that cools nothing. Like
+  alpha search, a call counts against Commissary Cloud's free usage (a Free org over its limit is refused first) unless
+  no credential was picked. Not ported: the `/muse-code/models` catalog (`models.go`) and Go's `credentialRetryAfter`
+  refinement of the cooldown.
 - **Meta deviations from Go**: the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the

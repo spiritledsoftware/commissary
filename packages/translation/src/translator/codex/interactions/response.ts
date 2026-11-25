@@ -17,6 +17,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { sseEventData } from "../../common/bytes.ts";
+import { responsesPartText } from "../../common/responses-content.ts";
 import type { ResponseContext } from "../../registry.ts";
 
 /** Go `codexToInteractionsStreamState`. */
@@ -72,15 +73,9 @@ const itemCallId = (item: Json | undefined): string => {
   return callId !== "" ? callId : asString(get(item, "id")).trim();
 };
 
-const contentText = (content: Json | undefined): string => {
-  for (const path of ["text", "content"]) {
-    const value = get(content, path);
-
-    if (typeof value === "string") return value;
-  }
-
-  return "";
-};
+/** `codexContentText`. */
+const contentText = (content: Json | undefined): string =>
+  responsesPartText(content, { anyPart: true });
 
 const reasoningText = (item: Json | undefined): string => {
   const content = get(item, "content");
@@ -333,7 +328,10 @@ const appendItemDone = (st: StreamState, item: Json | undefined): string[] => {
 
   switch (asString(get(item, "type"))) {
     case "message": {
-      if (st.hasOutputText) return appendStepStop(out, st);
+      const hadOutputText = st.hasOutputText;
+      st.hasOutputText = false;
+
+      if (hadOutputText) return appendStepStop(out, st);
       const content = get(item, "content");
 
       if (isJsonArray(content)) {
@@ -471,6 +469,8 @@ export const convertCodexResponseToInteractions = (
 
       switch (asString(get(item, "type"))) {
         case "message":
+          st.hasOutputText = false;
+
           return ensureStep(out, st, "model_output", item);
         case "reasoning":
           return ensureStep(out, st, "thought", item);
@@ -485,11 +485,14 @@ export const convertCodexResponseToInteractions = (
       return out;
     }
 
-    case "response.output_text.delta": {
+    case "response.output_text.delta":
+    case "response.refusal.delta": {
       let out = appendCreated([], st, get(root, "response"));
       out = ensureStep(out, st, "model_output", undefined);
-      st.hasOutputText = true;
-      out.push(textDelta(st, asString(get(root, "delta"))));
+      const delta = asString(get(root, "delta"));
+
+      if (delta !== "") st.hasOutputText = true;
+      out.push(textDelta(st, delta));
 
       return out;
     }

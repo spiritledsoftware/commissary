@@ -17,6 +17,7 @@ import {
 } from "@commissary/json";
 import { encodeGeminiCodexThoughtSignature } from "../../../signature/gemini-codex-carrier.ts";
 import { geminiTokenCountJson } from "../../common/bytes.ts";
+import { responsesPartText } from "../../common/responses-content.ts";
 import type { ResponseContext } from "../../registry.ts";
 import { geminiShortNameMap } from "./request.ts";
 
@@ -332,6 +333,13 @@ export const convertCodexResponseToGemini = (
     params.responseId = asString(get(root, "response.id"));
   } else if (
     type === "response.output_item.added" &&
+    asString(get(root, "item.type")) === "message"
+  ) {
+    params.hasOutputTextDelta = false;
+
+    return [];
+  } else if (
+    type === "response.output_item.added" &&
     asString(get(root, "item.type")) === "reasoning"
   ) {
     params.hasReasoningDelta = false;
@@ -357,9 +365,10 @@ export const convertCodexResponseToGemini = (
     if (pending !== "") emittedParts.push(signatureCarrierPart(pending));
     emittedParts.push({ thought: true, text: asString(get(root, "delta")) });
     template = set(template, "candidates.0.content.parts", emittedParts);
-  } else if (type === "response.output_text.delta") {
-    params.hasOutputTextDelta = true;
+  } else if (type === "response.output_text.delta" || type === "response.refusal.delta") {
     const delta = asString(get(root, "delta"));
+
+    if (delta !== "") params.hasOutputTextDelta = true;
     // An empty text part may be discarded by clients; never spend the only copy of a signature on one.
     const part: Json = { text: delta };
     template = set(template, "candidates.0.content.parts", [
@@ -368,15 +377,16 @@ export const convertCodexResponseToGemini = (
   } else if (type === "response.output_item.done") {
     const item = get(root, "item");
 
-    if (asString(get(item, "type")) !== "message" || params.hasOutputTextDelta) return [];
+    if (asString(get(item, "type")) !== "message") return [];
+    const streamed = params.hasOutputTextDelta;
+    params.hasOutputTextDelta = false;
     const content = get(item, "content");
 
-    if (!isJsonArray(content)) return [];
+    if (streamed || !isJsonArray(content)) return [];
     let wroteText = false;
 
     for (const part of content) {
-      if (asString(get(part, "type")) !== "output_text") continue;
-      const text = asString(get(part, "text"));
+      const text = responsesPartText(part);
 
       if (text === "") continue;
       template = set(template, "candidates.0.content.parts.-1", withPendingSignature({ text }));
@@ -384,7 +394,6 @@ export const convertCodexResponseToGemini = (
     }
 
     if (!wroteText) return [];
-    params.hasOutputTextDelta = true;
 
     return flushStorageOutputs(JSON.stringify(template));
   } else if (type === "response.completed" || type === "response.incomplete") {
@@ -512,10 +521,9 @@ export const convertCodexResponseToGeminiNonStream = (
 
             if (isJsonArray(content)) {
               for (const item of content) {
-                if (asString(get(item, "type")) !== "output_text") continue;
-                const text = get(item, "text");
+                const text = responsesPartText(item);
 
-                if (text !== undefined) parts.push({ text: asString(text) });
+                if (text !== "") parts.push({ text });
               }
             }
 

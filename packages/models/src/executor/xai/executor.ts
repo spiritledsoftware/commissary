@@ -42,7 +42,7 @@ import {
 import { Formats } from "@commissary/translation/formats";
 import { getCodec } from "@commissary/translation/tokenizer";
 import { parseOpenAIUsage, responseModelOf } from "../../usage/record.ts";
-import { ExecutionError } from "../errors.ts";
+import { ExecutionError, withErrorFields } from "../errors.ts";
 import {
   ensureResponsesUsageDetails,
   OutputItemCollector,
@@ -74,7 +74,7 @@ import {
   compactionResponseId,
 } from "./compact.ts";
 import { joinUrl, XAI_PROVIDER, xaiChatBaseUrl, xaiCompactBaseUrl } from "./credentials.ts";
-import { xaiStatusError } from "./errors.ts";
+import { xaiStatusError, xaiTerminalFailureError, xaiUnclosedStreamError } from "./errors.ts";
 import { buildXaiChatHeaders, buildXaiHeaders } from "./headers.ts";
 import {
   normalizeImageRefs,
@@ -259,12 +259,54 @@ const mediaFinalize = (
   return (model, original, body) => finalize(model, "openai", original, body);
 };
 
-const incompleteStreamError = () =>
-  new ExecutionError({
-    status: 408,
-    message:
-      "xai stream error: stream disconnected before response.completed or response.incomplete",
-  });
+/**
+ * The SSE events of a whole answer as `{name, data}` (Go 949b43b3's non-stream scanner): an `event:` line names the next
+ * data, a blank line ends the event, and data lines that are not yet valid JSON are joined with newlines until they are.
+ */
+const sseEvents = (text: string): Array<{ readonly name: string; readonly data: string }> => {
+  const events: Array<{ name: string; data: string }> = [];
+  let name = "";
+  let data: string | undefined;
+
+  const flush = (): void => {
+    if (data !== undefined) events.push({ name, data });
+    name = "";
+    data = undefined;
+  };
+
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+
+    if (line.trim() === "") {
+      flush();
+      continue;
+    }
+
+    if (line.startsWith("event:")) {
+      if (data !== undefined && name !== "") flush();
+      name = line.slice("event:".length).trim();
+      continue;
+    }
+
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice("data:".length).trim();
+
+    if (data !== undefined) {
+      if (tryParseJson(data) === undefined && data !== "[DONE]") {
+        data = `${data}\n${payload}`;
+        continue;
+      }
+
+      flush();
+    }
+
+    data = payload;
+  }
+
+  flush();
+
+  return events;
+};
 
 export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): ProviderExecutor => {
   const registry = executorOptions.translators ?? builtinTranslators;
@@ -518,10 +560,22 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
     const { prepared, response } = yield* openResponses(context, request, options);
     const text = yield* response.text.pipe(Effect.mapError(transportError));
     const collector = new OutputItemCollector();
+    let sawData = false;
 
-    for (const line of text.split("\n")) {
-      if (!line.startsWith("data:")) continue;
-      const parsed = tryParseJson(line.slice("data:".length).trim());
+    const failWith = (error: ExecutionError) => {
+      context.usage.fail(error.status, error.message);
+
+      return Effect.fail(error);
+    };
+
+    for (const { name, data } of sseEvents(text)) {
+      if (data === "" || data === "[DONE]") continue;
+      sawData = true;
+      // An `error`/`response.failed` event (or an invalid payload named `error`) fails the answer (Go 949b43b3).
+      const terminal = xaiTerminalFailureError(name, data);
+
+      if (terminal !== undefined) return yield* failWith(terminal);
+      const parsed = tryParseJson(data);
 
       if (parsed === undefined) continue;
       const normalized = normalizeReasoningSummaryEvent(parsed);
@@ -571,11 +625,18 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
       }
     }
 
-    if (prepared.applyPatch.finish() !== undefined) return yield* applyPatchGatewayError();
-    const error = incompleteStreamError();
-    context.usage.fail(error.status, error.message);
+    // A plain JSON error body instead of SSE.
+    if (!sawData && text.trim() !== "") {
+      const terminal = xaiTerminalFailureError("", text);
 
-    return yield* error;
+      if (terminal !== undefined) return yield* failWith(terminal);
+    }
+
+    // Only an answer with apply_patch activity is an apply_patch failure; otherwise it is empty or unclosed (Go 949b43b3).
+    if (prepared.applyPatch.hasPatchActivity() && prepared.applyPatch.finish() !== undefined)
+      return yield* failWith(withErrorFields(applyPatchGatewayError(), { requestScoped: true }));
+
+    return yield* failWith(xaiUnclosedStreamError(!sawData));
   });
 
   // -------------------------------------------------------------------------------------------------------------
@@ -770,7 +831,11 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
     options: ExecutorOptions,
   ) {
     const sessionId = options.metadata.websocket?.sessionId;
-    const state = sessionId === undefined ? undefined : xaiIdStates.get(sessionId);
+
+    const state =
+      sessionId === undefined
+        ? undefined
+        : xaiIdStates.get(sessionId, yield* Clock.currentTimeMillis);
 
     if (state === undefined) {
       return yield* new ExecutionError({

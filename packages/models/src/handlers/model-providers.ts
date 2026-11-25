@@ -46,6 +46,13 @@ export class ModelProviders extends Context.Service<
       ExecutionError,
       ModelsEnv | CurrentOrg
     >;
+    /**
+     * The available models a provider serves, sorted (Go `metaCandidateModels`: the Muse Code relay picks a Meta
+     * credential through any of them). Optional like `modelType`.
+     */
+    readonly modelsOfProvider?: (
+      provider: string,
+    ) => Effect.Effect<ReadonlyArray<string>, ExecutionError, ModelsEnv | CurrentOrg>;
   }
 >()("commissary/handlers/ModelProviders") {
   /**
@@ -77,6 +84,14 @@ export class ModelProviders extends Context.Service<
         firstAvailableModel: Effect.map(visible, (current) => current.firstAvailableModel()),
         modelType: (model) =>
           Effect.map(snapshot, (current) => current.lookupModelInfo(model, "")?.type),
+        modelsOfProvider: (provider) =>
+          Effect.map(visible, (current) =>
+            current
+              .availableModels()
+              .map((model) => model.id)
+              .filter((id) => current.providersForModel(id).includes(provider))
+              .toSorted(),
+          ),
         // The model list a request may name: a private credential's models are its owner's (ADR 0023).
         spawnAgentSource: Effect.gen(function* () {
           const current = yield* visible;

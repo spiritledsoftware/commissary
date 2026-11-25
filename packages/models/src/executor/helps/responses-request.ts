@@ -14,7 +14,7 @@
  */
 import { modelIsCompat, translateRequestForExecutor } from "./translate.ts";
 import { Effect } from "effect";
-import { cloneJson, del, get, type Json } from "@commissary/json";
+import { cloneJson, del, get, type Json, set } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import type { TranslatorRegistry } from "@commissary/translation";
 import { ExecutionError } from "../errors.ts";
@@ -66,7 +66,34 @@ export interface ResponsesShaping {
   ) => string;
   /** The reasoning-signature policy of the upstream. Default: replay blobs of unknown provenance as they are. */
   readonly reasoning?: (context: ExecutionContext) => ReasoningSanitizeOptions;
+  /**
+   * The client's explicit `prompt_cache_retention` passes through (Meta, Go f77a3c10); otherwise the field is dropped.
+   */
+  readonly promptCacheRetention?: boolean;
 }
+
+/** The client's explicit `prompt_cache_retention`: a non-empty string (trimmed), else `undefined`. */
+const explicitPromptCacheRetention = (source: Json | undefined): string | undefined => {
+  const value = get(source, "prompt_cache_retention");
+
+  // Only a JSON string counts (Go `val.Type != ojson.String`).
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+
+  return trimmed !== "" ? trimmed : undefined;
+};
+
+/**
+ * `syncMetaPromptCacheRetentionDoc`: the body carries exactly the client's explicit retention (no default is injected;
+ * null, blank and non-string values are dropped) before the payload rules run.
+ */
+export const syncPromptCacheRetention = (body: Json, source: Json | undefined): Json => {
+  const retention = explicitPromptCacheRetention(source);
+
+  return retention === undefined
+    ? del(body, "prompt_cache_retention")
+    : set(body, "prompt_cache_retention", retention);
+};
 
 export const prepareResponsesRequest = Effect.fnUntraced(function* (
   registry: TranslatorRegistry,
@@ -117,7 +144,13 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     baseModel,
   );
 
-  const original = stripIncludes ? stripCodexOnlyIncludes(originalBody) : originalBody;
+  const originalSource = options.originalRequest ?? request.payload;
+  const stripped = stripIncludes ? stripCodexOnlyIncludes(originalBody) : originalBody;
+
+  const original =
+    shaping.promptCacheRetention === true
+      ? syncPromptCacheRetention(stripped, originalSource)
+      : stripped;
 
   let body = yield* thinking.apply({
     body: stripIncludes ? stripCodexOnlyIncludes(translated.body) : translated.body,
@@ -135,13 +168,12 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
   body = setIfDifferent(body, "model", baseModel);
   body = setIfDifferent(body, "stream", stream);
 
-  for (const field of [
-    "generate",
-    "prompt_cache_retention",
-    "safety_identifier",
-    "stream_options",
-    "client_metadata",
-  ]) {
+  body =
+    shaping.promptCacheRetention === true
+      ? syncPromptCacheRetention(body, request.payload)
+      : del(body, "prompt_cache_retention");
+
+  for (const field of ["generate", "safety_identifier", "stream_options", "client_metadata"]) {
     body = del(body, field);
   }
 

@@ -33,6 +33,8 @@ describe("client API paths of a stage with one host", () => {
       "/v1internal",
       "/openai/v1",
       "/backend-api/codex",
+      // The Muse Code client's relay (CLIProxyAPI 7fd90c7a), which authenticates with an API key.
+      "/muse-code",
       "/chat/completions",
       "/completions",
       "/responses",
