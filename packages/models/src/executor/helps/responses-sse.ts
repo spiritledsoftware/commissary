@@ -9,7 +9,7 @@
  * become upstream errors and the stall message of a stream that ends without a terminal event.
  */
 import { Clock, Effect, Stream } from "effect";
-import type { HttpClientError, HttpClientResponse } from "effect/http";
+import type { HttpClientResponse } from "effect/http";
 import { splitLines } from "@commissary/translation/sse";
 import {
   asString,
@@ -45,6 +45,7 @@ import type {
   StreamResult,
 } from "../types.ts";
 import { APPLY_PATCH_UPSTREAM_ERROR_MESSAGE } from "./apply-patch-responses.ts";
+import { transportError } from "./transport-error.ts";
 import type { ResponsesPrepared } from "./responses-request.ts";
 import { ResponsesStreamOutputTracker } from "./responses-synthesis.ts";
 
@@ -96,14 +97,6 @@ export interface SseLineFilter {
 /** Every line of a whole answer through the filter, then its EOF flush (the non-stream path has no error ordering). */
 const filterAll = (filter: SseLineFilter | undefined, lines: string[]): string[] =>
   filter === undefined ? lines : [...lines.flatMap((line) => filter.push(line)), ...filter.flush()];
-
-const transportError = (error: HttpClientError.HttpClientError) =>
-  new ExecutionError({
-    status: 500,
-    code: "transient_transport",
-    message: `upstream request failed: ${error.reason._tag}`,
-    cause: error,
-  });
 
 const gatewayError = () =>
   new ExecutionError({ status: 502, message: APPLY_PATCH_UPSTREAM_ERROR_MESSAGE });
