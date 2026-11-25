@@ -147,6 +147,8 @@ import {
   type ZeroOutputAction,
   zeroOutputError,
   zeroOutputErrorMessage,
+  claudeStreamErrorPayload,
+  translatedClaudeError,
   zeroOutputFinishReason,
   ZeroOutputStreamGuard,
 } from "../helps/gemini-zero-output.ts";
@@ -718,6 +720,13 @@ export const makeAntigravityExecutor = (
 
       context.usage.publish(parseAntigravityUsage(text));
 
+      // Go `TranslatedClaudeErrorPayload` (cf07c78a): an Anthropic error body is a 502, before the replay commit.
+      if (responseFormat === Formats.Claude && get(tryParseJson(out), "type") === "error") {
+        context.usage.fail(502, out);
+
+        return yield* translatedClaudeError(out);
+      }
+
       return responseFormat === Formats.OpenAIResponse ? ensureResponsesUsageDetails(out) : out;
     });
 
@@ -965,6 +974,15 @@ export const makeAntigravityExecutor = (
     // abnormal zero-output finish before them, while the handler can still fail over.
     const guard = new ZeroOutputStreamGuard(responseFormat, true);
     let sawUpstreamJson = false;
+    // Go `CaptureTranslatedClaudeStreamError` (cf07c78a): the first Anthropic `error` event the translator wrote is kept,
+    // no replay is committed after it, and the stream fails with it once the upstream is drained (the client already
+    // got the event).
+    let streamError: string | undefined;
+
+    const captureError = (chunks: ReadonlyArray<string>): void => {
+      if (responseFormat === Formats.Claude && streamError === undefined)
+        streamError = claudeStreamErrorPayload(chunks);
+    };
 
     const translate = (payload: string): ReadonlyArray<string> =>
       translating(attempt, () => registry.translateStream(responseFormat, to, ctx, payload));
@@ -991,6 +1009,7 @@ export const makeAntigravityExecutor = (
           Effect.map((payload) => {
             context.usage.observeResponseModel(responseModelOf(tryParseJson(payload)));
             const chunks = translate(payload);
+            captureError(chunks);
             context.usage.observeTokenEvent(Date.now(), isGeminiTokenEvent(payload));
 
             if (chunks.some((chunk) => chunk !== "")) guard.markEmitted();
@@ -1002,6 +1021,7 @@ export const makeAntigravityExecutor = (
             const commit =
               prepared.replay?.terminal === true &&
               !prepared.replay.committed &&
+              streamError === undefined &&
               chunksHaveTerminalCommitEvent(chunks)
                 ? prepared.replay.commit(ledger)
                 : Effect.void;
@@ -1071,8 +1091,17 @@ export const makeAntigravityExecutor = (
 
       if (action.kind !== "emit") return guarded(action, undefined);
 
+      const failTranslated = (message: string) => Stream.fail(translatedClaudeError(message));
+
       const done = Stream.suspend(() => {
+        // `StopTranslatedClaudeStream`: an error event already sent ends the stream before `[DONE]`.
+        if (streamError !== undefined) return failTranslated(streamError);
         const chunks = translate("[DONE]");
+        captureError(chunks);
+        const failed = streamError;
+
+        if (failed !== undefined)
+          return Stream.concat(Stream.fromIterable(chunks), failTranslated(failed));
 
         const commit =
           prepared.replay !== undefined && !prepared.replay.committed

@@ -1006,3 +1006,59 @@ describe("antigravity executor: signature cache per credential", () => {
     ).toBe(false);
   });
 });
+
+// CLIProxyAPI cf07c78a (antigravity_executor_execute.go, antigravity_executor_stream.go): an Anthropic error the
+// translator writes (a malformed function call the zero-output guard did not see, here one with grounding only) is a
+// 502 on both paths.
+describe("antigravity executor: translated Claude errors", () => {
+  const malformed = (): JsonObject => ({
+    response: {
+      candidates: [
+        {
+          content: { role: "model", parts: [] },
+          finishReason: "MALFORMED_FUNCTION_CALL",
+          groundingMetadata: { groundingChunks: [{ web: { uri: "https://example.com" } }] },
+          index: 0,
+        },
+      ],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 },
+    },
+  });
+
+  const message = (stream: boolean): JsonObject => ({
+    model: "gemini-2.5-flash",
+    max_tokens: 16,
+    stream,
+    messages: [{ role: "user", content: "hi" }],
+  });
+
+  it("fails a non-stream answer with 502", async () => {
+    resetMemoryAntigravityState();
+
+    const h = harness(() => jsonResponse(malformed()), {
+      credential: unique("translated-error"),
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/messages", postJson(message(false)));
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("MALFORMED_FUNCTION_CALL");
+  });
+
+  it("fails a stream after the error event instead of ending it cleanly", async () => {
+    resetMemoryAntigravityState();
+    const h = harness(() => sse([malformed()]), { credential: unique("translated-error-stream") });
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/messages", postJson(message(true)));
+    const text = await response.text();
+
+    expect(text).toContain("MALFORMED_FUNCTION_CALL");
+    expect(text).not.toContain("message_stop");
+    // The stream failed with the 502 rather than ending as a success.
+    expect(h.records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+  });
+});

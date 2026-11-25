@@ -22,6 +22,7 @@ import {
 } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import { ExecutionError } from "../errors.ts";
+import { jsonPayload } from "../gemini/usage.ts";
 
 /** `GeminiPayloadInspection`. */
 export interface GeminiPayloadInspection {
@@ -79,6 +80,19 @@ export const translatedClaudeError = (message: string): ExecutionError => {
     asString(get(root, "error.message")).includes("MALFORMED_FUNCTION_CALL")
     ? zeroOutputError(message)
     : new ExecutionError({ status: 502, message });
+};
+
+/** Go `TranslatedClaudeStreamErrorPayload`: the data payload of the first `error` event among translated Claude chunks. */
+export const claudeStreamErrorPayload = (chunks: ReadonlyArray<string>): string | undefined => {
+  for (const chunk of chunks) {
+    for (const line of chunk.split("\n")) {
+      const payload = jsonPayload(line);
+
+      if (payload !== undefined && get(tryParseJson(payload), "type") === "error") return payload;
+    }
+  }
+
+  return undefined;
 };
 
 const nonBlank = (value: Json | undefined): boolean => asString(value).trim() !== "";

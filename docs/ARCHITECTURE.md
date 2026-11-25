@@ -3464,8 +3464,9 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   - _Malformed function calls_ (Go `cf07c78a`): a `MALFORMED_FUNCTION_CALL` finish without visible output (non-blank text, a
     non-empty tool call or a web search result) ends a Claude client's stream with an `api_error` event and turns a non-stream
     reply into the error body; text already sent is kept. The rule is the Gemini route's (`common/gemini-parts.ts`), except that
-    partial arguments do not count, as in Go. As in Go, the Antigravity executor passes the error to the client unchanged; it
-    does not fail over the way the Gemini executor does.
+    partial arguments do not count, as in Go. As in Go, the Antigravity executor then fails the attempt with a 502, like the
+    Gemini executor (`translatedClaudeError`): a non-stream reply before anything is sent, a stream after the error event, and
+    in both cases before the replay ledger is committed (SPI-1421).
   - _Signature cache_ (Go `85225381`): the Claude translator recovers a thinking signature from the cache only when the attempt
     installed one (`signatureCacheScoped`): an unscoped call recovers nothing. Non-stream replies cache a Claude model's
     signature under the thinking text before it, as streams do. The per-credential cache scope and the executor's
