@@ -10,11 +10,18 @@ const SHORT_KEY = "sk-pool-short-0001";
 
 const LONG_KEY = "sk-pool-long-0002";
 
+/** A second pair for the stream path, so its keys start without a cooldown. */
+const STREAM_SHORT_KEY = "sk-pool-short-0003";
+
+const STREAM_LONG_KEY = "sk-pool-long-0004";
+
+const SHORT_KEYS = new Set([SHORT_KEY, STREAM_SHORT_KEY]);
+
 const SHORT_SECONDS = 95 * 60;
 
 const LONG_SECONDS = 3 * 3600;
 
-const YAML = `
+const yaml = (short: string, long: string) => `
 api-keys:
   openai-compatibility:
     - name: Pool
@@ -23,8 +30,8 @@ api-keys:
         - name: upstream-model
           alias: pool-model
       keys:
-        - api-key: ${SHORT_KEY}
-        - api-key: ${LONG_KEY}
+        - api-key: ${short}
+        - api-key: ${long}
 `;
 
 const realFetch = globalThis.fetch;
@@ -37,6 +44,7 @@ const controlPlane = () => env.CONTROL_PLANE.getByName("global");
 interface ChatBody {
   readonly model: string;
   readonly max_tokens?: number;
+  readonly stream?: boolean;
   readonly messages: ReadonlyArray<{ readonly role: string; readonly content: string }>;
 }
 
@@ -54,7 +62,7 @@ beforeAll(async () => {
     const request = input instanceof Request ? input : new Request(input, init);
     const key = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
     calls.push(key);
-    const short = key === SHORT_KEY;
+    const short = SHORT_KEYS.has(key);
 
     return Response.json(
       {
@@ -70,7 +78,10 @@ beforeAll(async () => {
     );
   };
 
-  const stored = await withModelsPart(controlPlane(), (part) => part.importConfig(YAML, "test"));
+  const stored = await withModelsPart(controlPlane(), (part) =>
+    part.importConfig(yaml(SHORT_KEY, LONG_KEY), "test"),
+  );
+
   expect(stored.ok).toBe(true);
 });
 
@@ -110,6 +121,29 @@ describe("the terminal 429 of a cooling pool", () => {
 
     expect(response.status).toBe(429);
     expect(calls).toEqual([]);
+
+    const retryAfter = Number(response.headers.get("retry-after"));
+    expect(retryAfter).toBeGreaterThan(SHORT_SECONDS - 60);
+    expect(retryAfter).toBeLessThanOrEqual(SHORT_SECONDS);
+    await response.text();
+  });
+
+  it("carries the same reset on the stream path, before any chunk", async () => {
+    const stored = await withModelsPart(controlPlane(), (part) =>
+      part.importConfig(yaml(STREAM_SHORT_KEY, STREAM_LONG_KEY), "test"),
+    );
+
+    expect(stored.ok).toBe(true);
+    calls.length = 0;
+
+    const response = await post("/v1/chat/completions", {
+      model: "pool-model",
+      stream: true,
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(response.status).toBe(429);
+    expect([...new Set(calls)].toSorted()).toEqual([STREAM_LONG_KEY, STREAM_SHORT_KEY].toSorted());
 
     const retryAfter = Number(response.headers.get("retry-after"));
     expect(retryAfter).toBeGreaterThan(SHORT_SECONDS - 60);
