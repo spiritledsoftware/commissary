@@ -478,7 +478,8 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const stream = mode === "stream";
     // Go e049c336: an Imagen request is translated to Gemini first, then converted to the `predict` body; counting
     // tokens of an Imagen model goes through the ordinary Gemini path.
-    const imagen = variant.vertex && isImagenModel(baseModel) && mode !== "count";
+    const vertexImagen = variant.vertex && isImagenModel(baseModel);
+    const imagen = vertexImagen && mode !== "count";
 
     const rewrite = {
       headers: options.headers,
@@ -570,7 +571,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     if (!imagen) {
       if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents", turns);
       else {
-        if (mode === "generate" || !(variant.vertex && isImagenModel(baseModel)))
+        if (mode === "generate" || !vertexImagen)
           body = ensureGeminiLeadingUserContent(body, "contents");
 
         if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
