@@ -563,6 +563,10 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   `session-affinity-subagents` on, a subagent session without a binding of its own takes its parent's **newest live selection on
   any model** (the cache keeps a per-session sequence of real selections, which TTL refreshes do not reorder) on a provider the
   request may use, so the review keeps the parent's credential and prompt cache; ordinary subagents and forks stay as they were.
+  Smooth weighted credits are kept per rotation key for every credential, also those a pick leaves out (retry exclusions,
+  cooldowns), until the store passes the larger of 1024 and twice the largest candidate set seen; then the credentials
+  unseen longest are forgotten first, so a pool above 1024 credentials stays fair. A credential whose `credentialVersion`
+  changed starts at zero (CLIProxyAPI 9d7d012b; Go's scheduler shards and reservations have no counterpart here).
   Model prefixes, `force-model-prefix`, exclusions, OAuth/API-key aliases,
   `force-mapping` and alias pools are resolved per credential in `routing.ts`. The caller still resolves the provider set
   (`PickRequest.providers`) from the model registry; the DO enforces the per-credential rules.
@@ -613,6 +617,13 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   - A 401 matched by a request-scoped error rule skips the token refresh whatever the rule's action. Commissary rejects the
     token only inside `refreshNow`, so Go's `MarkResult` guard has no counterpart.
   - count_tokens 501s and typed unsupported-capability codes are availability-neutral like a generic 404.
+  - A disabled credential stays disabled and unavailable through a late success and a cooldown reset (CLIProxyAPI
+    29de31a8, 35afdf07); one disabled only in its file keeps its runtime state, so turning it back on needs no reset.
+    Commissary has no model reconciliation, inference verification or TOS-violation path, so the rest of those commits
+    has nothing to apply to.
+  - A live cooldown set by an explicit `force_cooldown` (`stop-and-cooldown`) outlasts later failures that write a zero
+    deadline because cooling is disabled, and keeps its error so it outlasts several (CLIProxyAPI 9d7d012b). Go tracks the
+    forced deadline in a field of its own; Commissary keeps the forced error in the persisted state instead.
   - Stale successes: every lease carries the pool's dispatch sequence (`Lease.seq`), seeded from the clock so it keeps
     rising across ControlPlane restarts. The pool remembers the sequence when each live cooldown was recorded (in memory
     only, so after a restart a restored cooldown is clearable by any success); a success whose pick predates the cooldown
@@ -632,6 +643,10 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   make credentials with an exhausted budget age out of later rounds. Alias pools count as available when any upstream model
   is (Go only discovers a cooling pool when it filters the execution models). When the wait exceeds the limit the plan
   carries the recovery time so the Worker can answer with `Retry-After`.
+  A terminal 429 when every candidate cools carries the pool's earliest reset (`RetryPlan.poolCooldownMs`, CLIProxyAPI
+  4da9f685): the conductor marks the error `modelCooldown` and sets its trusted `Retry-After` to it, so the client hears
+  when the first credential recovers rather than the last attempt's own window, and a Claude client reads the reset in
+  the message. It ignores the retry budget; a pool with an unblocked candidate, or none cooling, gives none.
 - **Shared and private credentials** (`credentials/ownership.ts`, `credentials/private-keys.ts`; Workers addition, ADR 0023,
   ADR 0025, no Go counterpart): a credential belongs to the org (a _shared credential_, `owner` unset) or to one member (a
   _private credential_, `owner` the member's id). A stored account carries `owner` (nullable `credentials.owner`, also on
@@ -781,7 +796,9 @@ Core contracts every provider slice implements (Go references in each module hea
   and the request moves on to the next credential. `ensureFresh` runs through the ControlPlane's per-credential refresh flight, so preparation and refresh are
   serialised there. A client that goes away during preparation interrupts the attempt: unlike Go (CLIProxyAPI dfdb3ba4),
   which records nothing, the attempt is reported once as `connection_lifecycle` (no cooldown), and no further credential
-  is picked. Executors with their own transport paths (WebSocket) can call
+  is picked. An attempt the client cancels after the upstream answered with a `Retry-After` or a request-scoped
+  error is reported with that error, so its cooldown is kept (`cancelledAttemptError`, CLIProxyAPI 3ad507bf); anything
+  else stays `connection_lifecycle`. Executors with their own transport paths (WebSocket) can call
   `withCredentialRefresh(context, use)` directly; `CredentialRefresher.none` disables it for API-key-only tests.
 - **Models and thinking**: `ModelProviders.registryLayer` resolves providers from the `ModelRegistry` snapshot
   (`providersForModel`, `firstAvailableModel`); `ModelProviders.configLayer` remains for tests without a registry.
@@ -815,6 +832,10 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Sessions**: `handlers/session.ts` ports `session.ExtractSessionInfo` (headers, Claude `metadata.user_id`, body fields)
   and feeds `PickRequest.session` together with the Access `callerScope`. Requests without an explicit marker are bound by
   content (`models/session-routing/`, `routing.ts` = `prepareSessionRouting`, only when `routing.session-affinity` is on):
+  - **Header sessions and subagents** (CLIProxyAPI f9ac9ffc, Go `applyHeaderSessionInfo`): a header session with an agent
+    id (body `agent_id`, then `X-Claude-Code-Agent-Id`, `X-Agent-Id`; `main` is no subagent) becomes
+    `<prefix>:<id>:agent:<agent>` with the header session (or `X-Parent-Agent-Id`'s session) as parent. Raw ids escape the
+    reserved `:agent:` (`encodeSessionSegment`), so a client id cannot collide with a composed one.
   - **LCP conversation matcher** (`canonical.ts`, `matcher.ts`; Go `session/lcp.go`, `auth/selector.go pickLCP/OnResult`):
     the request is reduced to canonical turns (five protocols, thinking tags/CRLF/timestamps/UUIDs of system text masked,
     tool parts sorted, >16 KiB values sampled) and a SHA-256 fingerprint per turn. The `MerklePrefixMatcher` (bounded: 1024
@@ -823,7 +844,8 @@ Core contracts every provider slice implements (Go references in each module hea
     new sequences to the picked credential and returns the LCP identity (`PickResult.session`, used for usage records);
     `report` touches the sequence on success or drops exactly that sequence on a credential-attributed failure (the lease
     carries the sequence and the access generation, so a late failure cannot evict a refreshed binding). Namespace
-    `lcp:v1::<provider|mixed>::<model>::<callerScope>`; credential changes call `invalidateAuth`.
+    `lcp:v1::<provider|mixed>::<model>::<callerScope>`; only `google` and `gemini` share the `gemini` namespace;
+    Vertex and AI Studio keep their own (CLIProxyAPI 3b20ee22, Home's part not ported); credential changes call `invalidateAuth`.
   - **Derived identity** (`identity.ts`; Go `session.DeriveID`/`hasExplicitSession`): `derived:ctx:v1:<sha256>` over the
     leading instructions and the first user input (only when no explicit marker exists); used when the LCP matcher does not
     apply (no non-system turn) and recorded in usage even with affinity off. Last fallback: the FNV message hash of the first
@@ -1341,7 +1363,10 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
   and enabled without exclusions); each model of the second list is a route (`auth_index`, `upstream` = `metadataModelId`,
   `via` catalog/config/alias, `prefix`). State: `disabled` (credential off), `excluded` (missing from the registered list;
   `reason` = first matching pattern, `rule_scope` channel/account/key), else read from the credential state like
-  `projectModel` (`quota` / `cooling` with `until`, `unavailable`, `available`). `listed` and `providers` come from the
+  `projectModel` (`quota` / `cooling` with `until`, `unavailable`, `available`). `projectModel` reads `availabilityBlock`, so a
+  bounded cooldown relists its model once the deadline passes, before any result clears the flags; disabled credentials
+  and models, terminal 401s and flags without a deadline stay suspended (CLIProxyAPI 69ed202a; Go's deadline cache is not
+  needed behind the 5 s snapshot). `listed` and `providers` come from the
   index, so they equal `/v1/models`; a model whose only routes are cooling is unlisted but still shown. The body also carries
   `oauth.model-alias`, `oauth.excluded-models`, `force_model_prefix`, per-channel account counts, `config_version` and `revisions` (the revision of each
   channel's rules by channel, the `If-Match` value of rule edits, see _Config entries_ below). Contract: `@commissary/contract/routing`.
@@ -1410,7 +1435,10 @@ refreshes stop until a new login (`lastError.code` `refresh_token_expired`). As 
 Commissary has no `RequiresSignIn` flag of its own (the terminal state is the error code) and recognises only this terminal
 grant message, not Go's whole list.
 
-Deviations from Go: credentials without a refresh token are never scheduled (Go loops every 30 s on an unchanged auth);
+Deviations from Go: credentials without a refresh token are never scheduled (Go loops every 30 s on an unchanged auth); CLIProxyAPI e6317949 (back-off of
+rejected refresh-recovery jobs) and 7df56074 (a non-refreshing credential with a past next check) hold by construction:
+every refresh failure backs off or unschedules, and `nextRefreshCheckAt` agrees with the refresh decision, with the 30 s
+re-arm floor;
 Codex keeps `email`/`plan_type` when the new `id_token` lacks them; a cached xAI `token_endpoint` must be an https x.ai
 URL; Kimi/Claude device/uTLS headers are constants/subsets; Devin's metadata refresh (protobuf quota probe, never
 scheduled) is not ported; `META_MINT_URL` is the Worker var of the same name (`RefreshContext.metaMintUrl`, also used by the Meta
@@ -1576,7 +1604,9 @@ Deviations from Go (all deliberate, documented in code headers):
   `rebuild_mid_system_message` credential attribute.
 - **Thread continuation** (`thread.ts`): `thread.type = "continue"` requests without `tools` restore the MCP tool aliases saved
   for `message:<previous_message_id>` / `message:<new id>` (SessionState DO per caller scope, 1024 entries, 7 d TTL; Go: executor
-  memory); an unknown previous message is the request-scoped 404 `not_found_error`.
+  memory); an unknown previous message is the request-scoped 404 `not_found_error`. A continuation is not pinned to the credential that
+  started the thread, so Go's `thread_not_found` for a pinned thread whose credential is gone (CLIProxyAPI b1faf0bd) has
+  nothing to apply to.
 - **Server-side fallback** (`cloaking.ts`, CLIProxyAPI fa11a573): opt-in like Go, by `upstream.claude.server-side-fallback`
   (default `false`, in `SETTINGS_TREE` and the Settings page). On, a cloaked Opus 5.5 or Fable 5.1 request without
   `fallbacks` of its own (not a probe or helper) asks for `claude-opus-4-8` or `claude-opus-5`. The usage record and the
@@ -3220,7 +3250,8 @@ two orgs never share an instance.
   `antigravityStreamChunksHaveTerminalCommitEvent`), otherwise before the EOF completion), `helps/reasoning-replay-ledger.ts`
   (normalisation, 1 h sliding TTL with an absolute 24 h cap, snapshot-guarded replace/delete with _tombstones_, so a writer that read
   an older state cannot publish over a delete), `prepare.ts` (`prepareAntigravityGeminiReasoningReplayPayload`: replay, role
-  normalisation, degrade, repair, pairing check; a replay that breaks pairing is dropped and the entry invalidated; an upstream 400
+  normalisation, degrade, repair, pairing check; a replay that breaks pairing is dropped and the entry invalidated; the
+  scope then holds the tombstone's snapshot, so the request's own later write is not refused as stale (CLIProxyAPI e9dd8bad); an upstream 400
   mentioning a signature clears the entry; `peek` is the same read without the TTL slide, for token counting). Only Gemini-family
   models use it; on Antigravity the replay runs after the credits flag and before the boundary turns and the envelope, on the Gemini
   API and Vertex after the boundary turns (see "Gemini, Vertex and Interactions", _Reasoning replay_). Token counting peeks the
