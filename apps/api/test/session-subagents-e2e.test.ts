@@ -84,8 +84,11 @@ describe("subagents of one header session", () => {
     const second = await ask("worker-2");
 
     expect(new Set([first, second])).toEqual(new Set([KEY_A, KEY_B]));
+
+    // Twice in a row: round-robin alone would move on to the other key, affinity keeps the subagent's own.
+    expect(await ask("worker-1")).toBe(first);
     expect(await ask("worker-1")).toBe(first);
     expect(await ask("worker-2")).toBe(second);
-    expect(await ask("worker-1")).toBe(first);
+    expect(await ask("worker-2")).toBe(second);
   });
 });
