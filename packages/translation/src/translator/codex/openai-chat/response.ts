@@ -26,6 +26,7 @@ import {
   collectResponsesToolWinners,
   qualifyResponsesNamespaceToolName,
 } from "../../common/responses-tools.ts";
+import { responsesPartText } from "../../common/responses-content.ts";
 import type { ResponseContext } from "../../registry.ts";
 import { buildShortNameMap, collectRequestToolNames, customToolDefinition } from "./request.ts";
 
@@ -70,27 +71,12 @@ const newParams = (model: string): ConvertCliToOpenAIParams => ({
   reverseNames: undefined,
 });
 
-/** A content part's text; a `refusal` part reads `refusal` first, then `text` (Go ca459712). */
-const partText = (part: Json): string => {
-  if (asString(get(part, "type")) === "refusal") {
-    const refusal = asString(get(part, "refusal"));
-
-    if (refusal !== "") return refusal;
-  }
-
-  return asString(get(part, "text"));
-};
-
 /** The joined `output_text` and `refusal` parts of a message item's content. */
 const messageText = (content: Json | undefined): string => {
   if (!isJsonArray(content)) return "";
   let text = "";
 
-  for (const part of content) {
-    const partType = asString(get(part, "type"));
-
-    if (partType === "output_text" || partType === "refusal") text += partText(part);
-  }
+  for (const part of content) text += responsesPartText(part);
 
   return text;
 };
@@ -813,7 +799,7 @@ export const convertCodexResponseToOpenAINonStream = (
             const partType = asString(get(part, "type"));
 
             if (partType !== "output_text" && partType !== "refusal") continue;
-            const text = partText(part);
+            const text = responsesPartText(part);
             contentText += text;
             messageAnnotations.push(
               ...buildUrlCitations(

@@ -17,6 +17,7 @@ import {
 } from "@commissary/json";
 import { encodeGeminiCodexThoughtSignature } from "../../../signature/gemini-codex-carrier.ts";
 import { geminiTokenCountJson } from "../../common/bytes.ts";
+import { responsesPartText } from "../../common/responses-content.ts";
 import type { ResponseContext } from "../../registry.ts";
 import { geminiShortNameMap } from "./request.ts";
 
@@ -45,22 +46,6 @@ interface GeminiParams {
 }
 
 /** `time.Unix(sec, 0).Format(time.RFC3339Nano)` in UTC. */
-/** A message part's text: `output_text` reads `text`, `refusal` reads `refusal` then `text` (Go ca459712). */
-const messagePartText = (part: Json | undefined): string => {
-  switch (asString(get(part, "type"))) {
-    case "output_text":
-      return asString(get(part, "text"));
-    case "refusal": {
-      const refusal = asString(get(part, "refusal"));
-
-      return refusal !== "" ? refusal : asString(get(part, "text"));
-    }
-
-    default:
-      return "";
-  }
-};
-
 const rfc3339 = (seconds: number): string =>
   new Date(seconds * 1000).toISOString().replace(/\.000Z$/, "Z");
 
@@ -401,7 +386,7 @@ export const convertCodexResponseToGemini = (
     let wroteText = false;
 
     for (const part of content) {
-      const text = messagePartText(part);
+      const text = responsesPartText(part);
 
       if (text === "") continue;
       template = set(template, "candidates.0.content.parts.-1", withPendingSignature({ text }));
@@ -536,7 +521,7 @@ export const convertCodexResponseToGeminiNonStream = (
 
             if (isJsonArray(content)) {
               for (const item of content) {
-                const text = messagePartText(item);
+                const text = responsesPartText(item);
 
                 if (text !== "") parts.push({ text });
               }

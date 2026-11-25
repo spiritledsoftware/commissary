@@ -17,6 +17,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { sseEventData } from "../../common/bytes.ts";
+import { responsesPartText } from "../../common/responses-content.ts";
 import type { ResponseContext } from "../../registry.ts";
 
 /** Go `codexToInteractionsStreamState`. */
@@ -72,21 +73,9 @@ const itemCallId = (item: Json | undefined): string => {
   return callId !== "" ? callId : asString(get(item, "id")).trim();
 };
 
-/** `codexContentText`: the first non-empty string of `text`, `content`, `refusal` (`refusal` first on a refusal part). */
-const contentText = (content: Json | undefined): string => {
-  const paths =
-    asString(get(content, "type")) === "refusal"
-      ? ["refusal", "text", "content"]
-      : ["text", "content", "refusal"];
-
-  for (const path of paths) {
-    const value = get(content, path);
-
-    if (typeof value === "string" && value !== "") return value;
-  }
-
-  return "";
-};
+/** `codexContentText`. */
+const contentText = (content: Json | undefined): string =>
+  responsesPartText(content, { anyPart: true });
 
 const reasoningText = (item: Json | undefined): string => {
   const content = get(item, "content");
