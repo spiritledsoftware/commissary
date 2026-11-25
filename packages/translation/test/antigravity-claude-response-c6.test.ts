@@ -1,5 +1,6 @@
 // Antigravity -> Claude Messages responses (ticket C6; upstream 202b8b8c, e1fb2521, 912a038b, 24b04548).
-// Expected values come from the Go tests of those commits (antigravity_claude_response_test.go).
+// Expected values come from the Go tests of those commits (antigravity_claude_response_test.go); cf07c78a took
+// MALFORMED_FUNCTION_CALL out of the refusal cases (it is an api_error without visible output).
 import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
@@ -190,7 +191,6 @@ describe("refusal finish reasons (24b04548)", () => {
     ["BLOCKLIST", "refusal"],
     ["IMAGE_SAFETY", "refusal"],
     ["MALFORMED_RESPONSE", "refusal"],
-    ["MALFORMED_FUNCTION_CALL", "refusal"],
     ["MAX_TOKENS", "max_tokens"],
     ["STOP", "end_turn"],
   ])("non-stream %s ends %s", (finishReason, stopReason) => {
@@ -290,7 +290,6 @@ describe("refusal finish reasons (24b04548)", () => {
     "BLOCKLIST",
     "IMAGE_SAFETY",
     "MALFORMED_RESPONSE",
-    "MALFORMED_FUNCTION_CALL",
   ])("%s survives a trailing chunk with an empty finishReason", (reason) => {
     for (const textPart of ["partial", ""]) {
       const text = stream(

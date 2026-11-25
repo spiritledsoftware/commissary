@@ -5,7 +5,15 @@
  * GeminiPartsHaveFunctionCall/Response, NormalizeGeminiTurnRole). The function-response checks copy the identical
  * per-translator helpers of claude_gemini_request.go, codex_gemini_request.go and interactions_gemini_common.go.
  */
-import { asBool, exists, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
+import {
+  asBool,
+  asString,
+  exists,
+  get,
+  isJsonArray,
+  isJsonObject,
+  type Json,
+} from "@commissary/json";
 
 /** `IsGeminiThoughtPart`: the part carries hidden model thought. */
 export const isGeminiThoughtPart = (part: Json | undefined): boolean =>
@@ -74,3 +82,53 @@ export const isEmptyGeminiResponseObject = (value: Json | undefined): boolean =>
 /** `geminiClaudeResponseHasOnlyResultKey` (and its Codex and Interactions twins): `{ "result": ... }` and nothing else. */
 export const geminiResponseHasOnlyResultKey = (response: Json | undefined): boolean =>
   isJsonObject(response) && Object.keys(response).length === 1 && Object.hasOwn(response, "result");
+
+const nonEmptyArray = (value: Json | undefined): boolean => isJsonArray(value) && value.length > 0;
+
+/**
+ * `isGeminiNonEmptyFunctionCall` / `isAntigravityNonEmptyFunctionCall`: a function call with a name, an id or non-empty
+ * arguments; with `partialArgs`, streamed partial arguments count too (Gemini only). An empty placeholder is no call
+ * (CLIProxyAPI cf07c78a, f663935d).
+ */
+export const isNonEmptyGeminiFunctionCall = (
+  functionCall: Json | undefined,
+  options: { readonly partialArgs: boolean },
+): boolean => {
+  if (!isJsonObject(functionCall)) return false;
+
+  if (asString(functionCall["name"]).trim() !== "" || asString(functionCall["id"]).trim() !== "")
+    return true;
+
+  if (
+    options.partialArgs &&
+    (nonEmptyArray(functionCall["partialArgs"]) || nonEmptyArray(functionCall["partial_args"]))
+  )
+    return true;
+  const args = functionCall["args"];
+
+  return isJsonObject(args) && Object.keys(args).length > 0;
+};
+
+/** The Anthropic error a Claude client gets for a malformed function call without visible output (cf07c78a). */
+export const MALFORMED_FUNCTION_CALL_CLAUDE_ERROR = {
+  type: "error",
+  error: { type: "api_error", message: "Gemini response finished with MALFORMED_FUNCTION_CALL" },
+} as const;
+
+/**
+ * `isGeminiMalformedFunctionCall` / `isAntigravityMalformedFunctionCall`: a malformed call with no visible output is a
+ * retryable error, not a refusal; partial output that already went out is kept (cf07c78a).
+ */
+export const isMalformedFunctionCallWithoutOutput = (
+  finishReason: string,
+  hasVisibleOutput: boolean,
+): boolean => finishReason.trim().toUpperCase() === "MALFORMED_FUNCTION_CALL" && !hasVisibleOutput;
+
+/** `VertexFunctionCallWillContinue`: a streamed function call announces more chunks (`willContinue` or `will_continue`). */
+export const functionCallWillContinue = (functionCall: Json | undefined): boolean =>
+  asBool(get(functionCall, "willContinue")) || asBool(get(functionCall, "will_continue"));
+
+/** `antigravityOpenAIExplicitlyEndsContinuation`: a `willContinue: false` ends a streamed call. */
+export const functionCallEndsContinuation = (functionCall: Json | undefined): boolean =>
+  !functionCallWillContinue(functionCall) &&
+  (get(functionCall, "willContinue") === false || get(functionCall, "will_continue") === false);

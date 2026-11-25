@@ -4,7 +4,8 @@
  * Go source: internal/translator/antigravity/claude/antigravity_claude_response.go. Thinking signatures are cached for
  * later turns (`signature/cache.ts`); Gemini signatures travel as carrier envelopes (`carrier.ts`). Tool arguments are
  * cleaned against the client's schemas (202b8b8c, e1fb2521, `../../common/claude-tool-args.ts`); safety and filter
- * finishReasons end as a refusal (24b04548).
+ * finishReasons end as a refusal (24b04548), and a malformed function call without visible output as an `api_error`
+ * (cf07c78a).
  */
 import {
   asBool,
@@ -26,7 +27,13 @@ import {
   claudeToolIsParameterless,
   cleanClaudeToolArgumentsWithTranslated,
 } from "../../common/claude-tool-args.ts";
+import { MergingToolInputTracker } from "../../common/claude-tool-input.ts";
 import { geminiClaudeToolUseID } from "../../common/claude-util.ts";
+import {
+  isMalformedFunctionCallWithoutOutput,
+  isNonEmptyGeminiFunctionCall,
+  MALFORMED_FUNCTION_CALL_CLAUDE_ERROR,
+} from "../../common/gemini-parts.ts";
 import { sanitizeClaudeToolId } from "../../common/tool-names.ts";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import {
@@ -73,115 +80,6 @@ const formatCarrierValue = (
     ? encodeGeminiClaudeCarrierSignature(signature, direction, targetKind)
     : formatClaudeSignatureValue(modelName, signature);
 
-/**
- * The input_json_delta bookkeeping of the open tool_use block. A call can arrive in several parts: object members
- * stream into one open object, closed once the block ends, and a cleaned `{}` is deferred until the block completes
- * without other input (CLIProxyAPI 3a353935).
- */
-class ToolInput {
-  /** Client-facing name of the open block. */
-  name = "";
-  /** Signature of a continuation part, re-attached after the block closes. */
-  signature = "";
-  #parameterless = false;
-  #emitted = false;
-  #pendingEmpty = false;
-  #open = false;
-
-  begin(name: string, parameterless: boolean): void {
-    this.name = name;
-    this.signature = "";
-    this.#parameterless = parameterless;
-    this.#emitted = false;
-    this.#pendingEmpty = false;
-    this.#open = false;
-  }
-
-  /** `appendToolInputObject`: the partial JSON for `cleaned`; object members join the open object. */
-  #object(cleaned: string): string[] {
-    if (cleaned === "") return [];
-
-    if (isJsonObject(tryParseJson(cleaned))) {
-      const body = cleaned.replace(/^\{/, "").replace(/\}$/, "");
-
-      if (body === "") return [];
-      const partial = this.#open ? `,${body}` : `{${body}`;
-      this.#open = true;
-      this.#emitted = true;
-      this.#pendingEmpty = false;
-
-      return [partial];
-    }
-
-    this.#emitted = true;
-    this.#pendingEmpty = false;
-
-    return [cleaned];
-  }
-
-  /** The partial JSON of the first part's cleaned args. */
-  first(cleaned: string): string[] {
-    let partial = cleaned;
-
-    if (this.#parameterless) {
-      if (this.#emitted) partial = "";
-      else this.#emitted = true;
-    } else if (partial === "{}") {
-      this.#pendingEmpty = true;
-      partial = "";
-    }
-
-    return this.#object(partial);
-  }
-
-  /** The partial JSON of a continuation part's cleaned args. */
-  next(cleaned: string): string[] {
-    if (this.#parameterless) {
-      if (this.#emitted) return [];
-      this.#emitted = true;
-      this.#pendingEmpty = false;
-
-      return ["{}"];
-    }
-
-    if (cleaned === "{}") {
-      if (!this.#emitted) this.#pendingEmpty = true;
-
-      return [];
-    }
-
-    return this.#object(cleaned);
-  }
-
-  /** `flushPendingToolInput`: closes the open object, or sends the deferred `{}` once. */
-  flush(): string | undefined {
-    let partial: string | undefined;
-
-    if (this.#open) {
-      partial = "}";
-      this.#open = false;
-    } else if (this.#pendingEmpty && !this.#emitted) {
-      partial = "{}";
-      this.#emitted = true;
-    }
-
-    this.#pendingEmpty = false;
-
-    return partial;
-  }
-}
-
-/** `isAntigravityNonEmptyFunctionCall`: a call with a name, an id or arguments. */
-const isNonEmptyFunctionCall = (functionCall: Json): boolean => {
-  if (!isJsonObject(functionCall)) return false;
-
-  if (asString(functionCall["name"]).trim() !== "" || asString(functionCall["id"]).trim() !== "")
-    return true;
-  const args = functionCall["args"];
-
-  return isJsonObject(args) && Object.keys(args).length > 0;
-};
-
 let claudeResponseIdCounter = 0;
 
 /** `resolveAntigravityClaudeMessageID`: the upstream response id, or a synthesized one (CLIProxyAPI da4396fd). */
@@ -220,8 +118,12 @@ interface Params {
   currentThinkingSigned: boolean;
   toolNameMap: NameMap;
   /** The input_json_delta bookkeeping of the open tool_use block. */
-  tool: ToolInput;
+  tool: MergingToolInputTracker;
   modelName: string;
+  /** Non-thought output went out: non-blank text, a tool call or a web search result (cf07c78a). */
+  hasVisibleOutput: boolean;
+  /** The `api_error` of a malformed function call went out; nothing follows it. */
+  hasMalformedError: boolean;
 }
 
 let toolUseIdCounter = 0;
@@ -243,7 +145,10 @@ const claudeToolUseId = (modelName: string, functionCall: Json, fallback: string
   return sanitizeClaudeToolId(fallback);
 };
 
-/** `resolveAntigravityClaudeStopReason`: safety, filter and malformed finishReasons end as a refusal. */
+/**
+ * `resolveAntigravityClaudeStopReason`: safety, filter and malformed finishReasons end as a refusal (a malformed call
+ * without visible output never gets here: it is an `api_error`).
+ */
 const resolveStopReason = (finishReason: string, hasToolUse: boolean): string => {
   if (hasToolUse) return "tool_use";
 
@@ -414,8 +319,10 @@ const paramsOf = (context: ResponseContext): Params => {
       currentThinkingText: "",
       currentThinkingSigned: false,
       toolNameMap: disambiguatedToolNameMap(context.originalRequest),
-      tool: new ToolInput(),
+      tool: new MergingToolInputTracker(),
       modelName: asString(get(context.translatedRequest, "model")),
+      hasVisibleOutput: false,
+      hasMalformedError: false,
     };
 
     context.state.value = fresh;
@@ -433,8 +340,32 @@ export const convertAntigravityResponseToClaude = (
   const params = paramsOf(context);
   const modelName = asString(get(context.translatedRequest, "model"));
 
+  // Everything after the error event of a malformed call is dropped.
+  if (params.hasMalformedError && params.hasSentFinalEvents) return [];
+
   if (line === "[DONE]") {
     let output = "";
+
+    if (isMalformedFunctionCallWithoutOutput(params.finishReason, params.hasVisibleOutput)) {
+      if (params.responseType !== 0) {
+        const deferred = params.responseType === 3 ? params.tool.flush() : undefined;
+
+        if (deferred !== undefined)
+          output += sseEventLines(
+            "content_block_delta",
+            deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: deferred }),
+            3,
+          );
+        output += sseEventLines("content_block_stop", stop(params.responseIndex), 3);
+        params.responseType = 0;
+      }
+
+      output += sseEventLines("error", JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR), 3);
+      params.hasSentFinalEvents = true;
+      params.hasMalformedError = true;
+
+      return [output];
+    }
 
     // Search text still buffered when the stream ends without grounding is sent as text (CLIProxyAPI 7e2b6323).
     if (
@@ -623,6 +554,7 @@ export const convertAntigravityResponseToClaude = (
       params.hasWebSearchTool = true;
       params.webSearchRequests = 1;
       params.hasContent = true;
+      params.hasVisibleOutput = true;
       params.responseType = 0;
       handledWebSearchGrounding = true;
     }
@@ -750,6 +682,8 @@ export const convertAntigravityResponseToClaude = (
             params.hasSemanticContent = true;
             params.lastSemanticKind = CarrierKind.Text;
 
+            if (partText.trim() !== "") params.hasVisibleOutput = true;
+
             if (signatureTargetsVisibleText) closeCurrentBlock();
           }
         }
@@ -765,7 +699,10 @@ export const convertAntigravityResponseToClaude = (
           params.responseType === 3 && fcName === "" && params.tool.name !== "";
 
         // An empty call carries only its signature, for whatever comes next (CLIProxyAPI f663935d).
-        if (!isContinuation && !isNonEmptyFunctionCall(functionCall)) {
+        if (
+          !isContinuation &&
+          !isNonEmptyGeminiFunctionCall(functionCall, { partialArgs: false })
+        ) {
           if (toolSignature !== "")
             appendPartSignature(toolSignature, CarrierDirection.Next, CarrierKind.Any);
           continue;
@@ -774,6 +711,7 @@ export const convertAntigravityResponseToClaude = (
         if (!isContinuation && getModelGroup(modelName) !== "claude")
           appendPartSignature(toolSignature, CarrierDirection.Next, CarrierKind.Function);
         params.hasToolUse = true;
+        params.hasVisibleOutput = true;
 
         const cleaned = (toolName: string): string =>
           cleanClaudeToolArgumentsWithTranslated(
@@ -791,7 +729,7 @@ export const convertAntigravityResponseToClaude = (
           if (toolSignature !== "") params.tool.signature = toolSignature;
 
           if (args !== undefined)
-            params.tool.next(cleaned(params.tool.name)).forEach(emitToolInput);
+            params.tool.continuationArguments(cleaned(params.tool.name)).forEach(emitToolInput);
 
           params.hasContent = true;
           params.hasSemanticContent = true;
@@ -826,7 +764,8 @@ export const convertAntigravityResponseToClaude = (
           }),
         );
 
-        if (args !== undefined) params.tool.first(cleaned(fcName)).forEach(emitToolInput);
+        if (args !== undefined)
+          params.tool.openingArguments(cleaned(fcName)).forEach(emitToolInput);
 
         params.responseType = 3;
         params.hasContent = true;
@@ -873,6 +812,23 @@ export const convertAntigravityResponseToClaude = (
     params.webSearchTextBuffer.length > 0
   )
     output += bufferedWebSearchTextBlock(params);
+
+  if (
+    isMalformedFunctionCallWithoutOutput(params.finishReason, params.hasVisibleOutput) &&
+    !params.hasSentFinalEvents
+  ) {
+    if (params.responseType !== 0) {
+      flushPendingToolInput();
+      appendEvent("content_block_stop", stop(params.responseIndex));
+      params.responseType = 0;
+    }
+
+    appendEvent("error", JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR));
+    params.hasSentFinalEvents = true;
+    params.hasMalformedError = true;
+
+    return [output];
+  }
 
   if (params.hasUsageMetadata && params.hasFinishReason) output += appendFinalEvents(params, false);
 
@@ -943,8 +899,11 @@ export const convertAntigravityResponseToClaudeNonStream = (
   let thinkingTargetKind: string = CarrierKind.Text;
   let toolIdCounter = 0;
   let hasToolCall = false;
+  let hasVisibleOutput = false;
   let hasSemanticContent = false;
   let lastSemanticKind: string = CarrierKind.Any;
+  // The text of the last unsigned thinking block: a Claude signature that arrives after it is cached under it (85225381).
+  let pendingThinkingText = "";
 
   const flushText = (): void => {
     if (text === "") return;
@@ -963,7 +922,9 @@ export const convertAntigravityResponseToClaudeNonStream = (
         thinkingDirection,
         thinkingTargetKind,
       );
-    }
+      cacheSignature(modelName, thinking, thinkingSignature);
+      pendingThinkingText = "";
+    } else if (thinking !== "") pendingThinkingText = thinking;
 
     blocks.push(block);
     thinking = "";
@@ -985,6 +946,14 @@ export const convertAntigravityResponseToClaudeNonStream = (
     });
   };
 
+  /** A signature for the text before it: a Claude one belongs to the pending thinking text. */
+  const cachePrecedingTextSignature = (signature: string): void => {
+    if (getModelGroup(modelName) === "claude") {
+      cacheSignature(modelName, pendingThinkingText, signature);
+      pendingThinkingText = "";
+    } else cacheSignature(modelName, "", signature);
+  };
+
   if (isJsonArray(parts)) {
     for (const part of parts) {
       const signature = asString(get(part, "thoughtSignature") ?? get(part, "thought_signature"));
@@ -992,8 +961,10 @@ export const convertAntigravityResponseToClaudeNonStream = (
       const functionCall = get(part, "functionCall");
 
       if (functionCall !== undefined) {
+        pendingThinkingText = "";
+
         // An empty call carries only its signature, for whatever comes next (CLIProxyAPI f663935d).
-        if (!isNonEmptyFunctionCall(functionCall)) {
+        if (!isNonEmptyGeminiFunctionCall(functionCall, { partialArgs: false })) {
           appendSignatureCarrier(signature, CarrierDirection.Next, CarrierKind.Any);
           continue;
         }
@@ -1016,6 +987,7 @@ export const convertAntigravityResponseToClaudeNonStream = (
         flushThinking();
         flushText();
         hasToolCall = true;
+        hasVisibleOutput = true;
         const name = restoreSanitizedToolName(toolNameMap, asString(get(functionCall, "name")));
         toolIdCounter++;
 
@@ -1079,7 +1051,7 @@ export const convertAntigravityResponseToClaudeNonStream = (
             thinkingTargetKind = CarrierKind.Text;
             flushThinking();
           } else if (hasSemanticContent && lastSemanticKind === CarrierKind.Text) {
-            cacheSignature(modelName, "", signature);
+            cachePrecedingTextSignature(signature);
           } else if (hasSemanticContent) {
             appendSignatureCarrier(signature, CarrierDirection.Previous, lastSemanticKind);
           } else {
@@ -1106,7 +1078,7 @@ export const convertAntigravityResponseToClaudeNonStream = (
             appendSignatureCarrier(signature, CarrierDirection.Next, CarrierKind.Text);
             visibleSignatureCarrier = true;
           } else if (hasSemanticContent && lastSemanticKind === CarrierKind.Text) {
-            cacheSignature(modelName, "", signature);
+            cachePrecedingTextSignature(signature);
           } else if (hasSemanticContent) {
             appendSignatureCarrier(signature, CarrierDirection.Previous, lastSemanticKind);
           } else {
@@ -1117,7 +1089,10 @@ export const convertAntigravityResponseToClaudeNonStream = (
 
       if (partText !== "") {
         flushThinking();
+        pendingThinkingText = "";
         text += partText;
+
+        if (partText.trim() !== "") hasVisibleOutput = true;
         hasSemanticContent = true;
         lastSemanticKind = CarrierKind.Text;
 
@@ -1130,11 +1105,12 @@ export const convertAntigravityResponseToClaudeNonStream = (
   flushText();
 
   if (blocks.length > 0) responseJson["content"] = blocks;
+  const finishReason = asString(get(root, "response.candidates.0.finishReason"));
 
-  responseJson["stop_reason"] = resolveStopReason(
-    asString(get(root, "response.candidates.0.finishReason")),
-    hasToolCall,
-  );
+  if (isMalformedFunctionCallWithoutOutput(finishReason, hasVisibleOutput))
+    return JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR);
+
+  responseJson["stop_reason"] = resolveStopReason(finishReason, hasToolCall);
 
   if (
     promptTokens === 0 &&

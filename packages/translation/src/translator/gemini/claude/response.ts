@@ -28,6 +28,11 @@ import { hasUnsupportedPartPayload } from "../common/parts.ts";
 import { UNSUPPORTED_SIGNATURE_TARGET } from "./signature-carrier.ts";
 import { ToolInputTracker } from "../../common/claude-tool-input.ts";
 import {
+  isMalformedFunctionCallWithoutOutput,
+  isNonEmptyGeminiFunctionCall,
+  MALFORMED_FUNCTION_CALL_CLAUDE_ERROR,
+} from "../../common/gemini-parts.ts";
+import {
   cleanClaudeToolArgumentsWithTranslated,
   claudeToolIsParameterless,
   mapClaudeToolName,
@@ -80,39 +85,6 @@ const trailingCarrierSignature = (signature: string, target: SignatureTarget): s
 
 /** Process-wide tool_use id counter, shared by the stream and non-stream conversions (58257007). */
 let toolUseIdCounter = 0;
-
-const MALFORMED_FUNCTION_CALL_ERROR = {
-  type: "error",
-  error: { type: "api_error", message: "Gemini response finished with MALFORMED_FUNCTION_CALL" },
-} as const;
-
-/**
- * `isGeminiMalformedFunctionCall`: a malformed call with no visible output is retryable, not a refusal; partial text
- * that already went out is kept (cf07c78a).
- */
-const isMalformedFunctionCall = (finishReason: string, hasVisibleOutput: boolean): boolean =>
-  finishReason.trim().toUpperCase() === "MALFORMED_FUNCTION_CALL" && !hasVisibleOutput;
-
-const nonEmptyArray = (value: Json | undefined): boolean => isJsonArray(value) && value.length > 0;
-
-/**
- * `isGeminiNonEmptyFunctionCall`: a function call with a name, an id, partial arguments or non-empty arguments; an
- * empty placeholder is no call (cf07c78a).
- */
-const isNonEmptyFunctionCall = (functionCall: Json | undefined): boolean => {
-  if (!isJsonObject(functionCall)) return false;
-
-  if (asString(get(functionCall, "name")).trim() !== "") return true;
-
-  if (asString(get(functionCall, "id")).trim() !== "") return true;
-
-  if (nonEmptyArray(get(functionCall, "partialArgs"))) return true;
-
-  if (nonEmptyArray(get(functionCall, "partial_args"))) return true;
-  const args = get(functionCall, "args");
-
-  return isJsonObject(args) && Object.keys(args).length > 0;
-};
 
 export const resolveGeminiClaudeStopReason = (
   finishReason: string,
@@ -212,7 +184,7 @@ export const convertGeminiResponseToClaude = (
   if (line === "[DONE]") {
     if (p.hasMalformedError && p.hasFinalEvents) return [];
 
-    if (isMalformedFunctionCall(p.finishReason, p.hasVisibleOutput)) {
+    if (isMalformedFunctionCallWithoutOutput(p.finishReason, p.hasVisibleOutput)) {
       if (p.responseType !== 0) {
         flushPendingToolInput();
         output += blockStop(p.responseIndex);
@@ -220,7 +192,7 @@ export const convertGeminiResponseToClaude = (
       }
 
       if (!p.hasFinalEvents) {
-        output += event("error", MALFORMED_FUNCTION_CALL_ERROR);
+        output += event("error", MALFORMED_FUNCTION_CALL_CLAUDE_ERROR);
         p.hasFinalEvents = true;
         p.hasMalformedError = true;
       }
@@ -420,7 +392,7 @@ export const convertGeminiResponseToClaude = (
         }
 
         // An empty placeholder call is no call; its signature trails the part before it (cf07c78a).
-        if (!isNonEmptyFunctionCall(functionCall)) {
+        if (!isNonEmptyGeminiFunctionCall(functionCall, { partialArgs: true })) {
           if (hasThoughtSignature) appendTrailingCarrierThinkingBlock(partSig);
           continue;
         }
@@ -547,14 +519,17 @@ export const convertGeminiResponseToClaude = (
     p.cachedTokens = cachedTokens;
   }
 
-  if (isMalformedFunctionCall(p.finishReason, p.hasVisibleOutput) && !p.hasFinalEvents) {
+  if (
+    isMalformedFunctionCallWithoutOutput(p.finishReason, p.hasVisibleOutput) &&
+    !p.hasFinalEvents
+  ) {
     if (p.responseType !== 0) {
       flushPendingToolInput();
       output += blockStop(p.responseIndex);
       p.responseType = 0;
     }
 
-    output += event("error", MALFORMED_FUNCTION_CALL_ERROR);
+    output += event("error", MALFORMED_FUNCTION_CALL_CLAUDE_ERROR);
     p.hasFinalEvents = true;
     p.hasMalformedError = true;
 
@@ -695,7 +670,7 @@ export const convertGeminiResponseToClaudeNonStream = (
 
       if (functionCall !== undefined) {
         // An empty placeholder call is no call (cf07c78a).
-        if (!isNonEmptyFunctionCall(functionCall)) {
+        if (!isNonEmptyGeminiFunctionCall(functionCall, { partialArgs: true })) {
           if (partSig !== "") {
             flushText();
             appendCarrierThinkingBlock(partSig);
@@ -774,8 +749,8 @@ export const convertGeminiResponseToClaudeNonStream = (
   const finish = get(root, "candidates.0.finishReason");
   const finishReason = finish === undefined ? "" : asString(finish);
 
-  if (isMalformedFunctionCall(finishReason, hasVisibleOutput))
-    return JSON.stringify(MALFORMED_FUNCTION_CALL_ERROR);
+  if (isMalformedFunctionCallWithoutOutput(finishReason, hasVisibleOutput))
+    return JSON.stringify(MALFORMED_FUNCTION_CALL_CLAUDE_ERROR);
   out["stop_reason"] = resolveGeminiClaudeStopReason(finishReason, hasToolCall);
 
   if (inputTokens === 0 && outputTokens === 0 && !exists(root, "usageMetadata"))

@@ -1,5 +1,6 @@
 // Antigravity response translators at CLIProxyAPI dd543d09 (SPI-1420; upstream fe571afe, 4df055de, 28a00389, 8cd6817b,
-// 07290e18, 590284bd, da4396fd, f663935d, 7e2b6323, a3e75421). Expected values follow the Go tests of those commits.
+// 07290e18, 590284bd, da4396fd, f663935d, 7e2b6323, a3e75421, cf07c78a, 85225381). Expected values follow the Go tests of
+// those commits.
 import { describe, expect, it } from "vite-plus/test";
 import {
   asString,
@@ -9,8 +10,10 @@ import {
   type JsonObject,
   tryParseJson,
 } from "@commissary/json";
+import { MemorySignatureCache, withSignatureContext } from "../src/signature/cache.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState } from "../src/translator/registry.ts";
+import { claudeSignature } from "./support/claude-signature.ts";
 
 const context = (model: string, originalRequest?: Json) => ({
   model,
@@ -200,5 +203,160 @@ describe("Antigravity -> Gemini alt array stream", () => {
 
     expect(get(out, "0.candidates.0.content.parts.0.functionCall.name")).toBe("do thing");
     expect(get(out, "0.usageMetadata.promptTokenCount")).toBe(1);
+  });
+});
+
+describe("Antigravity -> Claude malformed function calls (cf07c78a)", () => {
+  const MODEL = "claude-sonnet-4-5";
+
+  const claudeContext = () => ({
+    model: MODEL,
+    originalRequest: { model: MODEL },
+    translatedRequest: { model: MODEL },
+    state: makeTranslationState(),
+  });
+
+  const sseEvents = (text: string): string[] =>
+    text
+      .split("\n")
+      .filter((line) => line.startsWith("event: "))
+      .map((line) => line.slice(7));
+
+  const streamOf = (lines: string[]): string => {
+    const ctx = claudeContext();
+
+    return lines
+      .flatMap((line) => builtinTranslators.translateStream("claude", "antigravity", ctx, line))
+      .join("");
+  };
+
+  const usage = { promptTokenCount: 5, candidatesTokenCount: 0, totalTokenCount: 5 };
+
+  it("ends a stream without visible output with an api_error and nothing after it", () => {
+    const out = streamOf([
+      response({ ...candidate([{ text: "thinking", thought: true }]) }),
+      response({ ...candidate([], " malformed_function_call "), usageMetadata: usage }),
+      "[DONE]",
+    ]);
+
+    const names = sseEvents(out);
+    expect(names).toContain("error");
+    expect(names).not.toContain("message_delta");
+    expect(names).not.toContain("message_stop");
+    expect(names.at(-1)).toBe("error");
+    expect(out).toContain('"type":"api_error"');
+  });
+
+  it("raises the error on [DONE] when the finish frame had no usage", () => {
+    const out = streamOf([response(candidate([], "MALFORMED_FUNCTION_CALL")), "[DONE]"]);
+
+    expect(sseEvents(out).at(-1)).toBe("error");
+  });
+
+  it("keeps partial text and ends the stream as a refusal", () => {
+    const out = streamOf([
+      response(candidate([{ text: "partial" }])),
+      response({ ...candidate([], "MALFORMED_FUNCTION_CALL"), usageMetadata: usage }),
+      "[DONE]",
+    ]);
+
+    expect(sseEvents(out)).not.toContain("error");
+    expect(out).toContain('"stop_reason":"refusal"');
+  });
+
+  const nonStreamOf = (body: Json): Json =>
+    tryParseJson(
+      builtinTranslators.translateNonStream(
+        "claude",
+        "antigravity",
+        claudeContext(),
+        JSON.stringify({ response: body }),
+      ) ?? "",
+    ) as Json;
+
+  it("turns a non-stream reply without visible output into the error body", () => {
+    const out = nonStreamOf(
+      candidate([{ text: "  " }, { functionCall: { name: "" } }], "MALFORMED_FUNCTION_CALL"),
+    );
+
+    expect(out).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "Gemini response finished with MALFORMED_FUNCTION_CALL",
+      },
+    });
+  });
+
+  it("keeps a non-stream reply with text as a refusal", () => {
+    const out = nonStreamOf(candidate([{ text: "partial" }], "MALFORMED_FUNCTION_CALL"));
+
+    expect(get(out, "stop_reason")).toBe("refusal");
+    expect(get(out, "content.0.text")).toBe("partial");
+  });
+});
+
+describe("Antigravity -> Claude non-stream signature cache (85225381)", () => {
+  it("recovers a non-stream reply's signature on the next turn", () => {
+    const MODEL = "claude-sonnet-4-5";
+    const thought = "Let me think about the weather in Paris before I answer the question.";
+    const signature = claudeSignature();
+    const cache = new MemorySignatureCache();
+
+    withSignatureContext({ cache }, () =>
+      builtinTranslators.translateNonStream(
+        "claude",
+        "antigravity",
+        {
+          model: MODEL,
+          originalRequest: { model: MODEL },
+          translatedRequest: { model: MODEL },
+          state: makeTranslationState(),
+        },
+        JSON.stringify({
+          response: candidate(
+            [
+              { text: thought, thought: true },
+              { text: "", thoughtSignature: signature },
+              { text: "Sunny." },
+            ],
+            "STOP",
+          ),
+        }),
+      ),
+    );
+
+    const next = withSignatureContext({ cache }, () =>
+      builtinTranslators.translateRequest(
+        "claude",
+        "antigravity",
+        {
+          format: "claude",
+          model: MODEL,
+          stream: false,
+          body: {
+            thinking: { type: "enabled", budget_tokens: 2048 },
+            messages: [
+              { role: "user", content: "weather?" },
+              {
+                role: "assistant",
+                content: [
+                  { type: "thinking", thinking: thought },
+                  { type: "text", text: "Sunny." },
+                ],
+              },
+              { role: "user", content: "thanks" },
+            ],
+          },
+        },
+        undefined,
+      ),
+    ).body;
+
+    expect(get(next, "request.contents.1.parts.0.thought")).toBe(true);
+    // Antigravity carries Claude signatures in their R form (base64 of the E form).
+    expect(atob(asString(get(next, "request.contents.1.parts.0.thoughtSignature")))).toBe(
+      signature,
+    );
   });
 });
