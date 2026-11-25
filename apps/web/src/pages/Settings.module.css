@@ -291,6 +291,11 @@
   resize: vertical;
 }
 
+/* Patterns are pasted code: monospace, as a `<code>` element shows. */
+.code {
+  font-family: monospace, monospace;
+}
+
 /* Radio lists: the choice's name, its meaning beneath. */
 .choices {
   display: grid;

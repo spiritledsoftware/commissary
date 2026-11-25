@@ -95,6 +95,27 @@ export const ModelEntry = Schema.Struct({
 
 export type ModelEntry = typeof ModelEntry.Type;
 
+/**
+ * `sensitive-words-replace`: sensitive words or phrases (matched case-insensitively, longest first) and the literal
+ * text each is replaced with; an empty replacement deletes the match.
+ */
+export const SensitiveWordsReplace = StringMap;
+
+export type SensitiveWordsReplace = typeof SensitiveWordsReplace.Type;
+
+/**
+ * One `sensitive-patterns-replace` rule: a Go RE2 regular expression and its replacement template (`$1`, `${name}`);
+ * a missing or empty replacement deletes the match. Rules apply in order, before the sensitive words.
+ */
+export const SensitivePatternRule = Schema.Struct({
+  pattern: Schema.String,
+  replacement: optional(Schema.String),
+});
+
+export type SensitivePatternRule = typeof SensitivePatternRule.Type;
+
+export const SensitivePatternsReplace = Schema.Array(SensitivePatternRule);
+
 export const CloakConfig = Schema.Struct({
   /** When to cloak: `auto`, `always` or `never`. */
   mode: optional(Schema.String),
@@ -102,6 +123,8 @@ export const CloakConfig = Schema.Struct({
   level: optional(Schema.String),
   "strict-mode": optional(Schema.Boolean),
   "sensitive-words": optional(Strings),
+  "sensitive-words-replace": optional(SensitiveWordsReplace),
+  "sensitive-patterns-replace": optional(SensitivePatternsReplace),
   "cache-user-id": optional(Schema.Boolean),
 });
 

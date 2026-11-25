@@ -452,6 +452,27 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
   invalid. Templates expand like Go's (`$1`, `${name}`, `$$`). Path targets follow queries, `#` projections, key globs and `@this`; modifiers
   and pipes select nothing (Go: computed values are not fields). An invalid rule is dropped when the config is stored. The
   panel shows the number of replace rules with the other kinds; a config import sets them.
+- **Sensitive words (`executor/helps/cloak-obfuscate.ts`)**: one matcher for the three providers that rewrite words
+  before sending (CLIProxyAPI `9a7e1e6b`, `905e70c4`), built from `sensitive-words`, `sensitive-words-replace` (word or
+  phrase to literal text, `""` deletes) and `sensitive-patterns-replace` (ordered `{pattern, replacement}` RE2 rules,
+  through `payload/re2.ts`; a missing replacement deletes). Antigravity and Devin read them from
+  `oauth.providers.{antigravity,devin}` (Settings page and `/settings`), a cloaked Claude request from
+  `api-keys.claude[].cloak` or the credential's `cloak_sensitive_words_replace` (JSON object) and
+  `cloak_sensitive_patterns_replace` (JSON array) attributes or metadata, the key's non-empty values winning. One pass,
+  never cascading: the pattern rules match the original text in order (a later rule's match overlapping an earlier
+  one's is skipped, except a deletion covering earlier deletions), the words and replacements apply case-insensitively,
+  longest first, to the text between pattern matches, and no output is scanned again. A word without a replacement is
+  obfuscated: Claude puts U+200B after its first character (system text blocks other than the billing header, message
+  text); Antigravity puts U+034F after the first character of each letter-and-digit run, the mark its endpoint
+  accepts, in the system instruction only; Devin drops every original line of the system prompt that holds one,
+  replacements on it included. Claude at the `minimal` cloak level applies none of them, as with `sensitive-words`.
+  Differences from Go: matchers are cached per isolate in one map keyed by their settings (Go: one per executor, a
+  1024-entry map for Claude); case-insensitive matching is JavaScript's `iu` folding rather than RE2's; an invalid
+  pattern is dropped without a log line when the config is stored and refused with `422 invalid_setting` by
+  `/settings`, which stores replacement targets trimmed as the normaliser does. The panel edits the two replace
+  settings as one `target => replacement` rule per line, split at the first `=>` with both sides trimmed: a target or
+  pattern cannot contain `=>` (a pattern writes `=\x3E`), a replacement keeps no surrounding space and holds no line
+  break, and nothing after `=>` (or no `=>`) deletes. Operator notes: `MIGRATION.md`, "Config".
 - **Config normalisation** follows the Go `Sanitize*` functions on the _flattened_ list: gemini/interactions keys are
   deduplicated across all groups of a family (key, base URL, proxy, prefix, order-independent headers; entry values override
   the group's), vertex keys by `api-key|base-url` (keys without api-key and models without name or alias are dropped), and

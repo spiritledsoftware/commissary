@@ -11,7 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { sha256Hex } from "@commissary/core";
 import { isJsonObject, tryParseJson } from "@commissary/json";
 import { isClaudeCodeAttributionSystemText } from "@commissary/translation";
-import type { SensitiveWordMatcher } from "../claude/cloaking.ts";
+import type { SensitiveWordMatcher } from "../helps/cloak-obfuscate.ts";
 import {
   fieldDouble,
   fieldFloat,
@@ -148,7 +148,10 @@ const SYSTEM_PROMPT_DROPS = [
   "- Don’t output ANSI escape codes directly — the CLI renderer applies them.",
 ];
 
-/** `SanitizeDevinSystemPrompt`: drops Claude Code attribution lines, then obfuscates sensitive words. */
+/**
+ * `SanitizeDevinSystemPrompt`: drops Claude Code attribution lines, then applies the configured pattern and literal
+ * replacements and drops the lines that hold a sensitive word.
+ */
 export const sanitizeDevinSystemPrompt = (
   prompt: string,
   matcher: SensitiveWordMatcher | undefined,
@@ -165,13 +168,12 @@ export const sanitizeDevinSystemPrompt = (
 
     if (SYSTEM_PROMPT_DROPS.some((phrase) => trimmed.includes(phrase))) continue;
 
-    if (matcher?.matches(trimmed) === true) continue;
     kept.push(line);
   }
 
-  const result = kept.join("\n").trim();
+  const result = kept.join("\n");
 
-  return matcher !== undefined && result !== "" ? matcher.obfuscate(result) : result;
+  return matcher !== undefined && result !== "" ? matcher.sanitizeDevinText(result) : result.trim();
 };
 
 export interface DevinChatRequest {

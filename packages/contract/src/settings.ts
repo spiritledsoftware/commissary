@@ -25,7 +25,11 @@
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
-import { RequestScopedErrorRule } from "./provider-keys.ts";
+import {
+  RequestScopedErrorRule,
+  SensitivePatternsReplace,
+  SensitiveWordsReplace,
+} from "./provider-keys.ts";
 import { ConfigVersion, Revisions } from "./config.ts";
 import { managementErrors } from "./errors.ts";
 
@@ -157,13 +161,19 @@ export const SETTINGS_TREE = {
       },
       antigravity: {
         "sensitive-words": Strings,
+        "sensitive-words-replace": SensitiveWordsReplace,
+        "sensitive-patterns-replace": SensitivePatternsReplace,
         "antigravity-credits": Schema.Boolean,
         /** `null` = on. */
         "signature-cache-enabled": Tristate,
         /** `null` = off. */
         "signature-bypass-strict": Tristate,
       },
-      devin: { "sensitive-words": Strings },
+      devin: {
+        "sensitive-words": Strings,
+        "sensitive-words-replace": SensitiveWordsReplace,
+        "sensitive-patterns-replace": SensitivePatternsReplace,
+      },
       claude: { "oauth-include-create-api-key": Schema.Boolean },
     },
   },

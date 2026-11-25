@@ -22,19 +22,13 @@ import {
   HttpClientRequest,
   type HttpClientResponse,
 } from "effect/http";
-import { buildSensitiveWordMatcher } from "../claude/cloaking.ts";
+import {
+  buildAntigravitySensitiveWordMatcher,
+  obfuscateSystemInstruction,
+} from "../helps/cloak-obfuscate.ts";
 import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 import type { Config } from "../../config/schema.ts";
-import {
-  asInt,
-  del,
-  get,
-  isJsonArray,
-  isJsonObject,
-  type Json,
-  set,
-  tryParseJson,
-} from "@commissary/json";
+import { asInt, del, get, type Json, tryParseJson } from "@commissary/json";
 import { splitLines } from "@commissary/translation/sse";
 import { fetchProjectId } from "../../oauth/flows/antigravity.ts";
 import {
@@ -453,8 +447,7 @@ export const makeAntigravityExecutor = (
       lookupModelInfo: request.modelLookup,
     });
 
-    const words = context.config.oauth.providers.antigravity["sensitive-words"];
-    body = obfuscateSystemInstruction(body, words);
+    body = applyAntigravitySensitiveWords(body, context.config);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
 
     if (stream) del(body, "request.stream");
@@ -975,10 +968,7 @@ export const makeAntigravityExecutor = (
       lookupModelInfo: request.modelLookup,
     });
 
-    body = obfuscateSystemInstruction(
-      body,
-      context.config.oauth.providers.antigravity["sensitive-words"],
-    );
+    body = applyAntigravitySensitiveWords(body, context.config);
     // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3).
     prepareClaudeStructuredOutput(baseModel, body);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
@@ -1059,35 +1049,15 @@ const jsonPayloadOf = (line: string): string | undefined => {
   return trimmed.startsWith("{") ? trimmed : undefined;
 };
 
-/** `obfuscateSensitiveWords` for the system instruction of a translated request. */
-const obfuscateSystemInstruction = (body: Json, words: ReadonlyArray<string>): Json => {
-  const obfuscate = buildSensitiveWordMatcher(words)?.obfuscate;
+/** `AntigravityExecutor.obfuscateSensitiveWordsDoc`: the configured words and replacements in the system instruction. */
+const applyAntigravitySensitiveWords = (body: Json, config: Config): Json => {
+  const settings = config.oauth.providers.antigravity;
 
-  if (obfuscate === undefined) return body;
+  const matcher = buildAntigravitySensitiveWordMatcher({
+    words: settings["sensitive-words"],
+    replacements: settings["sensitive-words-replace"],
+    patterns: settings["sensitive-patterns-replace"],
+  });
 
-  for (const path of ["request.systemInstruction", "request.system_instruction"]) {
-    const instruction = get(body, path);
-
-    if (instruction === undefined) continue;
-
-    if (typeof instruction === "string") {
-      const text = obfuscate(instruction);
-
-      if (text !== instruction) set(body, path, text);
-      continue;
-    }
-
-    const parts = get(instruction, "parts");
-
-    if (!isJsonArray(parts)) continue;
-
-    for (const part of parts) {
-      if (!isJsonObject(part) || typeof part["text"] !== "string") continue;
-      const text = obfuscate(part["text"]);
-
-      if (text !== part["text"]) part["text"] = text;
-    }
-  }
-
-  return body;
+  return matcher === undefined ? body : obfuscateSystemInstruction(body, matcher);
 };

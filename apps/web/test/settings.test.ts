@@ -25,6 +25,7 @@ import {
   rebaseDraft,
   draftSave,
   saveDraft,
+  sameValue,
   type FieldSpec,
   spellDuration,
   valueAt,
@@ -93,11 +94,17 @@ const DEFAULTS: SettingsValues = {
       codex: { "header-defaults": { "user-agent": "", "beta-features": "" } },
       antigravity: {
         "sensitive-words": [],
+        "sensitive-words-replace": {},
+        "sensitive-patterns-replace": [],
         "antigravity-credits": false,
         "signature-cache-enabled": null,
         "signature-bypass-strict": null,
       },
-      devin: { "sensitive-words": [] },
+      devin: {
+        "sensitive-words": [],
+        "sensitive-words-replace": {},
+        "sensitive-patterns-replace": [],
+      },
       claude: { "oauth-include-create-api-key": true },
     },
   },
@@ -221,6 +228,54 @@ describe("inputs and checks", () => {
     expect(parseInput(words, "proxy\n  API \n")).toEqual({ ok: true, value: ["proxy", "API"] });
   });
 
+  it("edits word and pattern replacements as one rule per line", () => {
+    const words = spec("oauth.providers.antigravity.sensitive-words-replace");
+
+    expect(inputOf(words, { "Claude Code": "Claude", secret: "" })).toBe(
+      "Claude Code => Claude\nsecret =>",
+    );
+    expect(parseInput(words, " Claude Code =>  Claude \n\nsecret =>\nproxy")).toEqual({
+      ok: true,
+      value: { "Claude Code": "Claude", secret: "", proxy: "" },
+    });
+    // The first `=>` splits the rule, whatever the spacing.
+    expect(parseInput(words, "foo=>bar\nx => y => z")).toEqual({
+      ok: true,
+      value: { foo: "bar", x: "y => z" },
+    });
+    expect(parseInput(words, "a => 1\na => 2").ok).toBe(false);
+    expect(parseInput(words, " => x").ok).toBe(false);
+
+    const patterns = spec("oauth.providers.devin.sensitive-patterns-replace");
+
+    const stored = [
+      { pattern: "(?m)^RFC 2119[^\\n]*\\n?" },
+      { pattern: "a(\\d)=\\x3Eb", replacement: "$1" },
+    ];
+
+    expect(inputOf(patterns, stored)).toBe("(?m)^RFC 2119[^\\n]*\\n? =>\na(\\d)=\\x3Eb => $1");
+    expect(parseInput(patterns, inputOf(patterns, stored))).toEqual({
+      ok: true,
+      value: [
+        { pattern: "(?m)^RFC 2119[^\\n]*\\n?", replacement: "" },
+        { pattern: "a(\\d)=\\x3Eb", replacement: "$1" },
+      ],
+    });
+    // A rule without a replacement deletes, like an empty one: shown again, it is no change.
+    expect(
+      sameValue(patterns, stored, [
+        { pattern: "(?m)^RFC 2119[^\\n]*\\n?", replacement: "" },
+        { pattern: "a(\\d)=\\x3Eb", replacement: "$1" },
+      ]),
+    ).toBe(true);
+    expect(parseInput(patterns, "foo=>bar")).toEqual({
+      ok: true,
+      value: [{ pattern: "foo", replacement: "bar" }],
+    });
+    expect(sameValue(words, { a: "1", b: "2" }, { b: "2", a: "1" })).toBe(true);
+    expect(sameValue(words, { a: "1" }, { a: "2" })).toBe(false);
+  });
+
   it("maps catalog sources to a choice and back", () => {
     const catalog = spec("models.catalog");
 
@@ -305,6 +360,10 @@ describe("inputs and checks", () => {
     expect(valueText(spec("upstream.claude.cloak-level"), "minimal")).toBe("minimal");
     expect(valueText(spec("oauth.providers.devin.sensitive-words"), [])).toBe("none");
     expect(valueText(spec("oauth.providers.devin.sensitive-words"), ["a", "b"])).toBe("a, b");
+    expect(valueText(spec("oauth.providers.devin.sensitive-words-replace"), {})).toBe("none");
+    expect(
+      valueText(spec("oauth.providers.devin.sensitive-patterns-replace"), [{ pattern: "x" }]),
+    ).toBe("1 rule");
     expect(valueText(spec("routing.cooldown.transient-error-cooldown-seconds"), 0)).toBe("60 s");
     expect(valueText(spec("models.catalog"), "embed")).toBe("embedded copy");
     expect(valueText(spec("multimedia.gpt-image-2-base-model"), "")).toBe("empty");

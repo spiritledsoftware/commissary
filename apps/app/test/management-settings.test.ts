@@ -308,6 +308,23 @@ describe("management settings", () => {
         { upstream: { claude: { "header-defaults": { "native-entrypoints": [" T3-Code "] } } } },
         "upstream.claude.header-defaults.native-entrypoints",
       ],
+      // A pattern RE2 rejects (look-behind), and a blank one.
+      [
+        {
+          oauth: {
+            providers: {
+              antigravity: {
+                "sensitive-patterns-replace": [{ pattern: "(?<=a)b", replacement: "" }],
+              },
+            },
+          },
+        },
+        "oauth.providers.antigravity.sensitive-patterns-replace",
+      ],
+      [
+        { oauth: { providers: { devin: { "sensitive-patterns-replace": [{ pattern: " " }] } } } },
+        "oauth.providers.devin.sensitive-patterns-replace",
+      ],
     ];
 
     for (const [patch, path] of cases) {
@@ -336,6 +353,19 @@ describe("management settings", () => {
       { routing: { cooldown: { "transient-error-cooldown-seconds": -1 } } },
       { upstream: { claude: { "cloak-level": "minimal" } } },
       { upstream: { claude: { "header-defaults": { "native-entrypoints": ["t3-code"] } } } },
+      {
+        oauth: {
+          providers: {
+            antigravity: {
+              "sensitive-words-replace": { "Claude Code": "Claude", secret: "" },
+              "sensitive-patterns-replace": [
+                { pattern: "(?m)^RFC 2119[^\\n]*\\n?", replacement: "" },
+                { pattern: "secret-(\\d+)", replacement: "[$1]" },
+              ],
+            },
+          },
+        },
+      },
     ] satisfies Json[]) {
       const saved = await save(patch);
 
@@ -351,6 +381,26 @@ describe("management settings", () => {
     expect(view.values.upstream.claude["header-defaults"]["native-entrypoints"]).toEqual([
       "t3-code",
     ]);
+    expect(view.values.oauth.providers.antigravity["sensitive-words-replace"]).toEqual({
+      "Claude Code": "Claude",
+      secret: "",
+    });
+    expect(view.values.oauth.providers.antigravity["sensitive-patterns-replace"]).toEqual([
+      { pattern: "(?m)^RFC 2119[^\\n]*\\n?", replacement: "" },
+      { pattern: "secret-(\\d+)", replacement: "[$1]" },
+    ]);
+    expect(view.defaults.oauth.providers.devin["sensitive-patterns-replace"]).toEqual([]);
+  });
+
+  it("stores replacement targets trimmed, blank ones dropped, as the config does", async () => {
+    const saved = await save({
+      oauth: { providers: { devin: { "sensitive-words-replace": { " Codex ": "x", "  ": "y" } } } },
+    });
+
+    expect(saved.status).toBe(200);
+    expect((await getView()).values.oauth.providers.devin["sensitive-words-replace"]).toEqual({
+      Codex: "x",
+    });
   });
 
   it("refuses bodies without revisions or patch object", async () => {

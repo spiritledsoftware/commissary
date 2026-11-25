@@ -191,7 +191,7 @@ const Lines = ({ spec, input, error, disabled, extra, onChange }: FieldProps) =>
       </label>
       <textarea
         id={id}
-        className={`${kit["input"]} ${styles["lines"]}`}
+        className={`${kit["input"]} ${styles["lines"]} ${spec.kind === "patterns" ? styles["code"] : ""}`}
         rows={Math.min(8, Math.max(3, textOf(input).split("\n").length + 1))}
         spellCheck={false}
         autoComplete="off"
@@ -278,6 +278,8 @@ const control = (props: FieldProps): ReactNode => {
     case "tristate":
       return <Flag {...props} />;
     case "words":
+    case "replacements":
+    case "patterns":
       return <Lines {...props} />;
     case "choice":
     case "images":

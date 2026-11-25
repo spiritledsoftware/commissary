@@ -25,6 +25,8 @@ import {
   OPENCODE_PROTOCOLS,
   OpenCodeProtocol,
   RequestScopedErrorRule,
+  SensitivePatternRule,
+  SensitiveWordsReplace,
   ThinkingSupport,
 } from "@commissary/contract/provider-keys";
 import {
@@ -55,6 +57,8 @@ const list = <S extends Schema.Constraint>(item: S) =>
 const optional = Schema.optionalKey;
 
 const Strings = Schema.Array(Schema.String);
+
+const replacements = SensitiveWordsReplace.pipe(Schema.withDecodingDefaultKey(Effect.succeed({})));
 
 // --- shared pieces -------------------------------------------------------------------------------------------------
 
@@ -228,14 +232,20 @@ const oauth = section({
       }),
     }),
     antigravity: section({
+      /** Obfuscated with U+034F in the system instruction. */
       "sensitive-words": list(Schema.String),
+      "sensitive-words-replace": replacements,
+      "sensitive-patterns-replace": list(SensitivePatternRule),
       "antigravity-credits": flag(false),
       /** Go pointer: missing means enabled. */
       "signature-cache-enabled": optional(Schema.Boolean),
       "signature-bypass-strict": optional(Schema.Boolean),
     }),
     devin: section({
+      /** Lines of the system prompt holding one are dropped. */
       "sensitive-words": list(Schema.String),
+      "sensitive-words-replace": replacements,
+      "sensitive-patterns-replace": list(SensitivePatternRule),
     }),
     claude: section({
       /** New logins also ask for `org:create_api_key`, like native Claude Code (CLIProxyAPI d0ee9ca7). */
