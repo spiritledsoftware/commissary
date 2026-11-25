@@ -56,6 +56,42 @@ interface ToolSlot {
   invalidArgs: string;
 }
 
+/**
+ * `HasPatchActivity` (Go `DevinApplyPatchDiagnostics`): whether a tool call without a name, or one of the declared
+ * apply_patch tool, was observed. Only then is an abnormal end the sanitised apply_patch failure.
+ */
+class PatchActivity {
+  readonly #names: string[] = [];
+  readonly #byId = new Map<string, number>();
+  #last = -1;
+
+  constructor(readonly tool: DevinApplyPatchTool | undefined) {}
+
+  observe(call: DevinToolCallDelta): void {
+    if (this.tool?.requested !== true) return;
+    const id = encodeToolCallId(call.id);
+    let key = id === "" ? this.#last : (this.#byId.get(id) ?? -1);
+
+    if (key < 0) {
+      if (this.#names.length >= MAX_DEVIN_TOOL_CALLS) return;
+      key = this.#names.length;
+      this.#names.push("");
+
+      if (id !== "") this.#byId.set(id, key);
+    }
+
+    this.#last = key;
+
+    if (call.name !== "") this.#names[key] = call.name;
+  }
+
+  get observed(): boolean {
+    const tool = this.tool;
+
+    return tool !== undefined && this.#names.some((name) => name === "" || tool.isTool(name));
+  }
+}
+
 /** Streaming TextDecoder per text kind: multi-byte characters split across frames are re-joined (`UTF8SplitBuffer`). */
 class Utf8Stream {
   readonly #decoder = new TextDecoder();
@@ -119,6 +155,9 @@ export class DevinStreamAssembler {
   #signatureType = "";
   #postToolContent: string[] = [];
   #sawEos = false;
+  /** Text, thinking, a signature or a tool call arrived (Go `hasGeneratedOutput`). */
+  #generated = false;
+  readonly #patchActivity: PatchActivity;
   readonly #applyPatch: DevinApplyPatchTool | undefined;
 
   constructor(
@@ -129,6 +168,7 @@ export class DevinStreamAssembler {
   ) {
     this.interactionId = interactionId;
     this.#applyPatch = applyPatch;
+    this.#patchActivity = new PatchActivity(applyPatch);
   }
 
   /** Text may stream independently of queued thoughts/tools only for OpenAI formats. */
@@ -142,6 +182,21 @@ export class DevinStreamAssembler {
 
   get sawEos(): boolean {
     return this.#sawEos;
+  }
+
+  /** Text, thinking, a signature or a tool call arrived. */
+  get generatedOutput(): boolean {
+    return this.#generated;
+  }
+
+  /** The last non-zero stop reason of the stream. */
+  get lastStopReason(): number {
+    return this.#lastStopReason;
+  }
+
+  /** A tool call of the declared apply_patch tool (or one without a name) was observed. */
+  get patchActivity(): boolean {
+    return this.#patchActivity.observed;
   }
 
   /** Whether any event was emitted (used to decide if a failure still reaches the client as a stream failure). */
@@ -392,6 +447,17 @@ export class DevinStreamAssembler {
     if (frame.stopReason !== 0) this.#lastStopReason = frame.stopReason;
     this.#usage = foldUsage(this.#usage, frame);
 
+    if (
+      frame.content.length > 0 ||
+      frame.thinking.length > 0 ||
+      frame.deltaSignature.length > 0 ||
+      frame.toolCalls.length > 0
+    ) {
+      this.#generated = true;
+    }
+
+    for (const call of frame.toolCalls) this.#patchActivity.observe(call);
+
     if (frame.thinking.length > 0) {
       if (this.#pending.length > 0) this.#flushPending();
       const chunk = this.#thinking.feed(frame.thinking);
@@ -540,8 +606,14 @@ export class DevinStreamAssembler {
     return this.#drain();
   }
 
-  /** The body could not be read to the end (`stream_read_error`) or ended without EOS (`stream_truncated`). */
-  abort(code: "stream_read_error" | "stream_truncated", message: string): string[] {
+  /**
+   * The body could not be read to the end (`stream_read_error`), ended without EOS (`stream_truncated`) or ended cleanly
+   * without any output (`empty_completion`).
+   */
+  abort(
+    code: "stream_read_error" | "stream_truncated" | "empty_completion",
+    message: string,
+  ): string[] {
     this.#closeOpenSteps();
     this.#emit({ event_type: "response.failed", error: { message, code } });
 
@@ -604,7 +676,11 @@ const concat = (parts: ReadonlyArray<Uint8Array>): string => {
 
 /** `consumeDevinFramesToInteractions` over already decoded frames (the caller validated the trailer). */
 export class DevinAggregator {
-  constructor(readonly applyPatch?: DevinApplyPatchTool) {}
+  readonly #patchActivity: PatchActivity;
+
+  constructor(readonly applyPatch?: DevinApplyPatchTool) {
+    this.#patchActivity = new PatchActivity(applyPatch);
+  }
 
   #thinking: Uint8Array[] = [];
   #signature: Uint8Array[] = [];
@@ -622,6 +698,27 @@ export class DevinAggregator {
     return this.#usage;
   }
 
+  /** Text, thinking, a signature or a tool call arrived. */
+  get generatedOutput(): boolean {
+    return (
+      this.#preText.length > 0 ||
+      this.#postText.length > 0 ||
+      this.#thinking.length > 0 ||
+      this.#signature.length > 0 ||
+      this.#tools.length > 0
+    );
+  }
+
+  /** The last non-zero stop reason. */
+  get lastStopReason(): number {
+    return this.#lastStopReason;
+  }
+
+  /** A tool call of the declared apply_patch tool (or one without a name) was observed. */
+  get patchActivity(): boolean {
+    return this.#patchActivity.observed;
+  }
+
   push(frame: DevinFrame): void {
     if (frame.stopReason !== 0) this.#lastStopReason = frame.stopReason;
 
@@ -635,6 +732,7 @@ export class DevinAggregator {
     if (frame.thinking.length > 0) this.#thinking.push(frame.thinking);
 
     for (const call of frame.toolCalls) {
+      this.#patchActivity.observe(call);
       const chunk = call.arguments !== "" ? call.arguments : call.invalidJsonStr;
       let index = -1;
 

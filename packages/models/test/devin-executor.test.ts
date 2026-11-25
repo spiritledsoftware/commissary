@@ -19,6 +19,7 @@ import {
   json,
   options,
   type Responder,
+  runFail,
 } from "./support/executor-run.ts";
 import fixtures from "./fixtures/devin.json";
 
@@ -45,6 +46,13 @@ const framesResponse = (frames: ReadonlyArray<{ flag: number; hex: string }>): R
       headers: { "content-type": "application/connect+proto" },
     },
   );
+
+/** A short answer ("ok", content field 3) and the EOS trailer: a clean end without output is an empty completion. */
+const okResponse = (): Response =>
+  framesResponse([
+    { flag: 0, hex: "1a026f6b" },
+    { flag: 2, hex: "7b7d" },
+  ]);
 
 const devinCredential = (baseUrl = "https://devin.test") =>
   credential("devin", {
@@ -213,11 +221,7 @@ describe("Devin executor behaviour", () => {
   it("applies payload rules to the protobuf business fields as the last mutation", async () => {
     const yaml = `payload:\n  override:\n    - models: [{ name: "swe-2*", protocol: devin }]\n      params:\n        system_prompt: OVERRIDDEN\n        completion_config.temperature: 0.25\n  default:\n    - models: [{ name: "swe-2*", protocol: devin }]\n      params:\n        completion_config.top_k: 7\n`;
 
-    const h = await harness(
-      devinCredential(),
-      () => framesResponse([{ flag: 2, hex: "7b7d" }]),
-      yaml,
-    );
+    const h = await harness(devinCredential(), () => okResponse(), yaml);
 
     await execute(executor, h, request("swe-2", hi), interactionsOptions(false));
 
@@ -237,7 +241,7 @@ describe("Devin executor behaviour", () => {
     const payload =
       '{"generation_config":{"max_output_tokens":9999999},"input":[{"type":"user_input","content":"hi"}]}';
 
-    const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+    const h = await harness(devinCredential(), () => okResponse());
     await execute(executor, h, request("claude-opus-4-6", payload), interactionsOptions(false));
 
     const view = devinPayloadView((h.calls[0] as { bytes: Uint8Array }).bytes.subarray(5)) as {
@@ -247,9 +251,7 @@ describe("Devin executor behaviour", () => {
     expect(view.completion_config.max_tokens).toBeGreaterThan(0);
     expect(view.completion_config.max_tokens).toBeLessThan(9_999_999);
 
-    const unclamped = await harness(devinCredential(), () =>
-      framesResponse([{ flag: 2, hex: "7b7d" }]),
-    );
+    const unclamped = await harness(devinCredential(), () => okResponse());
 
     await execute(
       makeDevinExecutor(),
@@ -339,7 +341,7 @@ describe("Devin executor behaviour", () => {
 
   it("derives a stable session UUID from non-UUID session ids and reuses it as cascade id", async () => {
     const payload = '{"session_id":"conv:abc","input":[{"type":"user_input","content":"hi"}]}';
-    const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+    const h = await harness(devinCredential(), () => okResponse());
     await execute(executor, h, request("swe-2", payload), interactionsOptions(false));
 
     const view = devinPayloadView((h.calls[0] as { bytes: Uint8Array }).bytes.subarray(5)) as {
@@ -355,7 +357,7 @@ describe("Devin executor behaviour", () => {
 const system = (effort: string) => ({ role: "system", content: [], output_config: { effort } });
 
 const claudeChatModelUid = async (requestModel: string, payload: Json): Promise<string> => {
-  const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+  const h = await harness(devinCredential(), () => okResponse());
 
   await execute(
     executor,
@@ -517,7 +519,7 @@ describe("Devin tool descriptions (CLIProxyAPI e25b7daf)", () => {
       input: "Reply with exactly: OK",
     };
 
-    const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+    const h = await harness(devinCredential(), () => okResponse());
 
     await execute(
       executor,
@@ -737,7 +739,7 @@ describe("Devin tool call ids (CLIProxyAPI e9c8769a)", () => {
       ],
     });
 
-    const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+    const h = await harness(devinCredential(), () => okResponse());
     await execute(executor, h, request("swe-2", history), interactionsOptions(false));
 
     const sent = JSON.stringify(
@@ -747,6 +749,105 @@ describe("Devin tool call ids (CLIProxyAPI e9c8769a)", () => {
     for (const id of NATIVE) expect(sent).toContain(`"${id}"`);
     expect(sent).not.toContain("cpa_tid_v1_V3JpdGU6MSNhYmM");
     expect(sent).not.toContain("cpa_tid_v1_Y3BhX3RpZF92MV9ZMkZzYkY4eA");
+  });
+});
+
+describe("Devin empty completions and dropped streams (CLIProxyAPI a9e3ddcf)", () => {
+  const hi =
+    '{"session_id":"77777777-7777-4777-8777-777777777777","input":[{"type":"user_input","content":"hi"}]}';
+
+  const textFrame = (text: string): Uint8Array =>
+    envelope(0, new ProtoWriter().bytes(3, new TextEncoder().encode(text)).toBytes());
+
+  const stopFrame = (reason: number): Uint8Array =>
+    envelope(0, new ProtoWriter().varint(5, reason).toBytes());
+
+  const nonStream = async (response: () => Response) => {
+    const h = await harness(devinCredential(), response);
+
+    const error = await runFail(
+      executor.execute(h.context, request("swe-2", hi), interactionsOptions(false)),
+      h.layers,
+    );
+
+    return { error, record: h.usage.finish(0) };
+  };
+
+  const stream = async (response: () => Response) => {
+    const h = await harness(devinCredential(), response, undefined, true);
+
+    const collected = await collectStream(
+      executor,
+      h,
+      request("swe-2", hi),
+      interactionsOptions(true),
+    );
+
+    return { collected, record: h.usage.finish(0) };
+  };
+
+  it("fails over on a clean end without output, cooling no credential", async () => {
+    const message = "devin upstream returned an empty completion (0 output tokens)";
+
+    for (const response of [
+      () => frames(eosTrailer()),
+      () => frames(usageFrame({ prompt: 5, completion: 0 }), eosTrailer()),
+    ]) {
+      const { error, record } = await nonStream(response);
+      expect(error).toMatchObject({ status: 502, code: "transient_transport", message });
+      expect(record?.failed).toBe(true);
+
+      const streamed = await stream(response);
+      expect(streamed.collected.error).toMatchObject({ status: 502, code: "transient_transport" });
+      expect(streamed.collected.chunks.join("")).not.toContain("interaction.completed");
+    }
+  });
+
+  it("keeps a clean end with stop reason 11 or counted output tokens", async () => {
+    for (const response of [
+      () => frames(stopFrame(11), eosTrailer()),
+      () => frames(usageFrame({ prompt: 5, completion: 2 }), eosTrailer()),
+    ]) {
+      const h = await harness(devinCredential(), response);
+      await execute(executor, h, request("swe-2", hi), interactionsOptions(false));
+    }
+  });
+
+  it("retries a drop before any output and marks a drop after some as truncated", async () => {
+    const message = "devin stream terminated prematurely before EOS trailer";
+
+    expect(
+      (await nonStream(() => frames(usageFrame({ prompt: 5, completion: 0 })))).error,
+    ).toMatchObject({
+      status: 502,
+      code: "transient_transport",
+    });
+    expect((await nonStream(() => frames(textFrame("cut")))).error).toMatchObject({
+      status: 502,
+      code: "stream_truncated",
+    });
+
+    const before = await stream(() => frames(usageFrame({ prompt: 5, completion: 0 })));
+    expect(before.collected.error).toMatchObject({
+      status: 502,
+      code: "transient_transport",
+      message,
+    });
+
+    const after = await stream(() => frames(textFrame("cut")));
+    expect(after.collected.error).toMatchObject({ status: 502, code: "stream_truncated", message });
+  });
+
+  it("records the usage counted before a failure", async () => {
+    const counters = { prompt: 7, completion: 3 };
+    const { record } = await nonStream(() => frames(textFrame("cut"), usageFrame(counters)));
+    expect(record).toMatchObject({ failed: true, detail: { inputTokens: 7, outputTokens: 3 } });
+
+    const streamed = await stream(() => frames(textFrame("cut"), usageFrame(counters)));
+    expect(streamed.record).toMatchObject({
+      failed: true,
+      detail: { inputTokens: 7, outputTokens: 3 },
+    });
   });
 });
 

@@ -16,7 +16,7 @@
  * Not ported: request/response debug logs and outbound proxies. `fetch` always sends a User-Agent
  * (native devin-cli omits it); the executor sets it empty and relies on the runtime to drop it.
  */
-import { Clock, Effect, Stream } from "effect";
+import { Clock, Effect, Exit, Stream } from "effect";
 import { HttpClient, type HttpClientError, HttpClientRequest } from "effect/http";
 import { asString, cloneJson, get, type Json, tryParseJson } from "@commissary/json";
 import {
@@ -28,6 +28,7 @@ import {
 import { Formats } from "@commissary/translation/formats";
 import { type UsageDetail } from "../../usage/record.ts";
 import { buildSensitiveWordMatcher } from "../claude/cloaking.ts";
+import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 import { ExecutionError } from "../errors.ts";
 import {
   applyPatchGatewayError,
@@ -102,7 +103,30 @@ const transportError = (error: HttpClientError.HttpClientError) =>
     cause: error,
   });
 
-const readError = (message: string) => new ExecutionError({ status: 502, message });
+const EMPTY_COMPLETION = "devin upstream returned an empty completion (0 output tokens)";
+
+/**
+ * A stream that failed before any output (Go `devinTransientStreamError`) is a transient transport failure: the
+ * Conductor rotates to another credential and cools none. One that failed mid-generation (Go
+ * `devinTruncatedStreamError`) is truncated: no cooldown and no replay of an accepted generation.
+ */
+const devinStreamFailure = (message: string, preOutput: boolean) =>
+  new ExecutionError({
+    status: 502,
+    message,
+    code: preOutput ? ErrorCode.transientTransport : ErrorCode.streamTruncated,
+  });
+
+/** Nothing was generated and no output token counted (Go `hasGeneratedOutput` and `CompletionTokens`). */
+const noOutput = (generated: boolean, usage: DevinUsage | undefined): boolean =>
+  !generated && (usage === undefined || usage.completionTokens === 0);
+
+/** `isDevinEmptyCompletion`: a clean end with no output, unless the stop reason is 11. */
+const isEmptyCompletion = (
+  generated: boolean,
+  stopReason: number,
+  usage: DevinUsage | undefined,
+): boolean => stopReason !== 11 && noOutput(generated, usage);
 
 /** `RestoreDevinToolCallIDs`: decodes the ids of the history's calls and results in place. */
 const restoreToolCallIds = (prompts: ReadonlyArray<DevinPrompt>): void => {
@@ -398,17 +422,28 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const original = options.originalRequest ?? request.payload;
     const patchRequested = applyPatchRequested(original);
 
+    const aggregator = new DevinAggregator(applyPatchToolOf(original));
+
+    // Go: a consume failure is the sanitised gateway error only once apply_patch activity was observed. The failure
+    // keeps the partial usage counted so far (`publishDevinUsageFailure`).
     const consumeFailure = (error: ExecutionError) => {
-      const failure = patchRequested ? applyPatchGatewayError() : error;
-      context.usage.fail(failure.status, failure.message);
+      const failure = patchRequested && aggregator.patchActivity ? applyPatchGatewayError() : error;
+
+      if (aggregator.usage !== undefined) context.usage.publish(devinUsageDetail(aggregator.usage));
+      context.usage.fail(failure.status, failure.message, failure.code);
 
       return failure;
     };
 
-    const aggregator = new DevinAggregator(applyPatchToolOf(original));
+    /** A read failure before any output is transient; after some, the generation was truncated. */
+    const streamFailure = (message: string) =>
+      devinStreamFailure(message, noOutput(aggregator.generatedOutput, aggregator.usage));
+
     yield* Effect.gen(function* () {
       const body = yield* response.arrayBuffer.pipe(
-        Effect.mapError((error) => readError(`devin upstream read failed: ${error.reason._tag}`)),
+        Effect.mapError((error) =>
+          streamFailure(`devin upstream stream read error: ${error.reason._tag}`),
+        ),
       );
 
       const parser = new ConnectFrameParser();
@@ -417,13 +452,13 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       const frames = yield* Effect.try({
         try: () => parser.push(new Uint8Array(body)),
         catch: (error) =>
-          readError(error instanceof ConnectFrameError ? error.message : String(error)),
+          streamFailure(error instanceof ConnectFrameError ? error.message : String(error)),
       });
 
       for (const frame of frames) {
         const payload = yield* Effect.tryPromise({
           try: () => inflateFrame(frame),
-          catch: (error) => readError(error instanceof Error ? error.message : String(error)),
+          catch: (error) => streamFailure(error instanceof Error ? error.message : String(error)),
         });
 
         if ((frame.flag & CONNECT_FLAG_END_STREAM) !== 0) {
@@ -450,7 +485,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       }
 
       if (!sawEos) {
-        return yield* readError(
+        return yield* streamFailure(
           parser.pending > 0
             ? "unexpected EOF"
             : "devin upstream stream terminated prematurely before EOS trailer",
@@ -462,6 +497,13 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     // A tool call whose arguments never became valid JSON is a corrupt patch when it is the declared apply_patch tool.
     if (aggregate.invalidJsonToolNames.some((name) => isApplyPatchUpstreamTool(original, name))) {
       return yield* consumeFailure(applyPatchGatewayError());
+    }
+
+    // A clean end without any output is a dead upstream slot: fail over (Go `isDevinEmptyCompletion`).
+    if (
+      isEmptyCompletion(aggregator.generatedOutput, aggregator.lastStopReason, aggregator.usage)
+    ) {
+      return yield* consumeFailure(devinStreamFailure(EMPTY_COMPLETION, true));
     }
 
     if (aggregate.usage?.modelName !== undefined && aggregate.usage.modelName !== "") {
@@ -531,6 +573,22 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
               };
             }
 
+            // A clean end without any output is a dead upstream slot: fail over (Go `isDevinEmptyCompletion`).
+            if (
+              isEmptyCompletion(
+                this.assembler.generatedOutput,
+                this.assembler.lastStopReason,
+                this.assembler.usage,
+              )
+            ) {
+              return {
+                events,
+                failureEvents: this.assembler.abort("empty_completion", EMPTY_COMPLETION),
+                error: devinStreamFailure(EMPTY_COMPLETION, true),
+                stop: true,
+              };
+            }
+
             events.push(...this.assembler.complete());
 
             return { events, done: true, stop: true };
@@ -554,9 +612,17 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return {
         events,
         failureEvents: this.assembler.abort("stream_read_error", message),
-        error: readError(message),
+        error: devinStreamFailure(`devin upstream stream read error: ${message}`, this.#preOutput),
         stop: true,
       };
+    }
+
+    /** Nothing reached the client and nothing was generated (Go `!createdSent && !hasGeneratedOutput`). */
+    get #preOutput(): boolean {
+      return (
+        !this.assembler.createdSent &&
+        noOutput(this.assembler.generatedOutput, this.assembler.usage)
+      );
     }
 
     /** Clean EOF before the EOS trailer. */
@@ -569,7 +635,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return {
         events: [],
         failureEvents: this.assembler.abort("stream_truncated", TRUNCATED_STREAM),
-        error: readError(TRUNCATED_STREAM),
+        error: devinStreamFailure(TRUNCATED_STREAM, this.#preOutput),
         stop: true,
       };
     }
@@ -626,6 +692,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
           const type = asString(get(event, "event_type"));
 
           if (type === "interaction.completed") {
+            completed = true;
             const usage = state.assembler.usage;
             context.usage.publish(devinUsageDetail(usage));
 
@@ -640,8 +707,12 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       frame(step.events);
 
       if (step.failureEvents !== undefined && translation.state.toolInputError === undefined) {
-        // `EndApplyPatchStream`: a patch-enabled stream that ends abnormally fails with the one translated frame.
-        const ended = endApplyPatchStream(translation.state);
+        // `EndApplyPatchStream`: a patch-enabled stream that ends abnormally after apply_patch activity fails with the
+        // one translated frame.
+        const ended = state.assembler.patchActivity
+          ? endApplyPatchStream(translation.state)
+          : { chunks: [], failed: false };
+
         chunks.push(...ended.chunks);
 
         if (!ended.failed) frame(step.failureEvents);
@@ -664,6 +735,15 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return step.error === undefined ? emitted : Stream.concat(emitted, Stream.fail(step.error));
     };
 
+    let completed = false;
+
+    /** `publishDevinUsageFailure`: a failed or canceled stream keeps the usage counted so far. */
+    const publishPartialUsage = () => {
+      const usage = state.assembler.usage;
+
+      if (!completed && usage !== undefined) context.usage.publish(devinUsageDetail(usage));
+    };
+
     const chunks = response.stream.pipe(
       Stream.mapError(transportError),
       Stream.mapAccumEffect(
@@ -677,7 +757,14 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       Stream.takeUntil((step) => step.stop),
       Stream.flatMap(translate),
       Stream.tapError((error) =>
-        Effect.sync(() => context.usage.fail(error.status, error.message)),
+        Effect.sync(() => {
+          publishPartialUsage();
+          context.usage.fail(error.status, error.message, error.code);
+        }),
+      ),
+      // A canceled stream never gets a synthesised completion; its record keeps the partial usage.
+      Stream.onExit((exit) =>
+        Exit.hasInterrupts(exit) ? Effect.sync(publishPartialUsage) : Effect.void,
       ),
     );
 
