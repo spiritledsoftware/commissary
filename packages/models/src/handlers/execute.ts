@@ -187,6 +187,8 @@ const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: bool
 
   const url = new URL(input.request.url, "http://localhost");
   const headers = new Headers(input.request.headers);
+  // The handler decoded the body (`readRequestBody`): nothing downstream may decode or forward the encoding again.
+  headers.delete("content-encoding");
   const originalRequest = input.originalRequest ?? input.body;
   // System One requests (ADR 0032) have no sessions, and nothing of their state may be derived into one (ADR 0027).
   const systemOne = input.entryProtocol === EntryOnlyFormats.SystemOne;
