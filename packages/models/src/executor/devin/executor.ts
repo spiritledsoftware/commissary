@@ -16,7 +16,7 @@
  * Not ported: request/response debug logs and outbound proxies. `fetch` always sends a User-Agent
  * (native devin-cli omits it); the executor sets it empty and relies on the runtime to drop it.
  */
-import { Clock, Effect, Exit, Stream } from "effect";
+import { Clock, Effect, Stream } from "effect";
 import { HttpClient, type HttpClientError, HttpClientRequest } from "effect/http";
 import { asString, cloneJson, get, type Json, tryParseJson } from "@commissary/json";
 import {
@@ -683,7 +683,19 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return Effect.map(quotaScoped(context, error), (scoped) => ({ ...step, error: scoped }));
     };
 
+    let completed = false;
+
+    /** `publishDevinUsageFailure`: a failed or canceled stream keeps the usage counted so far. */
+    const publishPartialUsage = () => {
+      const usage = state.assembler.usage;
+
+      if (!completed && usage !== undefined) context.usage.publish(devinUsageDetail(usage));
+    };
+
     const translate = (step: StreamStep): Stream.Stream<string, ExecutionError> => {
+      // The record keeps the usage counted so far before any chunk of the step reaches the client: the handler closes
+      // the record of a canceled stream before this stream's own finalizers run (`publishDevinUsageFailure`).
+      publishPartialUsage();
       const chunks: string[] = [];
 
       const frame = (events: ReadonlyArray<string>) => {
@@ -735,15 +747,6 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return step.error === undefined ? emitted : Stream.concat(emitted, Stream.fail(step.error));
     };
 
-    let completed = false;
-
-    /** `publishDevinUsageFailure`: a failed or canceled stream keeps the usage counted so far. */
-    const publishPartialUsage = () => {
-      const usage = state.assembler.usage;
-
-      if (!completed && usage !== undefined) context.usage.publish(devinUsageDetail(usage));
-    };
-
     const chunks = response.stream.pipe(
       Stream.mapError(transportError),
       Stream.mapAccumEffect(
@@ -757,14 +760,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       Stream.takeUntil((step) => step.stop),
       Stream.flatMap(translate),
       Stream.tapError((error) =>
-        Effect.sync(() => {
-          publishPartialUsage();
-          context.usage.fail(error.status, error.message, error.code);
-        }),
-      ),
-      // A canceled stream never gets a synthesised completion; its record keeps the partial usage.
-      Stream.onExit((exit) =>
-        Exit.hasInterrupts(exit) ? Effect.sync(publishPartialUsage) : Effect.void,
+        Effect.sync(() => context.usage.fail(error.status, error.message, error.code)),
       ),
     );
 
