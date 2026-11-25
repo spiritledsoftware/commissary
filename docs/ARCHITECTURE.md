@@ -1739,7 +1739,7 @@ Deviations from Go (all deliberate, documented in code headers):
 - **Providers**: one engine (`executor/gemini/google.ts`) parameterised by a `GoogleVariant` (`targets.ts`): `gemini`
   (provider key, `x-goog-api-key`), `gemini-interactions` (same key, native `POST /v1beta/interactions` with the
   `Api-Revision` header) and `vertex` (provider key against the project-less host, or a service account against the regional
-  `projects/<id>/locations/<loc>` endpoint; Imagen models go through `:predict` with the request/response converters).
+  `projects/<id>/locations/<loc>` endpoint; Imagen models go through `:predict` with the request/response converters: a request is translated to Gemini first, then converted, a stream request reads the single JSON answer (at most 64 MiB) as one Gemini frame, and counting tokens of an Imagen model stays a Gemini `countTokens`, Go e049c336).
   Request shaping (`shaping.ts`: model/suffix handling, `maxOutputTokens` cap, content-turn splitting) and usage parsing
   (`usage.ts`: `usageMetadata`/Interactions usage with the v2 token breakdown - re-exported from `usage/parsers.ts` - and intermediate-usage filtering) follow the Go executors. Payload rules
   stay the last mutation of the body in every path (stream, count, Imagen, native Interactions).

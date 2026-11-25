@@ -159,6 +159,42 @@ const toExecutionError = (
   });
 };
 
+/** `vertexImagenMaxResponseBytes`: the bound of the single JSON response a streamed Imagen request reads (Go e049c336). */
+export const IMAGEN_MAX_RESPONSE_BYTES = 64 << 20;
+
+/** `readVertexImagenResponse`: the whole Imagen response, failing once it exceeds {@link IMAGEN_MAX_RESPONSE_BYTES}. */
+const readImagenResponse = (
+  body: Stream.Stream<Uint8Array, ExecutionError>,
+): Effect.Effect<string, ExecutionError> =>
+  Effect.suspend(() => {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+
+    return body.pipe(
+      Stream.runForEach((chunk) => {
+        size += chunk.byteLength;
+
+        if (size > IMAGEN_MAX_RESPONSE_BYTES)
+          return Effect.fail(
+            new ExecutionError({
+              status: 502,
+              message: `vertex imagen: response exceeds ${IMAGEN_MAX_RESPONSE_BYTES} bytes`,
+            }),
+          );
+        chunks.push(chunk);
+
+        return Effect.void;
+      }),
+      Effect.map(() => {
+        const decoder = new TextDecoder();
+
+        return (
+          chunks.map((chunk) => decoder.decode(chunk, { stream: true })).join("") + decoder.decode()
+        );
+      }),
+    );
+  });
+
 /** `isImagenModel`. */
 export const isImagenModel = (model: string): boolean => model.toLowerCase().includes("imagen");
 
@@ -440,13 +476,36 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;
     const stream = mode === "stream";
-    const imagen = variant.vertex && isImagenModel(baseModel);
+    // Go e049c336: an Imagen request is translated to Gemini first, then converted to the `predict` body; counting
+    // tokens of an Imagen model goes through the ordinary Gemini path.
+    const imagen = variant.vertex && isImagenModel(baseModel) && mode !== "count";
+
+    const rewrite = {
+      headers: options.headers,
+      config: context.config,
+      isCompat: modelIsCompat(request),
+    };
+
+    const translateWithReplay = (body: Json) =>
+      translating(attempt, () =>
+        translateRequestForExecutor(
+          registry,
+          from,
+          to,
+          { format: from, model: baseModel, stream, body },
+          thinking.summary,
+          rewrite,
+        ),
+      );
 
     let body: Json;
     let original: Json | undefined;
 
     if (imagen) {
-      const imagenBody = convertToImagenRequest(request.payload);
+      const translated = translateWithReplay(request.payload);
+
+      if (translated.error !== undefined) return yield* requestError(translated);
+      const imagenBody = convertToImagenRequest(translated.body);
 
       if (imagenBody === undefined) {
         return yield* new ExecutionError({
@@ -457,10 +516,10 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       }
 
       body = imagenBody;
-      original = structuredClone(imagenBody);
-
-      if (options.originalRequest !== undefined)
-        original = convertToImagenRequest(options.originalRequest) ?? original;
+      original =
+        convertToImagenRequest(
+          translateWithReplay(options.originalRequest ?? request.payload).body,
+        ) ?? structuredClone(imagenBody);
     } else {
       if (from === Formats.OpenAIResponse) {
         // Cached text signatures of the assistant messages in the history, loaded in one round trip.
@@ -472,24 +531,6 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
         yield* attempt.replay.prefetch(baseModel, history);
       }
-
-      const rewrite = {
-        headers: options.headers,
-        config: context.config,
-        isCompat: modelIsCompat(request),
-      };
-
-      const translateWithReplay = (body: Json) =>
-        translating(attempt, () =>
-          translateRequestForExecutor(
-            registry,
-            from,
-            to,
-            { format: from, model: baseModel, stream, body },
-            thinking.summary,
-            rewrite,
-          ),
-        );
 
       original = translateWithReplay(options.originalRequest ?? request.payload).body;
       const translated = translateWithReplay(request.payload);
@@ -524,11 +565,16 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     // Vertex rejects a request ending with a thought-only model turn even behind an empty user turn (ceb4397f).
     const turns = { dropThoughtOnlyTail: variant.vertex };
 
-    if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents", turns);
-    else {
-      body = ensureGeminiLeadingUserContent(body, "contents");
+    // The `predict` body has no `contents`, and a Vertex count of an Imagen model keeps its leading model turn (Go
+    // e049c336).
+    if (!imagen) {
+      if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents", turns);
+      else {
+        if (mode === "generate" || !(variant.vertex && isImagenModel(baseModel)))
+          body = ensureGeminiLeadingUserContent(body, "contents");
 
-      if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
+        if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
+      }
     }
 
     let replayScope: ReplayScope = NO_REPLAY_SCOPE;
@@ -854,7 +900,24 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
         ),
       );
 
-    const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
+    // Go e049c336: Imagen answers one JSON body even on a stream request; converted to a Gemini response, it goes
+    // through the same frame handling as one stream line.
+    const lines = prepared.imagen
+      ? Stream.fromEffect(
+          Effect.gen(function* () {
+            const text = yield* readImagenResponse(
+              response.stream.pipe(Stream.mapError(transportError)),
+            );
+
+            return convertImagenToGeminiResponse(
+              text,
+              prepared.baseModel,
+              `${yield* Clock.currentTimeMillis}000000`,
+            );
+          }),
+        )
+      : splitLines(response.stream).pipe(Stream.mapError(transportError));
+
     let sawFinish = false;
 
     /** The withheld frames, then `then`: a frame of `""` (one the usage filter emptied) is skipped. */
@@ -1039,9 +1102,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const chunks = (
       native
         ? interactionsStream(attempt, prepared, response)
-        : prepared.imagen
-          ? imagenStream(attempt, prepared, response)
-          : geminiStream(attempt, prepared, response)
+        : geminiStream(attempt, prepared, response)
     ).pipe(
       Stream.tapError((error) =>
         Effect.sync(() => context.usage.fail(error.status, error.message)),
@@ -1050,28 +1111,6 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
     return { headers: new Headers(response.headers), chunks } satisfies StreamResult;
   });
-
-  /** Imagen has no streaming: the single response is converted and translated as one chunk. */
-  const imagenStream = (
-    attempt: Attempt,
-    prepared: PreparedRequest,
-    response: HttpClientResponse.HttpClientResponse,
-  ): Stream.Stream<string, ExecutionError> =>
-    Stream.fromEffect(response.text.pipe(Effect.mapError(transportError))).pipe(
-      Stream.flatMap((text) => {
-        const data = convertImagenToGeminiResponse(text, prepared.baseModel, `${Date.now()}000000`);
-        const ctx = responseContext(attempt, prepared);
-        const responseFormat = responseFormatOf(attempt.options);
-        const payload = jsonPayload(data) ?? data;
-
-        return Stream.fromIterable(
-          withModelInfoLookup(attempt.request.modelLookup, () => [
-            ...registry.translateStream(responseFormat, prepared.providerFormat, ctx, payload),
-            ...registry.translateStream(responseFormat, prepared.providerFormat, ctx, "[DONE]"),
-          ]),
-        );
-      }),
-    );
 
   const countTokens = Effect.fnUntraced(function* (
     context: ExecutionContext,
