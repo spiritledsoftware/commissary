@@ -146,13 +146,7 @@ export const retryRoundAvailability = (
 
       if (modelState.status === "disabled") return { eligible: false, next: 0 };
 
-      const stateBlock = availabilityBlock(
-        modelState.unavailable,
-        modelState.quota.exceeded,
-        modelState.nextRetryAfter,
-        modelState.quota.nextRecoverAt,
-        now,
-      );
+      const stateBlock = availabilityBlock(modelState, now);
 
       if (!stateBlock.blocked) continue;
       matchedBlocked = true;

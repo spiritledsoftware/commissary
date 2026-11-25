@@ -94,6 +94,7 @@ describe("the terminal 429 of a cooling pool", () => {
     expect(retryAfter).toBeGreaterThan(SHORT_SECONDS - 60);
     expect(retryAfter).toBeLessThanOrEqual(SHORT_SECONDS);
 
+    // SAFETY: a Claude client's error body is `{ type: "error", error: { type, message } }` (`toClaudeError`).
     const body = (await response.json()) as { error: { type: string; message: string } };
     expect(body.error.type).toBe("rate_limit_error");
     expect(body.error.message).toMatch(/\(reset after 1h3[45]m\d+s\)$/);

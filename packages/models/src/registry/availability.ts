@@ -93,16 +93,7 @@ export const projectModel = (
   let quotaSince: number | undefined;
 
   if (modelState !== undefined) {
-    if (
-      !modelDisabled &&
-      availabilityBlock(
-        modelState.unavailable,
-        modelState.quota.exceeded,
-        modelState.nextRetryAfter,
-        modelState.quota.nextRecoverAt,
-        now,
-      ).blocked
-    ) {
+    if (!modelDisabled && availabilityBlock(modelState, now).blocked) {
       suspended = true;
       modelSuspended = true;
     }
@@ -118,16 +109,7 @@ export const projectModel = (
   }
 
   // Without model states, scheduling falls back to the credential-wide cooldown, and the projection agrees with it.
-  if (
-    Object.keys(state.modelStates).length === 0 &&
-    availabilityBlock(
-      state.unavailable,
-      state.quota.exceeded,
-      state.nextRetryAfter,
-      state.quota.nextRecoverAt,
-      now,
-    ).blocked
-  )
+  if (Object.keys(state.modelStates).length === 0 && availabilityBlock(state, now).blocked)
     suspended = true;
 
   let suspendReason = "";
