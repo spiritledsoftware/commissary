@@ -9,6 +9,7 @@ import {
   geminiReplaySignatureOrBypass,
   isGeminiThoughtSignatureBypass,
 } from "../../../signature/gemini.ts";
+import { claudeMessagesJSONToSSE } from "../../common/claude-native-response.ts";
 import { exists, isObj, str } from "../../common/gjson.ts";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 
@@ -248,19 +249,14 @@ export const convertClaudeResponseToGemini = (
     }
 
     case "message_delta": {
-      const delta = get(root, "delta");
-
-      if (exists(delta) && exists(get(delta, "stop_reason"))) {
-        candidate.finishReason =
-          str(get(delta, "stop_reason")) === "max_tokens" ? "MAX_TOKENS" : "STOP";
-      }
-
+      // A max_tokens stop stays MAX_TOKENS (5621004e); every other stop is STOP.
+      candidate.finishReason =
+        str(get(root, "delta.stop_reason")) === "max_tokens" ? "MAX_TOKENS" : "STOP";
       const usage = get(root, "usage");
 
       if (exists(usage))
         // SAFETY: the candidate/usageMetadata object was created as an object earlier in this function.
         usageMetadata(usage, out.usageMetadata as JsonObject);
-      candidate.finishReason = "STOP";
 
       return [JSON.stringify(out)];
     }
@@ -284,11 +280,84 @@ export const convertClaudeResponseToGemini = (
   }
 };
 
-/** `ConvertClaudeResponseToGeminiNonStream`: aggregates the upstream event stream into one Gemini response. */
+/** `claudeGeminiUsageTokens`: usage merged across `message_start` and `message_delta`, a later field winning. */
+class UsageTokens {
+  inputTokens = 0;
+  outputTokens = 0;
+  cacheCreationInputTokens = 0;
+  cacheReadInputTokens = 0;
+  thinkingTokens = 0;
+  hasCacheReadTokens = false;
+  hasThinkingTokens = false;
+  hasUsage = false;
+
+  merge(usage: Json | undefined): void {
+    if (!isObj(usage)) return;
+    this.hasUsage = true;
+    const input = get(usage, "input_tokens");
+
+    if (exists(input)) this.inputTokens = asInt(input);
+    const output = get(usage, "output_tokens");
+
+    if (exists(output)) this.outputTokens = asInt(output);
+    const creation = get(usage, "cache_creation_input_tokens");
+
+    if (exists(creation)) this.cacheCreationInputTokens = asInt(creation);
+    const read = get(usage, "cache_read_input_tokens");
+
+    if (exists(read)) {
+      this.cacheReadInputTokens = asInt(read);
+      this.hasCacheReadTokens = true;
+    }
+
+    const topLevelThinking = get(usage, "thinking_tokens");
+
+    const thinking = exists(topLevelThinking)
+      ? topLevelThinking
+      : get(usage, "output_tokens_details.thinking_tokens");
+
+    if (exists(thinking)) {
+      this.thinkingTokens = asInt(thinking);
+      this.hasThinkingTokens = true;
+    }
+  }
+
+  /**
+   * Gemini's usage: the prompt counts the cached input too, and the candidates exclude the thinking tokens Claude
+   * counts in its output (e36449bc).
+   */
+  metadata(): JsonObject {
+    const promptTokens =
+      this.inputTokens + this.cacheCreationInputTokens + this.cacheReadInputTokens;
+
+    const candidatesTokens = this.hasThinkingTokens
+      ? Math.max(this.outputTokens - this.thinkingTokens, 0)
+      : this.outputTokens;
+
+    const metadata: JsonObject = {
+      trafficType: "PROVISIONED_THROUGHPUT",
+      promptTokenCount: promptTokens,
+      candidatesTokenCount: candidatesTokens,
+      totalTokenCount: promptTokens + this.outputTokens,
+    };
+
+    if (this.hasCacheReadTokens) metadata.cachedContentTokenCount = this.cacheReadInputTokens;
+
+    if (this.hasThinkingTokens) metadata.thoughtsTokenCount = this.thinkingTokens;
+
+    return metadata;
+  }
+}
+
+/**
+ * `ConvertClaudeResponseToGeminiNonStream`: aggregates the upstream event stream (or a native Messages JSON body,
+ * e36449bc) into one Gemini response.
+ */
 export const convertClaudeResponseToGeminiNonStream = (
   context: ResponseContext,
-  body: string,
+  nativeBody: string,
 ): string => {
+  const [body] = claudeMessagesJSONToSSE(nativeBody);
   const candidate: JsonObject = { content: { role: "model", parts: [] }, finishReason: "STOP" };
 
   const out: JsonObject = {
@@ -301,7 +370,8 @@ export const convertClaudeResponseToGeminiNonStream = (
 
   const params = newParams(context.model);
   const allParts: JsonObject[] = [];
-  let finalUsage: JsonObject | undefined;
+  const usageTokens = new UsageTokens();
+  let finishReason = "";
   let responseId = "";
   let createdAt = 0;
 
@@ -324,6 +394,7 @@ export const convertClaudeResponseToGeminiNonStream = (
           params.model = str(get(message, "model"));
           createdAt = nowSeconds();
           params.createdAt = createdAt;
+          usageTokens.merge(get(message, "usage"));
         }
 
         break;
@@ -403,18 +474,16 @@ export const convertClaudeResponseToGeminiNonStream = (
       }
 
       case "message_delta": {
-        const usage = get(root, "usage");
+        const stopReason = str(get(root, "delta.stop_reason"));
 
-        if (exists(usage)) {
-          const target: JsonObject = {};
-          usageMetadata(usage, target);
-          finalUsage = target;
-        }
-
+        if (stopReason !== "") finishReason = stopReason === "max_tokens" ? "MAX_TOKENS" : "STOP";
+        usageTokens.merge(get(root, "usage"));
         break;
       }
     }
   }
+
+  if (finishReason !== "") candidate.finishReason = finishReason;
 
   if (responseId !== "") out.responseId = responseId;
 
@@ -425,7 +494,7 @@ export const convertClaudeResponseToGeminiNonStream = (
     // SAFETY: the candidate/usageMetadata object was created as an object earlier in this function.
     (candidate.content as JsonObject).parts = consolidated;
 
-  if (finalUsage !== undefined) out.usageMetadata = finalUsage;
+  if (usageTokens.hasUsage) out.usageMetadata = usageTokens.metadata();
 
   return JSON.stringify(out);
 };

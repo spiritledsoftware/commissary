@@ -6,7 +6,6 @@
 import { asFloat, asInt, get, type Json, type JsonObject } from "@commissary/json";
 import {
   applyTranslatedSummaryToClaude,
-  convertBudgetToLevel,
   convertLevelToBudget,
   hasLevel,
   mapToClaudeEffort,
@@ -25,7 +24,8 @@ import {
   isGeminiThoughtPart,
   normalizeGeminiTurnRole,
 } from "../../common/gemini-parts.ts";
-import { UserTurnDrops } from "../../common/parts.ts";
+import { UnsupportedPartError, UserTurnDrops } from "../../common/parts.ts";
+import { isLiteralValueKeyword, SCHEMA_NAME_MAP_KEYWORDS } from "../../common/schema-refs.ts";
 
 const first = (...values: Array<Json | undefined>): Json | undefined =>
   values.find((value) => value !== undefined);
@@ -54,6 +54,8 @@ export const convertGeminiRequestToClaude = (
   stream: boolean,
 ): Json => {
   const drops = new UserTurnDrops();
+  // A tool result whose only content was media Claude cannot take refuses the request (34d8fe0f).
+  let toolOutputRefusedType: string | undefined;
 
   const out: JsonObject = {
     model: "",
@@ -168,28 +170,18 @@ export const convertGeminiRequestToClaude = (
         if (exists(thinkingBudget)) {
           const budget = asInt(thinkingBudget);
 
-          if (supportsAdaptive) {
-            if (budget === 0) {
-              setThinking("disabled");
-              clearEffort();
-            } else if (budget === -1 && supportsDynamic) {
-              setThinking("adaptive");
-              clearEffort();
-            } else {
-              let level = convertBudgetToLevel(budget);
-
-              if (level !== undefined) {
-                if (!hasLevel(mi?.thinking?.levels, level))
-                  level = mapToClaudeEffort(level, supportsMax) ?? level;
-                setThinking("adaptive");
-                setEffort(level);
-              }
-            }
-          } else if (budget === 0) {
+          // A positive budget stays a budget for the model-aware validation after translation (a308c55b).
+          if (budget === 0) {
             setThinking("disabled");
+            clearEffort();
+          } else if (budget === -1 && supportsAdaptive) {
+            setThinking("adaptive");
+
+            if (supportsDynamic) clearEffort();
+            else setEffort("high");
           } else if (budget === -1) {
             setThinking("enabled");
-          } else {
+          } else if (budget > 0 || !supportsAdaptive) {
             const thinking = setThinking("enabled");
             thinking.budget_tokens = budget;
           }
@@ -317,14 +309,14 @@ export const convertGeminiRequestToClaude = (
               content: "",
             };
 
-            const result = get(fr, "response.result");
+            const refusedType = setToolResultContentFromGemini(
+              toolResult,
+              fr,
+              role === "assistant",
+              drops,
+            );
 
-            if (exists(result)) toolResult.content = str(result);
-            else {
-              const response = get(fr, "response");
-
-              if (exists(response)) toolResult.content = JSON.stringify(response);
-            }
+            toolOutputRefusedType ??= refusedType;
 
             contentItems.push(toolResult);
             sendable++;
@@ -413,7 +405,11 @@ export const convertGeminiRequestToClaude = (
   const result =
     applyTranslatedSummaryToClaude(out, root, "gemini", modelName, lookupModelInfo) ?? out;
 
-  const refusal = drops.err(result);
+  const refusal =
+    drops.err(result) ??
+    (toolOutputRefusedType === undefined
+      ? undefined
+      : new UnsupportedPartError(toolOutputRefusedType, result));
 
   if (refusal !== undefined) throw refusal;
 
@@ -436,6 +432,21 @@ const normalizeClaudeToolSchema = (parameters: Json): Json => {
 
 type Path = Array<string | number>;
 
+/** `isPropertyDefinition`: whether `path` names a property (an odd run of name-map keywords ends it). */
+const isPropertyDefinition = (path: Path): boolean => {
+  let trailing = 0;
+
+  for (let i = path.length - 1; i >= 0; i--) {
+    const segment = path[i];
+
+    if (typeof segment !== "string" || !SCHEMA_NAME_MAP_KEYWORDS.has(segment)) break;
+    trailing++;
+  }
+
+  return trailing % 2 === 1;
+};
+
+/** `WalkSchema` for `type`: literal values (`enum`, `const`, `default`, ...) are client data, not subschemas. */
 const collectTypePaths = (node: Json, path: Path, paths: Path[]): void => {
   const children: Array<[string | number, Json]> = isArr(node)
     ? node.map((child, index): [number, Json] => [index, child])
@@ -447,6 +458,9 @@ const collectTypePaths = (node: Json, path: Path, paths: Path[]): void => {
     const childPath = [...path, key];
 
     if (key === "type") paths.push(childPath);
+
+    if (typeof key === "string" && isLiteralValueKeyword(key) && !isPropertyDefinition(path))
+      continue;
     collectTypePaths(child, childPath, paths);
   }
 };
@@ -498,23 +512,112 @@ const setAt = (root: JsonObject, path: Path, value: Json): void => {
 };
 
 /**
- * `lowercaseClaudeToolSchemaTypes`: every `type` key (any depth) is lower-cased. Non-string values are rewritten
- * as lower-cased JSON text, exactly like the Go path-based rewrite. Each value is read from the tool as it was before
- * the rewrite (Go reads the original bytes since `6e6afab9`), so a property named `type` keeps its own lower-cased
- * `type` instead of losing it to the rewrite of its parent.
+ * `lowercaseClaudeToolSchemaTypes`: every string `type` keyword of the tool's `input_schema` is lower-cased; a
+ * non-string `type` (a property named `type`, a type list) is kept (9b4f3f30). Each value is read from the tool as it
+ * was before the rewrite (Go reads the original bytes since `6e6afab9`).
  */
 const lowercaseSchemaTypes = (tool: JsonObject): void => {
+  const schema = tool.input_schema;
+
+  if (schema === undefined) return;
   const paths: Path[] = [];
-  collectTypePaths(tool, [], paths);
+  collectTypePaths(schema, ["input_schema"], paths);
   const original = structuredClone(tool);
 
   for (const path of paths) {
     const value = getAt(original, path);
-    const lowered = str(value).toLowerCase();
 
-    if (typeof value === "string" && lowered === value) continue;
-    setAt(tool, path, lowered);
+    if (typeof value !== "string") continue;
+    const lowered = value.toLowerCase();
+
+    if (lowered !== value) setAt(tool, path, lowered);
   }
+};
+
+const isEmptyResponseObject = (value: Json | undefined): boolean =>
+  value === undefined || (isObj(value) && Object.keys(value).length === 0);
+
+/** `geminiClaudeResponseHasOnlyResultKey`. */
+const responseHasOnlyResultKey = (response: Json | undefined): boolean =>
+  isObj(response) && Object.keys(response).length === 1 && Object.hasOwn(response, "result");
+
+/**
+ * `setClaudeToolResultContentFromGemini`: a function response's nested `parts` become content blocks after its
+ * response text, relaying their media (34d8fe0f). Media Claude cannot take is dropped from a user turn; when nothing
+ * else carried the result, the request is refused: the returned part type names the dropped media.
+ */
+const setToolResultContentFromGemini = (
+  toolResult: JsonObject,
+  fr: Json,
+  isAssistant: boolean,
+  drops: UserTurnDrops,
+): string | undefined => {
+  const result = get(fr, "response.result");
+  const response = get(fr, "response");
+  const onlyResult = exists(result) && responseHasOnlyResultKey(response);
+  let baseText = "";
+  let hasBaseText = false;
+
+  if (onlyResult) {
+    baseText = str(result);
+    hasBaseText = baseText.trim() !== "";
+  } else if (!isEmptyResponseObject(response)) {
+    baseText = JSON.stringify(response);
+    hasBaseText = true;
+  }
+
+  const nestedBlocks: JsonObject[] = [];
+  let droppedType = "";
+  const frParts = get(fr, "parts");
+
+  for (const nested of isArr(frParts) ? frParts : []) {
+    const text = get(nested, "text");
+
+    if (text !== undefined) {
+      if (str(text).trim() !== "") nestedBlocks.push({ type: "text", text: str(text) });
+      continue;
+    }
+
+    const inlineData = first(get(nested, "inlineData"), get(nested, "inline_data"));
+
+    if (exists(inlineData)) {
+      const block = contentPartFromInlineData(inlineData, isAssistant);
+
+      if (block !== undefined) nestedBlocks.push(block);
+      else if (!isAssistant) {
+        if (droppedType === "") droppedType = "inlineData";
+        drops.drop("inlineData");
+      }
+
+      continue;
+    }
+
+    const fileData = first(get(nested, "fileData"), get(nested, "file_data"));
+
+    if (exists(fileData)) {
+      const block = contentPartFromFileData(fileData);
+
+      if (block !== undefined) nestedBlocks.push(block);
+      else if (!isAssistant) {
+        if (droppedType === "") droppedType = "fileData";
+        drops.drop("fileData");
+      }
+    }
+  }
+
+  if (nestedBlocks.length > 0) {
+    toolResult.content = [
+      ...(hasBaseText ? [{ type: "text", text: baseText }] : []),
+      ...nestedBlocks,
+    ];
+
+    return undefined;
+  }
+
+  if (onlyResult) toolResult.content = str(result);
+  else if (exists(response)) toolResult.content = JSON.stringify(response);
+
+  return droppedType !== "" && !hasBaseText ? droppedType : undefined;
 };
 
 const setToolChoice = (out: JsonObject, funcCalling: Json | undefined): void => {

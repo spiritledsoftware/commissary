@@ -46,7 +46,7 @@
   "executor": {
    "compat": true
   },
-  "translatedRequest": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"deep thought\",\"thought\":true,\"thoughtSignature\":\"skip_thought_signature_validator\"},{\"text\":\"unsigned thought\",\"thought\":true,\"thoughtSignature\":\"skip_thought_signature_validator\"},{\"text\":\"\",\"thought\":true,\"thoughtSignature\":\"skip_thought_signature_validator\"},{\"text\":\"answer\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"more\"}]}],\"model\":\"gemini-2.5-flash\",\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]}"
+  "translatedRequest": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"deep thought\",\"thought\":true,\"thoughtSignature\":\"skip_thought_signature_validator\"},{\"text\":\"unsigned thought\",\"thought\":true,\"thoughtSignature\":\"skip_thought_signature_validator\"},{\"text\":\"\",\"thought\":true,\"thoughtSignature\":\"skip_thought_signature_validator\"},{\"text\":\"answer\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"more\"}]}],\"model\":\"gemini-2.5-flash\",\"generationConfig\":{\"maxOutputTokens\":100},\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]}"
  },
  {
   "name": "claude -\u003e openai (compat): assistant thinking blocks",
@@ -352,7 +352,7 @@
    ]
   },
   "executor": {},
-  "translatedRequest": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"answer\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"more\"}]}],\"model\":\"gemini-2.5-flash\",\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]}"
+  "translatedRequest": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"answer\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"more\"}]}],\"model\":\"gemini-2.5-flash\",\"generationConfig\":{\"maxOutputTokens\":100},\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]}"
  },
  {
   "name": "claude -\u003e openai (plain): assistant thinking blocks",
