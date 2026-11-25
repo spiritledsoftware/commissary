@@ -28,16 +28,7 @@ import {
 } from "../helps/cloak-obfuscate.ts";
 import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 import type { Config } from "../../config/schema.ts";
-import {
-  asInt,
-  del,
-  get,
-  isJsonArray,
-  isJsonObject,
-  type Json,
-  set,
-  tryParseJson,
-} from "@commissary/json";
+import { del, get, isJsonObject, type Json, set, tryParseJson } from "@commissary/json";
 import { splitLines } from "@commissary/translation/sse";
 import { normalizeAntigravityRequest } from "@commissary/translation";
 import { fetchProjectId } from "../../oauth/flows/antigravity.ts";
