@@ -3514,7 +3514,8 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     sealed is a request-scoped 502 as well.
   - _Token counting_: `countTokens` sends the normalised request with `request.model` as `models/<id>` and no `stream`, skips the
     credits bypass, and rejects a 200 whose body is over 1 MiB of UTF-8, not a JSON object, or lacks a `totalTokens` written as
-    plain digits within the safe-integer range (`1.0` and `1e3` are rejected, as Go's integer decoding rejects them).
+    plain digits within the safe-integer range (`1.0` and `1e3` are rejected, as Go's integer decoding rejects them). Of
+    duplicate top-level `totalTokens` members the first counts, as Go reads it.
   - _Output caps_ (`envelope.ts`, Go `CapAntigravityMaxOutputTokensDoc`, `18a03e40`): without a selected variant, a request
     above the static catalog's `maxCompletionTokens` for the model is capped to it; model families match in any case.
   - _Thinking groups_ (`model-selection.ts`, Go `2f86992c`, `14a95b19`, `b8e3bc66`, the Antigravity half of `ffa55112`): the
@@ -3524,17 +3525,24 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     Interactions, `extra_body.google.thinking_config`, Gemini camel or snake case) switches the request to the
     `<group>-<level>` member when it has a positive limit and an enum and the credential's or the channel's
     `excluded-models` do not exclude it; the attempt then sends that model and enum, caps the output at its limit, applies the
-    level through the thinking pipeline, checks the short cooldown of the target and reports usage against it. Payload rules
+    level through the thinking pipeline, checks the short cooldown of the target and, once that lets the attempt through,
+    reports usage against it (a token count keeps the requested model in its usage, as in Go). Payload rules
     match the variant, the requested model and the model it was selected for (`PayloadRequest.sourceModels`, Go
     `NewPayloadFinalizerWithSourceModels`), in generation and in `countTokens`. Go keeps the
     snapshot in a KV entry of its own bound to the grant, project and endpoint; Commissary stores that binding in the cron
     record (`scope`), and a record without one (stored before it existed) or from another grant selects nothing and sends no
     enum. A request without a level keeps its model and sends that model's enum. `bfed6e89` (an unknown catalog revokes no
     models) already holds: hints without model ids never filter the list. `e9a92d25` restores Go's standalone in-memory snapshot
-    lookup, which has no counterpart: the KV record is the only snapshot.
+    lookup, which has no counterpart: the KV record is the only snapshot. The record is read only when an attempt can use it
+    (a token count without a level skips it) and is ignored above 2 MiB, as in Go. Go selects again after a token refresh
+    that changed the catalog scope (`SameAntigravityModelCatalogScope`); Commissary refreshes in the conductor
+    (`withCredentialRefresh`), which runs the whole attempt again with the refreshed credential, so the selection follows.
   - _Not ported_: Go's conductor-level check that refuses a credential whose selected variant is cooling down before the
     attempt (`CheckAntigravityTargetModel`); the executor's short-cooldown check on the target answers the same request, after
-    the pick. Connection pools and transports (`bffe6e7e`, `80fb55d8`, `d0c90bb5`) have no counterpart on Workers `fetch`; AI Studio has no
+    the pick. Without that check, a variant's result is still marked against the requested base model, where Go marks it
+    against the variant (`SetUpstreamAttemptModel`): an exhausted variant cools every level of the model on that credential.
+    This is the conservative choice. Marking the variant alone, with nothing refusing it before the pick, would keep
+    picking a credential whose variant is exhausted. Connection pools and transports (`bffe6e7e`, `80fb55d8`, `d0c90bb5`) have no counterpart on Workers `fetch`; AI Studio has no
     executor here. Go `dd0d80c8` (canonical session on the credits round) needs no change: the credits round copies the
     request's metadata.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
