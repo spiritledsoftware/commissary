@@ -7,7 +7,12 @@
  */
 import type { CredentialError, CredentialState, ModelState } from "../model.ts";
 import { hasUnauthorizedFailure } from "../selection/availability.ts";
-import { isInvalidGrant, isUnauthorized } from "./error.ts";
+import {
+  isInvalidGrant,
+  isRefreshTokenExpired,
+  isUnauthorized,
+  REFRESH_TOKEN_EXPIRED,
+} from "./error.ts";
 import {
   invalidGrantBackoffMs,
   REFRESH_FAILURE_BACKOFF_MS,
@@ -113,6 +118,44 @@ export const applyRefreshFailure = (
         statusMessage: failed.statusMessage ?? "disabled",
       },
       schedule: "reschedule",
+    };
+  }
+
+  if (isRefreshTokenExpired(input.message)) {
+    // Terminal (0bfb3d01): stop refreshing until a new login. A still valid access token keeps serving; without one the
+    // credential is unauthorized like a rejected token with an invalid grant.
+    const expired: CredentialError = {
+      code: REFRESH_TOKEN_EXPIRED,
+      message: input.message,
+      retryable: false,
+      ...(input.status === undefined ? {} : { httpStatus: input.status }),
+    };
+
+    if (input.hasValidAccessToken && !input.accessTokenRejected) {
+      return {
+        state: {
+          ...failed,
+          lastError: expired,
+          nextRefreshAfter: 0,
+          refreshFailures: 0,
+          statusMessage: "refresh token expired (sign in again)",
+        },
+        schedule: "unschedule",
+      };
+    }
+
+    return {
+      state: {
+        ...failed,
+        unavailable: true,
+        status: "error",
+        nextRefreshAfter: 0,
+        nextRetryAfter: 0,
+        refreshFailures: 0,
+        lastError: { ...expired, httpStatus: 401 },
+        statusMessage: "unauthorized (refresh token expired)",
+      },
+      schedule: "unschedule",
     };
   }
 
