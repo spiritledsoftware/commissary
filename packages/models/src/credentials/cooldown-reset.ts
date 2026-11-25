@@ -3,7 +3,8 @@
  *
  * Go source: sdk/cliproxy/auth/conductor_cooldown.go (`ResetQuota`, `clearCooldownStateForAuth`, `resetModelState`).
  * Clears the credential-level and per-model retry/quota timers and, unless the credential failed terminally with
- * HTTP 401 (needs a new login), the last error. Counters and refresh bookkeeping are kept.
+ * HTTP 401 (needs a new login) or is disabled, the last error. A disabled credential keeps its status and stays
+ * unavailable. Counters and refresh bookkeeping are kept.
  */
 import { type CredentialState, emptyQuota } from "./model.ts";
 
@@ -18,7 +19,9 @@ const terminalUnauthorized = (state: CredentialState): boolean =>
 
 export const resetCooldownState = (state: CredentialState, now: number): CooldownReset => {
   const models = Object.keys(state.modelStates).filter((key) => key.trim() !== "");
-  const keepError = terminalUnauthorized(state);
+  // A disabled credential stays disabled and unavailable: only its timers are cleared (CLIProxyAPI 29de31a8).
+  const disabled = state.status === "disabled";
+  const keepError = disabled || terminalUnauthorized(state);
   const { lastError, statusMessage, ...rest } = state;
 
   return {
@@ -28,7 +31,7 @@ export const resetCooldownState = (state: CredentialState, now: number): Cooldow
       ...(keepError && lastError !== undefined ? { lastError } : {}),
       ...(keepError && statusMessage !== undefined ? { statusMessage } : {}),
       status: keepError ? state.status : "active",
-      unavailable: false,
+      unavailable: disabled,
       nextRetryAfter: 0,
       quota: emptyQuota(),
       modelStates: {},

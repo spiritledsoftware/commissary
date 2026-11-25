@@ -325,6 +325,13 @@ const clearAggregatedAvailability = (state: Draft): void => {
 
 /** `updateAggregatedAvailability`: derives the credential-level flags from the model states. */
 export const updateAggregatedAvailability = (state: Draft, now: number): void => {
+  // A disabled credential stays unavailable whatever its models say (CLIProxyAPI 29de31a8).
+  if (state.status === "disabled") {
+    state.unavailable = true;
+
+    return;
+  }
+
   if (hasUnauthorizedFailure(state)) {
     state.unavailable = true;
 
@@ -408,7 +415,7 @@ export const updateAggregatedAvailability = (state: Draft, now: number): void =>
 };
 
 const clearStateOnSuccess = (state: Draft, now: number): void => {
-  if (hasUnauthorizedFailure(state)) {
+  if (state.status === "disabled" || hasUnauthorizedFailure(state)) {
     state.unavailable = true;
 
     return;
@@ -623,7 +630,10 @@ export const credentialCooldownActive = (state: CredentialState, now: number): b
     (state.quota.exceeded && state.quota.nextRecoverAt === 0));
 
 export interface MarkInput {
-  readonly credential: Pick<Credential, "provider" | "metadata">;
+  readonly credential: Pick<Credential, "provider" | "metadata"> & {
+    /** The credential file carries `disabled: true`. */
+    readonly disabled?: boolean;
+  };
   readonly state: CredentialState;
   readonly now: number;
   /** Cooldown state key (`canonicalModelKey`-normalised inside); empty = credential level. */
@@ -721,7 +731,13 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         sequence <= (marks.models.get(canonicalModelLookupKey(modelKey)) ?? 0));
 
   if (result.success) {
-    if (wasTerminalUnauthorized) {
+    if (input.credential.disabled === true || state.status === "disabled") {
+      // A late success of an attempt still in flight on a disabled credential resets no state (CLIProxyAPI 29de31a8).
+      // A `disabled` status (a terminal refresh failure) stays unavailable. A credential disabled only by its file
+      // is blocked by the flag and keeps its state as it was: enabling it again resets nothing, so flagging it
+      // unavailable here would strand it.
+      if (state.status === "disabled") state.unavailable = true;
+    } else if (wasTerminalUnauthorized) {
       if (modelKey !== "") {
         modelState = ensureModelState(state, modelKey);
         resetModelState(modelState, now);

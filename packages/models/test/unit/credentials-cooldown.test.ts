@@ -22,6 +22,7 @@ import {
   shouldSkipCredentialCooldown,
 } from "../../src/credentials/cooldown/classify.ts";
 import { collectQuotaSignals } from "../../src/credentials/cooldown/quota-signals.ts";
+import { resetCooldownState } from "../../src/credentials/cooldown-reset.ts";
 import { recentRequestsSnapshot } from "../../src/credentials/cooldown/recent-requests.ts";
 import type { CredentialState } from "../../src/credentials/model.ts";
 import { emptyState } from "../../src/credentials/model.ts";
@@ -532,6 +533,66 @@ describe("terminal unauthorized credentials stay blocked", () => {
     expect(failed.lastError?.httpStatus).toBe(401);
     const ok = mark(terminal, "m", { success: true });
     expect(ok.unavailable).toBe(true);
+  });
+});
+
+describe("disabled credentials stay unavailable (CLIProxyAPI 29de31a8, 35afdf07)", () => {
+  const disabled: CredentialState = {
+    ...emptyState(),
+    status: "disabled",
+    unavailable: true,
+    statusMessage: "disabled",
+    lastError: { message: "refresh failed", retryable: false },
+    modelStates: {
+      m: {
+        status: "error",
+        unavailable: true,
+        nextRetryAfter: NOW + HOUR,
+        quota: { exceeded: false, nextRecoverAt: 0, backoffLevel: 0 },
+        updatedAt: NOW,
+      },
+    },
+  };
+
+  it("a late success, on the cooled model or a sibling, resets nothing", () => {
+    for (const model of ["m", "sibling", ""]) {
+      const next = mark(disabled, model, { success: true });
+      expect(next).toMatchObject({ status: "disabled", unavailable: true, success: 1 });
+      expect(next.modelStates.m).toEqual(disabled.modelStates.m);
+      expect(next.lastError).toEqual(disabled.lastError);
+      expect(blocked(next, model, NOW)).toBe(true);
+    }
+  });
+
+  it("a credential disabled by its file keeps its state through a late success", () => {
+    const cooling = mark(emptyState(), "m", fail(429, "q", { retryAfterMs: HOUR }));
+
+    const next = markResult({
+      credential: { provider: "claude", metadata: {}, disabled: true },
+      state: cooling,
+      now: NOW + 1000,
+      model: "m",
+      result: { success: true },
+      settings: DEFAULT_COOLDOWN_SETTINGS,
+    });
+
+    expect(next.modelStates.m).toEqual(cooling.modelStates.m);
+    expect(next.unavailable).toBe(cooling.unavailable);
+  });
+
+  it("a cooldown reset clears the timers but keeps the credential disabled", () => {
+    const { state } = resetCooldownState(disabled, NOW + 1000);
+    expect(state).toMatchObject({
+      status: "disabled",
+      unavailable: true,
+      nextRetryAfter: 0,
+      modelStates: {},
+      statusMessage: "disabled",
+    });
+    expect(blocked(state, "m", NOW + 1000)).toBe(true);
+
+    const active = resetCooldownState(mark(emptyState(), "m", fail(429)), NOW + 1000).state;
+    expect(active).toMatchObject({ status: "active", unavailable: false });
   });
 });
 
