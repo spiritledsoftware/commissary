@@ -624,8 +624,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
     Commissary has no model reconciliation, inference verification or TOS-violation path, so the rest of those commits
     has nothing to apply to.
   - A live cooldown set by an explicit `force_cooldown` (`stop-and-cooldown`) outlasts later failures that write a zero
-    deadline because cooling is disabled, and keeps its error so it outlasts several (CLIProxyAPI 9d7d012b). Go tracks the
-    forced deadline in a field of its own; Commissary keeps the forced error in the persisted state instead.
+    deadline because cooling is disabled, or shorter ones, however many interleave: its deadline is persisted apart
+    (`forcedUntil` on the credential and model state, Go's `forceCooldownUntil`, CLIProxyAPI 9d7d012b) until it passes, a
+    success clears the cooldown or the management reset ends it.
   - Stale successes: every lease carries the pool's dispatch sequence (`Lease.seq`), seeded from the clock so it keeps
     rising across ControlPlane restarts. The pool remembers the sequence when each live cooldown was recorded (in memory
     only, so after a restart a restored cooldown is clearable by any success); a success whose pick predates the cooldown

@@ -497,13 +497,23 @@ describe("error table (MarkResult)", () => {
 
       expect(deadline).toBe(NOW + HOUR);
 
-      // Two interleaved failures with cooling disabled each write a zero deadline.
-      state = mark(state, model, fail(500), { ...cooling, now: NOW + MIN });
-      state = mark(state, model, fail(429), { ...cooling, now: NOW + 2 * MIN });
+      // A shorter cooldown replaces the last error, then a failure with cooling disabled writes a zero deadline.
+      state = mark(state, model, fail(503, "x", { retryAfterMs: 5000 }), {
+        ...off,
+        now: NOW + MIN,
+      });
+      expect((model === "" ? state : state.modelStates[model])?.lastError?.code).toBeUndefined();
+      state = mark(state, model, fail(500), { ...cooling, now: NOW + 2 * MIN });
+      state = mark(state, model, fail(429), { ...cooling, now: NOW + 3 * MIN });
 
       const holder = model === "" ? state : state.modelStates[model];
       expect(holder, model).toMatchObject({ nextRetryAfter: deadline, unavailable: true });
       expect(blocked(state, "m", NOW + 30 * MIN), model).toBe(true);
+      expect(holder?.forcedUntil, model).toBe(deadline);
+
+      // Once the forced deadline passed, a zero write clears the cooldown again.
+      state = mark(state, model, fail(500), { ...cooling, now: NOW + HOUR + 1 });
+      expect(blocked(state, "m", NOW + HOUR + 2), model).toBe(false);
     }
 
     // An ordinary cooldown is still cleared by a zero write.

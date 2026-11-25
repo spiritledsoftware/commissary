@@ -22,7 +22,8 @@ export const resetCooldownState = (state: CredentialState, now: number): Cooldow
   // A disabled credential stays disabled and unavailable: only its timers are cleared (CLIProxyAPI 29de31a8).
   const disabled = state.status === "disabled";
   const keepError = disabled || terminalUnauthorized(state);
-  const { lastError, statusMessage, ...rest } = state;
+  // The reset ends a forced cooldown too.
+  const { lastError, statusMessage, forcedUntil: _forced, ...rest } = state;
 
   return {
     models,

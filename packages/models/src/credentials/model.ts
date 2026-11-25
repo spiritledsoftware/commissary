@@ -112,6 +112,11 @@ export const ModelState = Schema.Struct({
   statusMessage: optional(Schema.String),
   unavailable: Schema.Boolean,
   nextRetryAfter: Schema.Number,
+  /**
+   * Deadline of an explicit `force_cooldown` (a `stop-and-cooldown` action, Go `forceCooldownUntil`, CLIProxyAPI
+   * 9d7d012b): later failures never shorten the cooldown below it, whatever they write.
+   */
+  forcedUntil: optional(Schema.Number),
   lastError: optional(CredentialError),
   quota: QuotaState,
   updatedAt: Schema.Number,
@@ -125,6 +130,11 @@ export const CredentialState = Schema.Struct({
   statusMessage: optional(Schema.String),
   unavailable: Schema.Boolean,
   nextRetryAfter: Schema.Number,
+  /**
+   * Deadline of an explicit `force_cooldown` (a `stop-and-cooldown` action, Go `forceCooldownUntil`, CLIProxyAPI
+   * 9d7d012b): later failures never shorten the cooldown below it, whatever they write.
+   */
+  forcedUntil: optional(Schema.Number),
   quota: QuotaState,
   lastError: optional(CredentialError),
   modelStates: Schema.Record(Schema.String, ModelState),
