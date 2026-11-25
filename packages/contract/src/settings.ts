@@ -65,6 +65,23 @@ export type ClaudeCloakLevel = typeof ClaudeCloakLevel.Type;
 /** A Go duration (`30m`, `1h30m`); validated by the server. */
 const GoDuration = Schema.String;
 
+/**
+ * The `oauth.providers.antigravity.tos-pause-window` values that turn the pause off (Go `antigravityTOSPauseWindow`),
+ * the empty default included.
+ */
+export const TOS_PAUSE_OFF: ReadonlySet<string> = new Set([
+  "",
+  "0",
+  "off",
+  "false",
+  "none",
+  "disabled",
+]);
+
+/** Whether a pause window means no pause; surrounding space and case do not count. */
+export const isTosPauseOff = (value: string): boolean =>
+  TOS_PAUSE_OFF.has(value.trim().toLowerCase());
+
 /** A Go `*bool`: `null` = not set (the setting's documented default applies). */
 const Tristate = Schema.NullOr(Schema.Boolean);
 

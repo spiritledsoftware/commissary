@@ -5,6 +5,7 @@
  * (CodexConfig.StreamBootstrapTimeoutDuration), sdk/api/handlers/openai/openai_videos_handlers.go
  * (videoAuthBindingTTL), internal/runtime/executor/codex_openai_images.go (resolveGPTImage2BaseModel).
  */
+import { isTosPauseOff } from "@commissary/contract/settings";
 import type { Config } from "./schema.ts";
 
 const UNITS = new Map<string, number>([
@@ -77,24 +78,15 @@ export const videoResultAuthCacheTtlMs = (config: Config): number => {
   return parsed !== undefined && parsed > 0 ? parsed : DEFAULT_VIDEO_AUTH_CACHE_TTL_MS;
 };
 
-/** The values of `oauth.providers.antigravity.tos-pause-window` that turn the pause off, besides the empty default. */
-export const TOS_PAUSE_OFF: ReadonlySet<string> = new Set([
-  "0",
-  "off",
-  "false",
-  "none",
-  "disabled",
-]);
-
 /**
  * `antigravityTOSPauseWindow` (CLIProxyAPI e96d4c48): the pool-wide pause after a TOS_VIOLATION, in ms; `0` (off) when
  * empty, an off keyword, invalid or not positive.
  */
 export const antigravityTosPauseWindowMs = (config: Config): number => {
-  const raw = config.oauth.providers.antigravity["tos-pause-window"].trim();
+  const raw = config.oauth.providers.antigravity["tos-pause-window"];
 
-  if (raw === "" || TOS_PAUSE_OFF.has(raw.toLowerCase())) return 0;
-  const parsed = parseGoDuration(raw);
+  if (isTosPauseOff(raw)) return 0;
+  const parsed = parseGoDuration(raw.trim());
 
   return parsed !== undefined && parsed > 0 ? parsed : 0;
 };

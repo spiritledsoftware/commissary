@@ -5,6 +5,7 @@
  * `newAntigravityStatusErrWithHeaders`, `antigravityHasExplicitCreditsBalanceExhaustedReason`,
  * `parseAntigravityTOSViolation`, `redactTOSAppealURL`).
  */
+import type { Types } from "effect";
 import { asInt, asString, get, isJsonArray, tryParseJson } from "@commissary/json";
 import {
   ErrorCode,
@@ -138,6 +139,10 @@ export const parseTosViolation = (body: string): TosViolation | undefined => {
   return undefined;
 };
 
+/** The TOS_VIOLATION of an upstream answer: only a 403 carries one. */
+export const tosViolationOf = (status: number, body: string): TosViolation | undefined =>
+  status === 403 ? parseTosViolation(body) : undefined;
+
 /** `redactTOSAppealURL`: an appeal URL without its query and fragment, for logs (the record keeps the full URL). */
 export const redactTosAppealUrl = (raw: string): string => {
   const trimmed = raw.trim();
@@ -148,7 +153,7 @@ export const redactTosAppealUrl = (raw: string): string => {
 
 /** The credential metadata a TOS_VIOLATION writes (Go `Error.Metadata`); empty values are left out. */
 export const tosAppealMetadata = (violation: TosViolation): TosAppealMetadata => {
-  const metadata: TosAppealMetadata = {};
+  const metadata: Types.Mutable<TosAppealMetadata> = {};
 
   if (violation.appealUrl !== "") metadata.tos_appeal_url = violation.appealUrl;
 
@@ -168,13 +173,12 @@ export const antigravityStatusError = (
   body: string,
   headers: Headers,
   now: number,
+  violation: TosViolation | undefined = tosViolationOf(status, body),
 ): ExecutionError => {
   const retryAfterMs =
     status === 429 || status === 503
       ? parseGoogleRetryDelayWithHeadersMs(headers, body, now)
       : undefined;
-
-  const violation = status === 403 ? parseTosViolation(body) : undefined;
 
   const validation =
     status === 403 &&
@@ -224,6 +228,9 @@ export interface ProjectDiscoveryFailure {
 export const prepareProjectIdError = (
   failure: ProjectDiscoveryFailure | undefined,
   now: number,
+  violation: TosViolation | undefined = failure === undefined
+    ? undefined
+    : tosViolationOf(failure.status, failure.body),
 ): ExecutionError => {
   const base = "antigravity auth missing project_id";
 
@@ -241,8 +248,6 @@ export const prepareProjectIdError = (
     (failure.status === 429 && failure.body !== ""
       ? parseGoogleRetryDelayWithHeadersMs(undefined, failure.body, now)
       : undefined);
-
-  const violation = failure.status === 403 ? parseTosViolation(failure.body) : undefined;
 
   return new ExecutionError({
     status: failure.status,

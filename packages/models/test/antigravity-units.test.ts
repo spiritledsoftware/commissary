@@ -23,6 +23,7 @@ import {
   decideAntigravity429,
   hasExplicitCreditsBalanceExhaustedReason,
   parseTosViolation,
+  type TosViolation,
   prepareProjectIdError,
   type ProjectDiscoveryFailure,
   redactTosAppealUrl,
@@ -1413,24 +1414,29 @@ describe("state and credits", () => {
     expect(await state.credits(scope)).toBeUndefined();
   });
 
-  it("hands a 403 credits probe body to the TOS bookkeeping", async () => {
+  it("hands a credits probe's TOS_VIOLATION to the TOS bookkeeping, and no other 403", async () => {
     const calls: Array<UpstreamCall> = [];
-    const seen: string[] = [];
+    const seen: TosViolation[] = [];
     const credential = { attributes: {}, metadata: {} } as unknown as CredentialSnapshot;
 
-    await Effect.runPromise(
-      probeCredits(
-        credential,
-        "scope",
-        "tok",
-        "ua",
-        makeMemoryAntigravityState(GLOBAL_ORG),
-        1,
-        (body) => Effect.sync(() => void seen.push(body)),
-      ).pipe(Effect.provide(mockHttpClient(calls, () => new Response(TOS_BODY, { status: 403 })))),
-    );
+    const probe = (body: string) =>
+      Effect.runPromise(
+        probeCredits(
+          credential,
+          "scope",
+          "tok",
+          "ua",
+          makeMemoryAntigravityState(GLOBAL_ORG),
+          1,
+          (violation) => Effect.sync(() => void seen.push(violation)),
+        ).pipe(Effect.provide(mockHttpClient(calls, () => new Response(body, { status: 403 })))),
+      );
 
-    expect(seen).toEqual([TOS_BODY]);
+    await probe(TOS_BODY);
+    await probe("denied");
+
+    expect(calls).toHaveLength(2);
+    expect(seen).toEqual([parseTosViolation(TOS_BODY)]);
   });
 });
 

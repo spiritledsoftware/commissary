@@ -17,7 +17,8 @@
  */
 import { createHash } from "node:crypto";
 import { addressName, type SessionState } from "@commissary/state";
-import { makeOrgCache, type OrgId, type OrgKv, orgScopedName, sha256Hex } from "@commissary/core";
+import { makeOrgCache, type OrgId, type OrgKv, orgScopedName } from "@commissary/core";
+import { shortDigest } from "../../credentials/grant-digest.ts";
 import type { JsonObject } from "@commissary/json";
 import { metadataString } from "../gemini/targets.ts";
 import { type OptionalKvEnv, orgKvIfBound } from "../../kv.ts";
@@ -57,7 +58,7 @@ export const antigravityCreditsScope = (credentialId: string, metadata: JsonObje
   const grant =
     metadataString(metadata, "refresh_token") || metadataString(metadata, "access_token");
 
-  return grant === "" ? credentialId : `${credentialId}:${sha256Hex(grant).slice(0, 16)}`;
+  return grant === "" ? credentialId : `${credentialId}:${shortDigest(grant)}`;
 };
 
 /** `IsAntigravityCreditsHintFresh`: a record older than the refresh interval is re-validated, not trusted. */

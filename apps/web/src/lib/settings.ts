@@ -12,6 +12,7 @@ import { ManagementError } from "@commissary/contract/errors";
 import { SensitivePatternRule, SensitiveWordsReplace } from "@commissary/contract/provider-keys";
 import {
   type DisableImageGeneration,
+  isTosPauseOff,
   type SaveSettings,
   type SettingsPatch as SettingsPatchType,
   SettingsPatch,
@@ -444,9 +445,6 @@ export const parseGoDuration = (input: string): number | undefined => {
 
 const BOOTSTRAP_UNLIMITED = new Set(["", "0", "none", "unlimited", "disabled", "off", "never"]);
 
-/** The `pause` values that mean no pause (the server's `TOS_PAUSE_OFF`, plus empty). */
-const PAUSE_OFF = new Set(["", "0", "off", "false", "none", "disabled"]);
-
 const isTimezone = (zone: string): boolean => {
   if (zone === "" || zone === "Local") return true;
 
@@ -524,7 +522,7 @@ export const parseInput = (spec: FieldSpec, input: Input): Parsed => {
     case "pause": {
       const text = asText(input).trim();
 
-      if (PAUSE_OFF.has(text.toLowerCase())) return ok(text);
+      if (isTosPauseOff(text)) return ok(text);
       const ms = parseGoDuration(text);
 
       return ms !== undefined && ms > 0
@@ -938,7 +936,7 @@ export const spellDuration = (ms: number): string => {
 export const durationReading = (spec: FieldSpec, input: Input): string | undefined => {
   const text = asText(input).trim();
 
-  if (spec.kind === "pause" && PAUSE_OFF.has(text.toLowerCase())) return "= no pause";
+  if (spec.kind === "pause" && isTosPauseOff(text)) return "= no pause";
 
   if (spec.kind === "bootstrap") {
     if (BOOTSTRAP_UNLIMITED.has(text.toLowerCase())) return "= no limit";

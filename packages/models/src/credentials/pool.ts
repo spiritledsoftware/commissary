@@ -33,7 +33,6 @@ import {
   isTosViolationResult,
   isValidationRequiredError,
   shouldSkipCredentialCooldown,
-  type TosAppealMetadata,
 } from "./cooldown/classify.ts";
 import { grantDigestOf } from "./grant-digest.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
@@ -493,7 +492,7 @@ export class CredentialPool {
       credential.source === "file" &&
       !credential.disabled
     ) {
-      this.#store.setDisabled(credential.id, true, tosMetadata(result.credentialMetadata));
+      this.#store.setDisabled(credential.id, true, result.credentialMetadata ?? {});
       this.#invalidateBindings(credential.id);
       this.#invalidate();
     }
@@ -775,19 +774,6 @@ export class CredentialPool {
     this.#store.deleteState(id);
   }
 }
-
-/** The appeal details a TOS_VIOLATION stores in the credential's metadata (only its two keys, trimmed, non-empty). */
-const tosMetadata = (metadata: Readonly<Record<string, string>> | undefined): TosAppealMetadata => {
-  const url = metadata?.["tos_appeal_url"]?.trim() ?? "";
-  const text = metadata?.["tos_appeal_url_text"]?.trim() ?? "";
-  const out: TosAppealMetadata = {};
-
-  if (url !== "") out.tos_appeal_url = url;
-
-  if (text !== "") out.tos_appeal_url_text = text;
-
-  return out;
-};
 
 /**
  * `isStaleResultForCurrentAuth`'s exemptions: a TOS_VIOLATION or VALIDATION_REQUIRED result applies to the account, so

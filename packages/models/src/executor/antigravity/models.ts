@@ -27,6 +27,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { CurrentOrg, type OrgKv, sha256Hex } from "@commissary/core";
+import { shortDigest } from "../../credentials/grant-digest.ts";
 import { deploymentKvOf, orgKvOf } from "../../kv.ts";
 import { controlPlaneOf } from "@commissary/state";
 import {
@@ -328,9 +329,6 @@ export const nextFailure = (
   return { count, lastFailureAt: now, nextRetryAt: now + Math.floor(half + random * half) };
 };
 
-/** Digest of an access token, the key of its token-scoped backoff. */
-export const tokenDigest = (token: string): string => sha256Hex(token.trim()).slice(0, 16);
-
 /**
  * `persistedAntigravityHintsExpiresAt`: when a record's entitlements expire on `fingerprint`'s route, `0` when they
  * already did, were fetched on another route, or carry no fetch time.
@@ -519,7 +517,8 @@ export const refreshAntigravityModels = Effect.gen(function* () {
       continue;
     }
 
-    const digest = tokenDigest(token);
+    // The key of the token-scoped backoffs.
+    const digest = shortDigest(token);
 
     if (backingOff(previous?.failure, digest, now)) {
       results.push({ id: source.id, status: "backoff" });

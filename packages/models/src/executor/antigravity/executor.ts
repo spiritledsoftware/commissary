@@ -140,12 +140,10 @@ import {
   antigravityStatusError,
   decideAntigravity429,
   hasExplicitCreditsBalanceExhaustedReason,
-  parseTosViolation,
   prepareProjectIdError,
-  redactTosAppealUrl,
+  tosViolationOf,
 } from "./errors.ts";
 import { type AntigravityState, antigravityCreditsScope, antigravityStateFor } from "./state.ts";
-import { antigravityTosPauseWindowMs } from "../../config/accessors.ts";
 import {
   convertStreamToNonStream,
   inBandErrorStatus,
@@ -163,6 +161,7 @@ import {
 } from "../helps/gemini-zero-output.ts";
 import { antigravityRequestUserAgent, currentAntigravityVersion } from "./version.ts";
 import { serializeAntigravityPayload } from "./payload-order.ts";
+import { armTosPause, tosPauseGate } from "./tos-pause.ts";
 import { ModelsEnv } from "../../env.ts";
 import { deploymentKvIfBound, orgKvIfBound } from "../../kv.ts";
 
@@ -261,59 +260,6 @@ export const makeAntigravityExecutor = (
   const to = Formats.Antigravity;
   const ledger = settings.replayLedger ?? defaultReplayLedger;
 
-  /**
-   * `applyAntigravityTOSState` (CLIProxyAPI 5a351d95): a TOS_VIOLATION arms the org's pool pause when a window is
-   * configured, and is logged with the appeal URL cut at its query. The credential itself is disabled by the
-   * ControlPlane from the reported `tos_violation` result.
-   */
-  const armTosPause = (
-    context: ExecutionContext,
-    env: ModelsEnv["Service"] | undefined,
-    org: OrgId,
-    body: string,
-  ): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const violation = parseTosViolation(body);
-
-      if (violation === undefined) return;
-      const windowMs = antigravityTosPauseWindowMs(context.config);
-
-      if (windowMs > 0) {
-        const now = yield* Clock.currentTimeMillis;
-        yield* Effect.promise(() => antigravityStateFor(env, org).pauseForTos(windowMs, now));
-        yield* Effect.logWarning(`antigravity: TOS_VIOLATION pause armed for ${windowMs} ms`);
-      }
-
-      yield* Effect.logWarning(
-        violation.appealUrl === ""
-          ? `antigravity: credential ${context.credential.id} suspended for TOS_VIOLATION`
-          : `antigravity: credential ${context.credential.id} suspended for TOS_VIOLATION; appeal: ${redactTosAppealUrl(violation.appealUrl)} (${violation.appealUrlText})`,
-      );
-    });
-
-  /**
-   * `antigravityInTOSPause` (CLIProxyAPI 5a351d95, 81018ba4): while the org's pool is paused after a TOS_VIOLATION,
-   * every generate, stream and token count answers a request-scoped 503 without touching the credential.
-   */
-  const tosPauseGate = Effect.fnUntraced(function* (context: ExecutionContext) {
-    if (antigravityTosPauseWindowMs(context.config) <= 0) return;
-    const env = Option.getOrUndefined(yield* Effect.serviceOption(ModelsEnv));
-    const org = yield* optionalRequestOrg;
-    const now = yield* Clock.currentTimeMillis;
-
-    const remaining = yield* Effect.promise(() =>
-      antigravityStateFor(env, org).tosPauseRemaining(now),
-    );
-
-    if (remaining > 0) {
-      return yield* new ExecutionError({
-        status: 503,
-        message: "antigravity pool paused after TOS_VIOLATION",
-        requestScoped: true,
-      });
-    }
-  });
-
   const resolve = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
@@ -350,10 +296,13 @@ export const makeAntigravityExecutor = (
         const now = yield* Clock.currentTimeMillis;
         const failure = Result.isFailure(discovered) ? discovered.failure : undefined;
 
-        if (failure?.status === 403 && parseTosViolation(failure.body) !== undefined)
-          yield* armTosPause(context, env, org, failure.body);
+        const violation =
+          failure === undefined ? undefined : tosViolationOf(failure.status, failure.body);
 
-        return yield* prepareProjectIdError(failure, now);
+        if (violation !== undefined)
+          yield* armTosPause(context.config, context.credential.id, env, org, violation);
+
+        return yield* prepareProjectIdError(failure, now, violation);
       }
 
       project = discovered.success.trim();
@@ -616,7 +565,8 @@ export const makeAntigravityExecutor = (
         agent,
         state,
         now,
-        (body) => armTosPause(context, env, attempt.org, body),
+        (violation) =>
+          armTosPause(context.config, context.credential.id, env, attempt.org, violation),
       ).pipe(Effect.provideService(HttpClient.HttpClient, client));
 
       if (attempt.waitUntil !== undefined) attempt.waitUntil(Effect.runPromise(probe));
@@ -812,12 +762,14 @@ export const makeAntigravityExecutor = (
       }
     }
 
-    if (status === 403) {
+    const violation = tosViolationOf(status, text);
+
+    if (violation !== undefined) {
       const env = Option.getOrUndefined(yield* Effect.serviceOption(ModelsEnv));
-      yield* armTosPause(context, env, attempt.org, text);
+      yield* armTosPause(context.config, context.credential.id, env, attempt.org, violation);
     }
 
-    return yield* antigravityStatusError(status, text, headers ?? new Headers(), now);
+    return yield* antigravityStatusError(status, text, headers ?? new Headers(), now, violation);
   });
 
   const send = Effect.fnUntraced(function* (attempt: Attempt, prepared: PreparedRequest) {
@@ -924,7 +876,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    yield* tosPauseGate(context);
+    yield* tosPauseGate(context.config);
     const attempt = yield* resolve(context, request, options);
     const baseModel = parseSuffix(request.model).modelName;
     const selection = yield* selectModel(attempt, baseModel, false);
@@ -1157,7 +1109,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    yield* tosPauseGate(context);
+    yield* tosPauseGate(context.config);
     const attempt = yield* resolve(context, request, options);
     const baseModel = parseSuffix(request.model).modelName;
     const selection = yield* selectModel(attempt, baseModel, false);
@@ -1339,7 +1291,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    yield* tosPauseGate(context);
+    yield* tosPauseGate(context.config);
     const attempt = yield* resolve(context, request, options);
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;

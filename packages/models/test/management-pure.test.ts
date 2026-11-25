@@ -1,5 +1,5 @@
 // Pure helpers of the management API: config key ids, typed duplicate keys, credential entries, field patches, cooldown reset.
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import { decodeConfig } from "../src/config/codec.ts";
 import type { JsonObject } from "@commissary/json";
@@ -10,6 +10,7 @@ import { emptyQuota, emptyState, type CredentialState } from "../src/credentials
 import { configKeyIds } from "../src/credentials/key-ids.ts";
 import { buildCredentialEntry, cooldownSnapshot } from "../src/management/credential-entry.ts";
 import { typedDuplicates, withoutKeys } from "../src/management/key-duplicates.ts";
+import { validateSettings } from "../src/management/settings.ts";
 import { authIndexOf } from "./support/auth-index.ts";
 import { cred, cooling, state } from "./support/credentials.ts";
 
@@ -629,5 +630,38 @@ describe("stored keys win over typed ones (group writes)", () => {
     expect(document["api-keys"]).toEqual({
       gemini: [{ keys: [{ "api-key": "x" }, { "api-key": "y" }] }, { keys: [{ "api-key": "z" }] }],
     });
+  });
+});
+
+const pauseWindow = (value: string) =>
+  validateSettings(
+    { oauth: { providers: { antigravity: { "tos-pause-window": value } } } },
+    { ownHosts: [], localDevelopment: false },
+  );
+
+describe("settings values", () => {
+  it("takes a TOS pause window that is off, or a duration greater than zero, whatever its padding", () => {
+    for (const value of [
+      "",
+      "0",
+      "off",
+      "OFF",
+      "false",
+      "none",
+      "disabled",
+      " off ",
+      "6h",
+      " 1h30m ",
+    ])
+      expect(Result.isSuccess(pauseWindow(value)), value).toBe(true);
+
+    for (const value of ["soon", "-5m", "0s", " later "]) {
+      const refused = pauseWindow(value);
+
+      expect(Result.isFailure(refused), value).toBe(true);
+      expect(Result.isFailure(refused) ? refused.failure.message : "").toContain(
+        "is not a duration greater than zero or off",
+      );
+    }
   });
 });

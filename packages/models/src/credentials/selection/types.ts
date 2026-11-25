@@ -4,6 +4,7 @@
  */
 import { Schema } from "effect";
 import { SpendScope } from "@commissary/state/spend";
+import { TosAppealMetadata } from "../cooldown/classify.ts";
 import { AuthKind, Credential, CredentialError } from "../model.ts";
 
 const optional = Schema.optionalKey;
@@ -217,7 +218,7 @@ export const ReportResult = Schema.Struct({
    * A `tos_violation` failure's appeal details (`tos_appeal_url`, `tos_appeal_url_text`), stored in the disabled
    * credential's metadata (Go `persistTOSAppealMetadata`).
    */
-  credentialMetadata: optional(Schema.Record(Schema.String, Schema.String)),
+  credentialMetadata: optional(TosAppealMetadata),
   /**
    * Digest of the refresh token the attempt ran with (`sha256Hex(...).slice(0, 16)`): a result for an older credential
    * version still applies when it is an account-wide signal (TOS_VIOLATION, VALIDATION_REQUIRED) and the digest matches

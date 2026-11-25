@@ -444,7 +444,8 @@ const STORES: ReadonlyArray<StoreCase> = [
       await antigravityStateFor(env, org.id).setCredits(name, { ...CREDITS, paidTierId: value }),
     read: async (org, name) => (await antigravityStateFor(env, org.id).credits(name))?.paidTierId,
   }),
-  // One key per org (no `name`): the pool-wide TOS pause, its window in minutes as the value.
+  // One key per org (no `name`): the pool-wide TOS pause, its window in minutes as the value. The suite numbers the
+  // orgs from 1 (`expectIsolated` writes `value(index + 1)`), so every org's window is at least a minute.
   storeCase("kv: Antigravity TOS pause", {
     value: (index) => String(index),
     write: async (org, _name, value) =>

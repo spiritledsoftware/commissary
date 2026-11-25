@@ -31,7 +31,7 @@ import { readBoundedText } from "../helps/bounded-body.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import { requestBaseUrl } from "./envelope.ts";
-import { SHORT_QUOTA_COOLDOWN_THRESHOLD_MS } from "./errors.ts";
+import { SHORT_QUOTA_COOLDOWN_THRESHOLD_MS, type TosViolation, tosViolationOf } from "./errors.ts";
 import { type AntigravityState, type CreditsRecord } from "./state.ts";
 
 /** `antigravityCreditsRetryEnabled`. */
@@ -303,7 +303,7 @@ export const isCreditsCapacity503 = (error: ExecutionError): boolean => {
   const body = error.message.trim();
   const lowerBody = body.toLowerCase();
 
-  if (looksLikeHtml(lowerBody) || lowerBody.includes("tos_violation")) return false;
+  if (looksLikeHtml(lowerBody) || isTosViolationError(classifiable(error))) return false;
   const code = (error.code ?? "").trim().toLowerCase();
 
   if (NO_CREDITS_503_CODES.has(code)) return false;
@@ -398,14 +398,14 @@ export const parseCreditsReply = (body: Json | undefined, now: number): CreditsR
 /** `antigravityLoadCodeAssistMaxResponseBytes`. */
 const LOAD_CODE_ASSIST_MAX_BYTES = 1 << 20;
 
-/** What a credits probe saw besides the balance: a 403 body, for the TOS_VIOLATION bookkeeping. */
-export type CreditsProbeForbidden = (body: string) => Effect.Effect<void>;
+/** What a credits probe saw besides the balance: a TOS_VIOLATION, for its bookkeeping. */
+export type CreditsProbeViolation = (violation: TosViolation) => Effect.Effect<void>;
 
 /**
  * The credits balance probe (`POST loadCodeAssist`, `updateAntigravityCreditsBalanceForTask`); failures are silent
  * like Go. It sends the credential's custom headers without a session id (CLIProxyAPI 81b5bce4; Workers derives the
  * `Host` from the URL), reads at most 1 MiB, publishes nothing for an oversized or invalid reply, and hands a 403 body
- * to `forbidden` so a TOS_VIOLATION arms the pool pause (CLIProxyAPI acb56c6c). The key is the credential's credits
+ * a TOS_VIOLATION to `violated`, which arms the pool pause (CLIProxyAPI acb56c6c). The key is the credential's credits
  * scope (`antigravityCreditsScope`).
  */
 export const probeCredits = (
@@ -415,7 +415,7 @@ export const probeCredits = (
   userAgent: string,
   state: AntigravityState,
   now: number,
-  forbidden: CreditsProbeForbidden = () => Effect.void,
+  violated: CreditsProbeViolation = () => Effect.void,
 ): Effect.Effect<void, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     if (accessToken === "") return;
@@ -445,7 +445,9 @@ export const probeCredits = (
     const { text, overflow } = yield* readBoundedText(response, LOAD_CODE_ASSIST_MAX_BYTES);
 
     if (response.status < 200 || response.status >= 300) {
-      if (response.status === 403 && !overflow) yield* forbidden(text);
+      const violation = overflow ? undefined : tosViolationOf(response.status, text);
+
+      if (violation !== undefined) yield* violated(violation);
 
       return;
     }

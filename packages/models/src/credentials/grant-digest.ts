@@ -6,11 +6,15 @@
 import { sha256Hex } from "@commissary/core";
 import type { Json } from "@commissary/json";
 
-/** `sha256Hex(refresh_token).slice(0, 16)`, `undefined` without a refresh token. */
+/**
+ * A short digest of a token (the first 16 hex digits of its trimmed SHA-256): enough to tell two grants apart in a key
+ * or a report without carrying the token.
+ */
+export const shortDigest = (token: string): string => sha256Hex(token.trim()).slice(0, 16);
+
+/** {@link shortDigest} of the refresh token, `undefined` without one. */
 export const grantDigestOf = (metadata: Readonly<Record<string, Json>>): string | undefined => {
   const token = metadata["refresh_token"];
 
-  return typeof token === "string" && token.trim() !== ""
-    ? sha256Hex(token.trim()).slice(0, 16)
-    : undefined;
+  return typeof token === "string" && token.trim() !== "" ? shortDigest(token) : undefined;
 };

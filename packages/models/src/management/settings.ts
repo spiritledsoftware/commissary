@@ -12,7 +12,8 @@
  */
 import { Result, Schema } from "effect";
 import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from "@commissary/core";
-import { parseGoDuration, TOS_PAUSE_OFF } from "../config/accessors.ts";
+import { isTosPauseOff } from "@commissary/contract/settings";
+import { parseGoDuration } from "../config/accessors.ts";
 import { encodeConfig } from "../config/codec.ts";
 import { compileGoRegex } from "../config/payload/re2.ts";
 import { normalizeSensitiveWordsReplace } from "../config/normalize.ts";
@@ -224,7 +225,7 @@ const valueRule = (key: string, value: Json, policy: OutboundPolicy): string | u
   }
 
   if (typeof value === "string" && key === "oauth.providers.antigravity.tos-pause-window")
-    return value === "" || TOS_PAUSE_OFF.has(value.toLowerCase()) || isPositiveDuration(value)
+    return isTosPauseOff(value) || isPositiveDuration(value.trim())
       ? undefined
       : `${quoted(value)} is not a duration greater than zero or off`;
 

@@ -3559,7 +3559,7 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     to the next credential (`handlers/conductor.ts`, as Go's `isDirectStreamTerminalError`, `tryAntigravityCreditsExecute`
     and `executeMixedOnce`). Difference: re-enabling a TOS-disabled credential resets its state, where Go keeps the
     terminal state until the next success.
-  - _Pool pause_ (`state.ts`, CLIProxyAPI `5a351d95`, `e96d4c48`, `81018ba4`): `oauth.providers.antigravity.tos-pause-window`
+  - _Pool pause_ (`tos-pause.ts`, `state.ts`, CLIProxyAPI `5a351d95`, `e96d4c48`, `81018ba4`): `oauth.providers.antigravity.tos-pause-window`
     (a Go duration; empty or `0`/`off`/`false`/`none`/`disabled` turns it off, the default) arms a pause on the first
     TOS_VIOLATION. While it runs, every generate, stream and token count answers a request-scoped 503 (`antigravity pool
     paused after TOS_VIOLATION`) before any credential is touched. The deadline is one key per org, KV `ag:tos-pause`

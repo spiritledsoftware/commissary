@@ -10,6 +10,7 @@
  * Errors are described by {@link ClassifiableError}: `status` is the upstream HTTP status (0 when the failure happened
  * before an HTTP answer), `message` the upstream body or error text, `code` one of the conductor codes.
  */
+import { Schema } from "effect";
 import { isJsonObject, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { ERROR_EVENT_TYPES, POLICY_BLOCK_CODES } from "../../http/upstream-error.ts";
 
@@ -650,11 +651,16 @@ export const isRequestScopedResult = (error: ClassifiableError): boolean =>
   (error.status === 404 && isItemNotPersisted(error.message)) ||
   isRequestInvalidError(error);
 
-/** The appeal link a TOS_VIOLATION writes to its credential's metadata (Go `Error.Metadata`). */
-export type TosAppealMetadata = {
-  tos_appeal_url?: string;
-  tos_appeal_url_text?: string;
-};
+/**
+ * The appeal link a TOS_VIOLATION writes to its credential's metadata (Go `Error.Metadata`, `persistTOSAppealMetadata`).
+ * Decoding a report keeps only these two keys.
+ */
+export const TosAppealMetadata = Schema.Struct({
+  tos_appeal_url: Schema.optionalKey(Schema.String),
+  tos_appeal_url_text: Schema.optionalKey(Schema.String),
+});
+
+export type TosAppealMetadata = typeof TosAppealMetadata.Type;
 
 /** `isTOSViolationResultError`: the failure was reported with the `tos_violation` code. */
 export const isTosViolationResult = (
