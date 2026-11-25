@@ -258,10 +258,10 @@ export const runResponsesSocket = <R>(
       const answeredLocally = (): boolean => report.local;
 
       // Frames written to the client so far: a turn that wrote none has committed nothing downstream yet.
-      let written = 0;
+      let framesWritten = 0;
 
       const write = (payload: JsonObject): void => {
-        written += 1;
+        framesWritten += 1;
 
         if (!closed) io.send(JSON.stringify(payload));
       };
@@ -580,7 +580,7 @@ export const runResponsesSocket = <R>(
         excludedIds: ReadonlyArray<string> = [],
       ) {
         const { request: planned, nativePassthrough } = plan;
-        const writtenAtStart = written;
+        const framesWrittenAtStart = framesWritten;
 
         // Native passthrough keeps the state upstream; otherwise tool calls are repaired against the session caches.
         const repaired = nativePassthrough
@@ -658,7 +658,11 @@ export const runResponsesSocket = <R>(
             if (!nativePassthrough || plan.requiresCurrentUpstream || !pinnedAuthAttempted)
               return false;
 
-            if (excludedIds.length > 0 || written !== writtenAtStart || selected === undefined)
+            if (
+              excludedIds.length > 0 ||
+              framesWritten !== framesWrittenAtStart ||
+              selected === undefined
+            )
               return false;
 
             if (error.status !== 401 && error.status !== 429 && !isQuotaOrCooldownError(error))

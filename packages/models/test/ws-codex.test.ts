@@ -549,6 +549,29 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
       client.close();
     });
 
+    it("does not replay it once a frame reached the client", async () => {
+      const s = setup([wsCredential(), second()], {
+        onConnection: scripted((_frame, index, send) => {
+          send(created);
+
+          if (index === 1) return send(quota);
+          send(done("resp_1"));
+        }),
+      });
+
+      const client = await s.connect();
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+      await client.until("response.completed");
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+
+      expect(await client.until("response.created")).toMatchObject({ type: "response.created" });
+      expect(await client.until("error")).toMatchObject({ status: 429 });
+      expect(s.mock.dials.map((dial) => dial.headers["authorization"])).toEqual([
+        "Bearer access-token-1",
+      ]);
+      client.close();
+    });
+
     it("exposes the error when no other credential can serve it", async () => {
       const s = setup([wsCredential()], {
         onConnection: scripted((_frame, index, send) => {
