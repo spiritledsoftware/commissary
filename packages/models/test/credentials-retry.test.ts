@@ -607,3 +607,45 @@ describe("in-flight successes do not clear a newer cooldown (CLIProxyAPI 35af74f
     expect(restarted.pool.pick(request).ok).toBe(true);
   });
 });
+
+describe("weighted credits across the credential lifecycle (CLIProxyAPI 9d7d012b)", () => {
+  const file = (token: string, weight: number) => ({
+    type: "claude",
+    email: "x@example.com",
+    access_token: token,
+    weight,
+  });
+
+  // Weights 3:1 pick a, a, b, a. After two picks the credits are a = -2, b = 2: a kept credit picks b next, a reset one
+  // (b = 0) picks a.
+  const third = async (between: (pool: CredentialPool) => void) => {
+    const { pool } = await makePool("routing:\n  strategy: weighted-round-robin\n");
+    pool.upsert("claude-a.json", file("ta", 3), { mergeExisting: false });
+    pool.upsert("claude-b.json", file("tb", 1), { mergeExisting: false });
+
+    const pick = () =>
+      ok(pool.pick({ providers: ["claude"], model: "claude-sonnet-4-5" })).credential.id;
+
+    expect([pick(), pick()]).toEqual(["claude-a.json", "claude-a.json"]);
+    between(pool);
+
+    return pick();
+  };
+
+  it("a token refresh keeps the credential's credit", async () => {
+    const id = await third((pool) => {
+      pool.commitRefresh("claude-b.json", { metadata: file("tb-2", 1) });
+    });
+
+    expect(id).toBe("claude-b.json");
+  });
+
+  it("a remove-then-add starts the credential's credit at zero", async () => {
+    const id = await third((pool) => {
+      pool.remove("claude-b.json");
+      pool.upsert("claude-b.json", file("tb", 1), { mergeExisting: false });
+    });
+
+    expect(id).toBe("claude-a.json");
+  });
+});

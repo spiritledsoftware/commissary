@@ -181,6 +181,8 @@ export class CredentialPool {
   #dispatchSeq: number;
   readonly #cooldownMarks = new Map<string, MutableCooldownMarks>();
   #view: View | undefined;
+  /** Ids of the last derived view: one that disappears or appears is a removal or a (re-)registration. */
+  #registered = new Set<string>();
 
   constructor(options: PoolOptions) {
     this.#store = options.store;
@@ -245,6 +247,13 @@ export class CredentialPool {
         this.#invalidateBindings(id);
       }
     }
+
+    // A credential removed or added again (config keys come and go with the config) starts its weighted credit at zero;
+    // a refresh or a re-login keeps it (CLIProxyAPI 9d7d012b, `RegistrationEpoch`).
+    for (const id of this.#registered) if (!credentials.has(id)) this.#rotation.forget(id);
+
+    for (const id of credentials.keys()) if (!this.#registered.has(id)) this.#rotation.forget(id);
+    this.#registered = new Set(credentials.keys());
 
     const oauthModelAlias: Record<string, ReturnType<typeof sanitizeAliases>> = {};
 
@@ -651,6 +660,7 @@ export class CredentialPool {
       this.#states.delete(id);
       this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
+      this.#rotation.forget(id);
       this.#invalidate();
     }
 
@@ -670,6 +680,7 @@ export class CredentialPool {
       this.#states.delete(id);
       this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
+      this.#rotation.forget(id);
     }
 
     if (removed.length > 0) this.#invalidate();

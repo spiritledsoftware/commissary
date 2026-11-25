@@ -2,8 +2,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import { SessionCache } from "../../src/credentials/selection/affinity.ts";
 import { isBlockedForModel } from "../../src/credentials/selection/availability.ts";
+import { MAX_SMOOTH_STATE_ENTRIES } from "../../src/credentials/selection/credit-retention.ts";
 import {
-  MAX_SMOOTH_STATE_ENTRIES,
   RotationState,
   SmoothWeightedState,
   pickSmoothWeighted,
@@ -292,33 +292,6 @@ describe("weighted round-robin", () => {
     // ones just picked and the rotation collapsed onto a few credentials.
     expect(stateful.current.size).toBe(size);
     expect(stateful.current.get(ids[size - 1] ?? "")).toBe(-1);
-  });
-
-  it("starts a credential's credit afresh when its material version changes", () => {
-    const stateful = new SmoothWeightedState();
-
-    const weights = new Map([
-      ["a", 1],
-      ["b", 1],
-    ]);
-
-    stateful.prepare(
-      weights,
-      new Map([
-        ["a", 1],
-        ["b", 1],
-      ]),
-    );
-    stateful.current.set("a", -3);
-    stateful.current.set("b", 3);
-    stateful.prepare(
-      weights,
-      new Map([
-        ["a", 2],
-        ["b", 1],
-      ]),
-    );
-    expect(Object.fromEntries(stateful.current)).toEqual({ b: 3 });
   });
 
   it("forgets the credentials unseen for longest once past the bound", () => {

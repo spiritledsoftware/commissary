@@ -565,8 +565,10 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   request may use, so the review keeps the parent's credential and prompt cache; ordinary subagents and forks stay as they were.
   Smooth weighted credits are kept per rotation key for every credential, also those a pick leaves out (retry exclusions,
   cooldowns), until the store passes the larger of 1024 and twice the largest candidate set seen; then the credentials
-  unseen longest are forgotten first, so a pool above 1024 credentials stays fair. A credential whose `credentialVersion`
-  changed starts at zero (CLIProxyAPI 9d7d012b; Go's scheduler shards and reservations have no counterpart here).
+  unseen longest are forgotten first (`credit-retention.ts`; Go drops every absent one at once), so a pool above 1024
+  credentials stays fair. A credential that is removed, or that leaves and rejoins the derived set (config keys), starts
+  at zero; a token refresh or a re-login keeps its credit (CLIProxyAPI 9d7d012b, Go's `RegistrationEpoch`; its
+  scheduler shards and reservations have no counterpart here).
   Model prefixes, `force-model-prefix`, exclusions, OAuth/API-key aliases,
   `force-mapping` and alias pools are resolved per credential in `routing.ts`. The caller still resolves the provider set
   (`PickRequest.providers`) from the model registry; the DO enforces the per-credential rules.
