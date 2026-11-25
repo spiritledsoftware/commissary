@@ -50,7 +50,10 @@ export const extractHeaders = (raw: Json | undefined) => {
   return out;
 };
 
-/** `SanitizeOAuthModelAlias`: drop empty or identical pairs, de-duplicate by lower-cased alias (first wins). */
+/**
+ * `SanitizeOAuthModelAlias`: drop empty or identical pairs, de-duplicate by lower-cased alias (first wins). A pair that
+ * differs only in case (`x` → `X`) is kept.
+ */
 export const sanitizeAliases = (aliases: ReadonlyArray<OAuthModelAlias>): OAuthModelAlias[] => {
   const seen = new Set<string>();
   const out: OAuthModelAlias[] = [];
@@ -59,7 +62,7 @@ export const sanitizeAliases = (aliases: ReadonlyArray<OAuthModelAlias>): OAuthM
     const name = entry.name.trim();
     const alias = entry.alias.trim();
 
-    if (name === "" || alias === "" || name.toLowerCase() === alias.toLowerCase()) continue;
+    if (name === "" || alias === "" || name === alias) continue;
     const key = alias.toLowerCase();
 
     if (seen.has(key)) continue;
