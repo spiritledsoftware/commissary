@@ -24,6 +24,7 @@ import {
 import {
   geminiPartFunctionCall,
   geminiPartFunctionResponse,
+  geminiPartsHaveFunctionResponse,
   normalizeGeminiTurnRole,
 } from "../../common/gemini-parts.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
@@ -111,7 +112,126 @@ const contentPartFromInlineData = (part: Json): JsonObject | undefined => {
     };
   }
 
-  return { type: "input_file", file_data: data, filename: codexFileNameFromMime(mimeType) };
+  // A data URL, as Codex input files need (34d8fe0f); data that already is one stays as it is.
+  const fileData = data.trim().toLowerCase().startsWith("data:")
+    ? data
+    : `data:${mimeType};base64,${data}`;
+
+  return { type: "input_file", file_data: fileData, filename: codexFileNameFromMime(mimeType) };
+};
+
+/** Audio a function response returned: Codex tool outputs cannot carry it, so a user message relays it. */
+interface ToolAudioGroup {
+  readonly toolName: string;
+  readonly callId: string;
+  readonly items: ReadonlyArray<JsonObject>;
+}
+
+/** `buildCodexGeminiToolAudioRelayItems`. */
+const toolAudioRelayItems = (groups: ReadonlyArray<ToolAudioGroup>): JsonObject[] => {
+  const label = (toolName: string, callId: string, prefix: string, fallback: string): string => {
+    if (toolName !== "" && callId !== "") return `${prefix} ${toolName} (${callId}):`;
+
+    if (toolName !== "") return `${prefix} ${toolName}:`;
+
+    return callId !== "" ? `${prefix} call ${callId}:` : fallback;
+  };
+
+  const [first] = groups;
+
+  if (groups.length === 1 && first !== undefined) {
+    const notice = label(
+      first.toolName,
+      first.callId,
+      "Audio returned by tool",
+      "Audio returned by the preceding tool call(s):",
+    );
+
+    return [{ type: "input_text", text: notice }, ...first.items];
+  }
+
+  return [
+    { type: "input_text", text: "Audio returned by the preceding tool call(s):" },
+    ...groups.flatMap((group) => [
+      { type: "input_text", text: label(group.toolName, group.callId, "Tool", "Tool:") },
+      ...group.items,
+    ]),
+  ];
+};
+
+const isEmptyResponseObject = (value: Json | undefined): boolean =>
+  value === undefined || (isJsonObject(value) && Object.keys(value).length === 0);
+
+/** `geminiCodexResponseHasOnlyResultKey`. */
+const responseHasOnlyResultKey = (response: Json | undefined): boolean =>
+  isJsonObject(response) &&
+  Object.keys(response).length === 1 &&
+  Object.keys(response)[0] === "result";
+
+/**
+ * `setCodexFunctionCallOutputFromGemini`: a function response with `parts` becomes a content list (its response text
+ * first), relaying its media to Codex (34d8fe0f); audio, which a tool output cannot carry, is returned for a user
+ * message after the batch.
+ */
+const setFunctionCallOutputFromGemini = (fno: JsonObject, fr: Json): JsonObject[] => {
+  const result = get(fr, "response.result");
+  const response = get(fr, "response");
+  const onlyResult = result !== undefined && responseHasOnlyResultKey(response);
+  let baseText = "";
+  let hasBaseText = false;
+
+  if (onlyResult) {
+    baseText = asString(result);
+    hasBaseText = baseText.trim() !== "";
+  } else if (!isEmptyResponseObject(response)) {
+    baseText = JSON.stringify(response);
+    hasBaseText = true;
+  }
+
+  const nestedItems: JsonObject[] = [];
+  const relayedAudioItems: JsonObject[] = [];
+  const frParts = get(fr, "parts");
+
+  for (const nested of isJsonArray(frParts) ? frParts : []) {
+    const text = get(nested, "text");
+
+    if (text !== undefined) {
+      if (asString(text).trim() !== "")
+        nestedItems.push({ type: "input_text", text: asString(text) });
+      continue;
+    }
+
+    const inline = contentPartFromInlineData(nested);
+
+    if (inline !== undefined) {
+      // A tool output allows input_text, input_image and input_file only.
+      if (inline["type"] === "input_audio") relayedAudioItems.push(inline);
+      else nestedItems.push(inline);
+      continue;
+    }
+
+    const file = contentPartFromFileData(nested);
+
+    if (file !== undefined) nestedItems.push(file);
+  }
+
+  if (nestedItems.length > 0) {
+    fno["output"] = [
+      ...(hasBaseText ? [{ type: "input_text", text: baseText }] : []),
+      ...nestedItems,
+    ];
+
+    return relayedAudioItems;
+  }
+
+  if (onlyResult) fno["output"] = asString(result);
+  else if (response !== undefined && !isEmptyResponseObject(response))
+    fno["output"] = JSON.stringify(response);
+  else if (relayedAudioItems.length > 0)
+    fno["output"] = "[Tool returned audio content; the audio follows in the next user message.]";
+  else if (response !== undefined) fno["output"] = JSON.stringify(response);
+
+  return relayedAudioItems;
 };
 
 const contentPartFromFileData = (part: Json): JsonObject | undefined => {
@@ -286,6 +406,19 @@ export const convertGeminiRequestToCodex = (
 
   if (isJsonArray(contents)) {
     let previousRole = "";
+    // Audio tool outputs wait for the end of their batch, so the tool outputs stay contiguous (34d8fe0f).
+    let pendingTurnCallCount = 0;
+    let pendingToolAudioRelay: ToolAudioGroup[] = [];
+
+    const flushPendingToolAudioRelay = (): void => {
+      if (pendingToolAudioRelay.length === 0) return;
+      inputItems.push({
+        type: "message",
+        role: "user",
+        content: toolAudioRelayItems(pendingToolAudioRelay),
+      });
+      pendingToolAudioRelay = [];
+    };
 
     for (const item of contents) {
       const parts = get(item, "parts");
@@ -293,6 +426,12 @@ export const convertGeminiRequestToCodex = (
       if (!isJsonArray(parts)) continue;
       const role = normalizeGeminiTurnRole(asString(get(item, "role")), parts, previousRole);
       previousRole = role;
+
+      if (!geminiPartsHaveFunctionResponse(parts)) {
+        pendingTurnCallCount = 0;
+        flushPendingToolAudioRelay();
+      }
+
       let pendingThoughtSummaryParts: Json[] = [];
 
       for (const p of parts) {
@@ -386,21 +525,16 @@ export const convertGeminiRequestToCodex = (
           fn["call_id"] = id;
           pendingCallIds.push(id);
           inputItems.push(fn);
+          pendingTurnCallCount++;
           continue;
         }
 
         const fr = geminiPartFunctionResponse(p);
 
         if (fr !== undefined) {
+          if (pendingTurnCallCount > 0) pendingTurnCallCount--;
           const fno: JsonObject = { type: "function_call_output" };
-          const result = get(fr, "response.result");
-
-          if (result !== undefined) fno["output"] = asString(result);
-          else {
-            const response = get(fr, "response");
-
-            if (response !== undefined) fno["output"] = JSON.stringify(response);
-          }
+          const audioItems = setFunctionCallOutputFromGemini(fno, fr);
 
           // Pair with the oldest queued call id (or the explicit one); generate when the queue is empty.
           let id: string;
@@ -420,11 +554,23 @@ export const convertGeminiRequestToCodex = (
             id = nextCallId();
           }
 
+          if (audioItems.length > 0) {
+            pendingToolAudioRelay.push({
+              toolName: asString(get(fr, "name")),
+              callId: id,
+              items: audioItems,
+            });
+          }
+
           fno["call_id"] = id;
           inputItems.push(fno);
         }
       }
+
+      if (pendingTurnCallCount === 0) flushPendingToolAudioRelay();
     }
+
+    flushPendingToolAudioRelay();
   }
 
   if (inputItems.length > 0) out = set(out, "input", inputItems);
