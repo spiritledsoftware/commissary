@@ -3,7 +3,7 @@
  * code, status reporting and cancellation.
  *
  * Go source: internal/api/handlers/management/{auth_files_provider_oauth,auth_files_devin_oauth,oauth_callback,
- * oauth_sessions}.go (`StartOAuthV8`, `PostOAuthCallback`/`handleOAuthCallback`, `GetAuthStatus`, `CancelAuthSession`).
+ * oauth_sessions,auth_files_copilot_oauth}.go (`StartOAuthV8`, `PostOAuthCallback`/`handleOAuthCallback`, `GetAuthStatus`, `CancelAuthSession`).
  * Go runs one goroutine per login that waits for a callback file or polls the device endpoint. On Workers the work is
  * driven by requests instead: the callback request performs the token exchange itself, and every status poll of a
  * device login advances the upstream poll when the provider interval has elapsed (never more often). One poll or
@@ -16,6 +16,7 @@ import type { HttpClient } from "effect/http";
 import { antigravityFlow } from "./flows/antigravity.ts";
 import { claudeFlow } from "./flows/claude.ts";
 import { codexDeviceFlow, codexFlow } from "./flows/codex.ts";
+import { copilotFlow } from "./flows/copilot.ts";
 import { devinFlow } from "./flows/devin.ts";
 import { kimiDomain, kimiFlow, kimiStatePrefix } from "./flows/kimi.ts";
 import { metaFlow } from "./flows/meta.ts";
@@ -31,7 +32,7 @@ import type { OAuthSession, OAuthSessions } from "./session-store.ts";
 export const CALLBACK_WINDOW_MS = 5 * 60_000;
 
 export interface StartInput {
-  /** `?provider=`: `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`, `meta`. */
+  /** `?provider=`: `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `copilot`, `devin`, `meta`. */
   readonly provider: string;
   /** `?domain=` / `?channel=` of the Kimi login. */
   readonly domain?: string;
@@ -98,6 +99,7 @@ const deviceFlows: Readonly<Partial<Record<OAuthProvider, (metaMintUrl?: string)
   {
     codex: codexDeviceFlow,
     xai: xaiFlow,
+    copilot: copilotFlow,
     meta: metaFlow,
     kimi: () => kimiFlow(kimiDomain("kimi.com")),
     "kimi-ai": () => kimiFlow(kimiDomain("kimi.ai")),
@@ -295,6 +297,8 @@ export const makeOAuthService = ({
               : yield* startCallback(codexFlow(), now, owner);
           case "xai":
             return yield* startDevice(xaiFlow(), newDeviceState("xai", now), now, owner);
+          case "copilot":
+            return yield* startDevice(copilotFlow(), newDeviceState("copilot", now), now, owner);
           case "meta":
             return yield* startDevice(
               metaFlow(metaMintUrl),

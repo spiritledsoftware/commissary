@@ -167,6 +167,14 @@ export interface DeriveOptions {
   readonly config: Pick<Config, "oauth">;
 }
 
+/** The account's label: its email, else (Copilot, which has none) the GitHub login, else the provider. */
+const fileLabel = (provider: string, email: string, metadata: JsonObject): string => {
+  if (email !== "") return email;
+  const username = provider === "copilot" ? text(metadata.username) : "";
+
+  return username !== "" ? username : provider;
+};
+
 /** Builds the runtime credential for a stored auth file. */
 export const deriveFileCredential = (
   stored: StoredCredential,
@@ -237,7 +245,7 @@ export const deriveFileCredential = (
     provider,
     source: "file",
     authKind: "oauth",
-    label: email !== "" ? email : provider,
+    label: fileLabel(provider, email, metadata),
     ...(prefix === undefined ? {} : { prefix }),
     ...(stored.owner === undefined ? {} : { owner: stored.owner }),
     disabled: metadata.disabled === true,

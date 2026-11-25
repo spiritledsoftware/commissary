@@ -11,6 +11,7 @@ export type OAuthProvider =
   | "codex"
   | "antigravity"
   | "xai"
+  | "copilot"
   | "devin"
   | "meta"
   | "kimi"
