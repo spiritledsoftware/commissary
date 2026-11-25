@@ -95,6 +95,8 @@ export type RefreshResult =
         readonly code: RefreshFailureCode;
         readonly message: string;
         readonly httpStatus?: number;
+        /** How long the upstream asked to wait before the next refresh (a `Retry-After`, Claude 429). */
+        readonly retryAfterMs?: number;
       };
       /** The credential needs a new login (terminal 401 / disabled invalid grant): do not retry. */
       readonly terminal: boolean;
@@ -140,13 +142,18 @@ const subjectOf = (credential: Credential): RefreshSubject & { readonly disabled
 const failure = (
   code: RefreshFailureCode,
   message: string,
-  extra: { readonly httpStatus?: number | undefined; readonly terminal?: boolean } = {},
+  extra: {
+    readonly httpStatus?: number | undefined;
+    readonly retryAfterMs?: number | undefined;
+    readonly terminal?: boolean;
+  } = {},
 ): RefreshResult => ({
   ok: false,
   error: {
     code,
     message,
     ...(extra.httpStatus === undefined ? {} : { httpStatus: extra.httpStatus }),
+    ...(extra.retryAfterMs === undefined ? {} : { retryAfterMs: extra.retryAfterMs }),
   },
   terminal: extra.terminal === true,
 });
@@ -462,6 +469,11 @@ export class RefreshManager {
       const error = outcome.error;
 
       if (error.blockMs !== undefined) this.#blockedUntil.set(id, finishedAt + error.blockMs);
+
+      // The wait the upstream asked for, this time or (still blocked) an earlier time.
+      const blockedFor =
+        error.blockMs ?? (blockedUntil > finishedAt ? blockedUntil - finishedAt : undefined);
+
       this.#logFailure(executor, error);
 
       if (replaced) return this.#unchanged(current);
@@ -495,7 +507,7 @@ export class RefreshManager {
       return failure(
         terminal && hasUnauthorizedFailure(committed.state) ? "unauthorized" : "refresh_failed",
         redactSecrets(error.message),
-        { httpStatus: error.status, terminal },
+        { httpStatus: error.status, retryAfterMs: blockedFor, terminal },
       );
     }
 

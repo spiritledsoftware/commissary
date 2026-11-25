@@ -132,10 +132,22 @@ export const needsPreparation = (credential: CredentialSnapshot, now: number): b
 };
 
 /** Failures that mean "nothing to prepare" rather than a broken credential. */
-const BENIGN = new Set(["not_refreshable", "not_found"]);
+const BENIGN = new Set(["not_refreshable"]);
 
-const refreshError = (failure: Extract<RefreshResult, { ok: false }>): ExecutionError =>
-  new ExecutionError({
+const refreshError = (failure: Extract<RefreshResult, { ok: false }>): ExecutionError => {
+  // The credential was removed before or while it was prepared: its snapshot must not be used (CLIProxyAPI 0a34244e,
+  // `prepareRequestAuthInternal`). The request moves on to another credential.
+  if (failure.error.code === "not_found") {
+    return new ExecutionError({
+      status: 500,
+      code: "credential_removed",
+      message: "prepare auth: credential no longer registered",
+    });
+  }
+
+  const retryAfterMs = failure.error.retryAfterMs;
+
+  return new ExecutionError({
     status:
       failure.terminal || failure.error.httpStatus === 401
         ? 401
@@ -143,7 +155,10 @@ const refreshError = (failure: Extract<RefreshResult, { ok: false }>): Execution
     code: failure.error.code === "unauthorized" ? "unauthorized" : "refresh_failed",
     message: failure.error.message,
     ...(failure.terminal ? { terminalAuth: true } : {}),
+    // The upstream's wait goes with the failure like an execution error's (CLIProxyAPI 2f57a5a6).
+    ...(retryAfterMs === undefined || retryAfterMs <= 0 ? {} : { retryAfterMs }),
   });
+};
 
 export interface RefreshHooks {
   /**

@@ -1510,6 +1510,69 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
       assert.strictEqual(counts.ensure, 1);
     }),
   );
+
+  it.effect(
+    "a credential removed before it could be prepared is not used (CLIProxyAPI 0a34244e)",
+    () =>
+      Effect.gen(function* () {
+        const seen: string[] = [];
+        const counts = { refresh: [] as Array<string | undefined>, ensure: 0 };
+
+        const run = yield* setup("", () => jsonResponse({}), {
+          providers,
+          executors: tokenExecutor(seen),
+          refresher: refresherFor(counts, () => ({
+            ok: false,
+            error: { code: "not_found", message: "credential was removed during refresh" },
+            terminal: false,
+          })),
+          prepare: (harness) =>
+            harness.pool.upsert(
+              "claude-a.json",
+              { type: "claude", email: "a@x.com", refresh_token: "r" },
+              { mergeExisting: false },
+            ),
+        });
+
+        const error = yield* failure_(run.exec(executeNonStream(chatInput("claude-x"))));
+        assert.include(error.message, "no longer registered");
+        assert.deepStrictEqual(seen, []);
+        assert.strictEqual(counts.ensure, 1);
+      }),
+  );
+
+  it.effect(
+    "a prepare failure the upstream asked to wait for carries its Retry-After (CLIProxyAPI 2f57a5a6)",
+    () =>
+      Effect.gen(function* () {
+        const counts = { refresh: [] as Array<string | undefined>, ensure: 0 };
+
+        const run = yield* setup("", () => jsonResponse({}), {
+          providers,
+          executors: tokenExecutor([]),
+          refresher: refresherFor(counts, () => ({
+            ok: false,
+            error: {
+              code: "refresh_failed",
+              message: "rate limited",
+              httpStatus: 429,
+              retryAfterMs: 120_000,
+            },
+            terminal: false,
+          })),
+          prepare: (harness) =>
+            harness.pool.upsert(
+              "claude-a.json",
+              { type: "claude", email: "a@x.com", refresh_token: "r" },
+              { mergeExisting: false },
+            ),
+        });
+
+        const error = yield* failure_(run.exec(executeNonStream(chatInput("claude-x"))));
+        assert.strictEqual(error.status, 429);
+        assert.strictEqual(error.retryAfterMs, 120_000);
+      }),
+  );
 });
 
 const failure_ = <A>(effect: Effect.Effect<A, ExecutionError>) => Effect.flip(effect);
