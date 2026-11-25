@@ -251,7 +251,7 @@ export const finalizeForCopilot = (attempt: CopilotAttempt, original: Json, body
     {
       model: attempt.route.model,
       // The request names a published route only when it carries the namespace.
-      sourceModel: requested.startsWith(COPILOT_MODEL_PREFIX) ? requested : "",
+      sourceModels: requested.startsWith(COPILOT_MODEL_PREFIX) ? [requested] : [],
       requestedModel:
         attempt.options.metadata.requestedModel !== ""
           ? attempt.options.metadata.requestedModel

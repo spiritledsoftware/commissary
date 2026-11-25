@@ -1172,6 +1172,43 @@ describe("antigravity executor: thinking groups", () => {
     expect(sent.request.generationConfig.maxOutputTokens).toBe(4096);
   });
 
+  // Go `TestAntigravityThinkingGroupsPayloadRulesLast`: rules for the requested model and for the variant both apply.
+  it("applies payload rules of the requested model and of the selected variant last", async () => {
+    resetMemoryAntigravityState();
+    await seed(owner);
+
+    const rules = await loadConfig(`
+requests:
+  payload:
+    override:
+      - models: [{ name: "gemini-3-pro-high", protocol: antigravity }]
+        params:
+          "generationConfig.maxOutputTokens": 1234
+          "labels.model_enum": "FILTER_ME"
+    filter:
+      - models: [{ name: "gemini-3-pro-low", protocol: antigravity }]
+        params: ["labels.model_enum"]
+`);
+
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), {
+      credential: owner,
+      config: rules,
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/chat/completions",
+      postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low" }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-low");
+    expect(sent.request.generationConfig.maxOutputTokens).toBe(1234);
+    expect(sent.request.labels.model_enum).toBeUndefined();
+  });
+
   it("keeps the requested model, with its own enum, without a thinking level", async () => {
     resetMemoryAntigravityState();
     await seed(owner);

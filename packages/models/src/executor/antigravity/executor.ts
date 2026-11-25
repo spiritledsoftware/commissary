@@ -675,6 +675,8 @@ export const makeAntigravityExecutor = (
       {
         model,
         requestedModel,
+        // Rules for the requested model still apply to its selected thinking variant (Go source models).
+        sourceModels: [parseSuffix(request.model).modelName],
         protocol: to,
         fromProtocol: from,
         root: "request",
@@ -1380,8 +1382,9 @@ export const makeAntigravityExecutor = (
       context.config,
       ANTIGRAVITY_IDENTIFIER,
       {
-        model: baseModel,
+        model,
         requestedModel,
+        sourceModels: [baseModel],
         protocol: to,
         fromProtocol: from,
         root: "request",
