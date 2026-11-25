@@ -1,5 +1,6 @@
 // /v9/management/credentials* and /routing/cooldown/reset through the router with the real ControlPlane.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import type { RoutingModels } from "@commissary/contract/routing";
 import {
   claudeFile,
   controlPlane,
@@ -347,6 +348,89 @@ describe("management credentials: download, delete, models", () => {
       status: 400,
       body: { error: "name is required" },
     });
+  });
+});
+
+// f89d408e / 2a33e205: Copilot's and Devin's models are namespaced in the management API as clients call them, and the
+// channel rules name that qualified source.
+describe("management credentials: Copilot and Devin published routes", () => {
+  const COPILOT = {
+    type: "copilot",
+    account_id: "42",
+    username: "octocat",
+    access_token: "copilot-token",
+    refresh_token: "github-grant",
+    base_url: "https://api.individual.githubcopilot.com",
+    expired: "2999-01-01T00:00:00Z",
+  };
+
+  const DEVIN = { type: "devin", api_key: "devin-session-token$a", email: "a@example.com" };
+
+  const ruleEdit = async (kind: string, channel: string, body: Json) => {
+    const view = await json("/v9/management/routing/models");
+
+    // SAFETY: the routing view's revisions (`RoutingModels`).
+    const revisions = (view.body as RoutingModels).revisions[
+      kind === "aliases" ? "aliases" : "exclusions"
+    ];
+
+    return await json(`/v9/management/model-rules/${kind}/${channel}`, {
+      ...jsonInit("PUT", body),
+      headers: { "content-type": "application/json", "if-match": String(revisions[channel] ?? 0) },
+    });
+  };
+
+  it("lists the models under <provider>/<id>, with the qualified source as every route's upstream", async () => {
+    await upload("copilot-42.json", COPILOT);
+    await upload("devin-a.json", DEVIN);
+    expect(
+      (
+        await ruleEdit("aliases", "copilot", [
+          { name: "copilot/claude-sonnet-5.5", alias: "sonnet" },
+        ])
+      ).status,
+    ).toBe(200);
+    expect((await ruleEdit("exclusions", "devin", ["devin/grok-*"])).status).toBe(200);
+
+    const view = await json("/v9/management/routing/models");
+    // SAFETY: the shape is checked against the contract in management-contract.test.ts.
+    const { models } = view.body as RoutingModels;
+    const route = (id: string) => models.find((model) => model.id === id)?.routes[0];
+
+    expect(route("copilot/gpt-6-sol")).toMatchObject({
+      channel: "copilot",
+      upstream: "copilot/gpt-6-sol",
+      via: "catalog",
+    });
+    expect(route("sonnet")).toMatchObject({
+      upstream: "copilot/claude-sonnet-5.5",
+      via: "alias",
+      rule_scope: "channel",
+    });
+    expect(route("copilot/claude-sonnet-5.5")).toBeUndefined();
+    expect(route("devin/swe-2")).toMatchObject({ upstream: "devin/swe-2", via: "catalog" });
+    expect(route("devin/grok-4-6")).toMatchObject({
+      upstream: "devin/grok-4-6",
+      state: "excluded",
+      reason: "devin/grok-*",
+    });
+    expect(models.some((model) => model.id === "gpt-6-sol" || model.id === "swe-2")).toBe(false);
+
+    // Each credential's own listing names its routes the same way.
+    for (const [name, provider] of [
+      ["copilot-42.json", "copilot"],
+      ["devin-a.json", "devin"],
+    ] as const) {
+      const listing = await json(`/v9/management/credentials/models?name=${name}`);
+      // SAFETY: the credential's model listing.
+      const ids = (listing.body as { models: Array<{ id: string }> }).models.map((m) => m.id);
+
+      expect(ids.length).toBeGreaterThan(0);
+      expect(ids.filter((id) => !id.startsWith(`${provider}/`))).toEqual(
+        provider === "copilot" ? ["sonnet"] : [],
+      );
+      expect(ids.filter((id) => id.startsWith(`${provider}/${provider}/`))).toEqual([]);
+    }
   });
 });
 
