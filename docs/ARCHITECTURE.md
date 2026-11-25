@@ -942,7 +942,8 @@ Core contracts every provider slice implements (Go references in each module hea
   client goes away: a writer fiber queues explicit creates (max 16) while steering is unacknowledged, forwards `response.steer`
   (payload rules as `codex-websockets`, `type` re-forced) and answers malformed/unsupported frames with a local 400 `error` event;
   a reader fiber classifies per-response failures, keeps the per-response settings (replay scope, native output, collaboration-tool
-  renaming, reasoning/instructions; 16 retained) that automatic successors and `response.append` inherit, and forwards
+  renaming, reasoning, and the instructions as they were before the payload rules, so a rule is not applied twice; 16 retained)
+  that automatic successors and `response.append` inherit, and forwards
   `response.steer.*` events byte for byte. A failure before the first `response.created` fails the attempt (credential failover);
   later 401/403/429 events are delivered and then end the socket; ambiguous failures end it without cooling the credential
   (`duplexConnectionError` is request-scoped). The handler treats a duplex stream as the socket: error events after
@@ -1143,7 +1144,8 @@ request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
   bootstrap buffering").
 - **xAI** (`xai/websocket.ts`, `websocket-ids.ts`): official API base URL only (the CLI chat proxy answers 405 to upgrades), frame =
   prepared body with `type: response.create`, no `stream`/`stream_options`/`background`, `store: true`, no `instructions` on
-  continuations, payload rules on that body and `type` re-forced afterwards. Downstream response ids are mapped to upstream ids
+  continuations, payload rules on that body and then `type` (framing only). The transcript records the `input` from before
+  the rules, so replaying it into a later request does not apply a rule twice. Downstream response ids are mapped to upstream ids
   (`-xai-<seq>` suffix for repeats; `previous_response_id` dropped and the recorded transcript prepended when the upstream target
   changed). `generate:false` warm-ups end after `response.created` with a synthesised `response.completed`.
 - **Local requests**: an executor that answers a request without the upstream socket (local compaction on any route)

@@ -70,9 +70,11 @@ export class XaiIdState {
     return { payload: this.prependTranscriptInput(payload), replayed: true };
   }
 
-  /** `recordTranscriptTurn`. */
-  recordTranscriptTurn(request: Json, completed: Json, reset: boolean): void {
-    const inputItems = get(request, "input");
+  /**
+   * `recordTranscriptTurn`: `input` is the request's input before the payload rules (CLIProxyAPI b4410dd5), so a rule
+   * is not applied twice, nor accumulates, when the transcript is replayed into a later request.
+   */
+  recordTranscriptTurn(inputItems: Json | undefined, completed: Json, reset: boolean): void {
     const outputItems = get(completed, "response.output");
 
     if (reset) {

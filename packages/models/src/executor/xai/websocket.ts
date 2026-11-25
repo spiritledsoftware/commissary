@@ -66,18 +66,31 @@ const WARMUP_USAGE = {
   total_tokens: 0,
 };
 
-/** `buildXAIWebsocketRequestBody`; `finalize` is the payload-rule barrier and runs on the framed body. */
-export const buildXaiWebsocketBody = (body: JsonObject, finalize: (body: Json) => Json): Json => {
+/** The final frame body, and its `input` before the payload rules (what the transcript records). */
+export interface XaiWebsocketBody {
+  readonly frame: Json;
+  readonly transcriptInput: Json | undefined;
+}
+
+/**
+ * `normalizeXAIWebsocketRequestDoc` + `buildXAIWebsocketRequestBodyDoc`: the business fields are normalised, `input`
+ * is kept for the transcript, `finalize` (the payload-rule barrier) runs, then only the framing is added.
+ */
+export const buildXaiWebsocketBody = (
+  body: JsonObject,
+  finalize: (body: Json) => Json,
+): XaiWebsocketBody => {
   let out: Json = cloneJson(body);
-  out = set(out, "type", "response.create");
 
   for (const field of ["stream", "stream_options", "background"]) out = del(out, field);
   out = set(out, "store", true);
 
   if (asString(get(out, "previous_response_id")).trim() !== "") out = del(out, "instructions");
+  const input = get(out, "input");
+  const transcriptInput = input === undefined ? undefined : cloneJson(input);
   out = finalize(out);
 
-  return set(out, "type", "response.create");
+  return { frame: set(out, "type", "response.create"), transcriptInput };
 };
 
 /** `buildXAIWebsocketWarmupCompletedPayload`: the `response.completed` of a `generate: false` request. */
@@ -226,7 +239,7 @@ export const makeXaiWebsocketStream =
         body = mapper.upstreamRequestPayload(body);
       }
 
-      const frameBody = buildXaiWebsocketBody(body, (framed) =>
+      const { frame: frameBody, transcriptInput } = buildXaiWebsocketBody(body, (framed) =>
         deps.finalize(context, request, options, prepared, framed),
       );
 
@@ -348,7 +361,11 @@ export const makeXaiWebsocketStream =
                       warmupCompleted = buildWarmupCompletedPayload(event);
 
                       if (state !== undefined && !recordedTranscript) {
-                        state.recordTranscriptTurn(frameBody, warmupCompleted, transcriptReset);
+                        state.recordTranscriptTurn(
+                          transcriptInput,
+                          warmupCompleted,
+                          transcriptReset,
+                        );
                         recordedTranscript = true;
                       }
                     }
@@ -378,7 +395,7 @@ export const makeXaiWebsocketStream =
                     }
 
                     if (!warmupRequest && state !== undefined && !recordedTranscript) {
-                      state.recordTranscriptTurn(frameBody, event, transcriptReset);
+                      state.recordTranscriptTurn(transcriptInput, event, transcriptReset);
                       recordedTranscript = true;
                     }
 
