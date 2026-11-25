@@ -2833,6 +2833,22 @@ arrive as `invalid_json_str` is held back and, after a clean EOS trailer, wrappe
 502). The log-only apply_patch diagnostics of `b4f59d70` and `02ee3139` (byte counts, prefix shapes, JSON control character error classes)
 are not ported.
 
+Port to CLIProxyAPI `dd543d09`. Effort clamping is the canonical one (`thinking.clampLevel`, `a516bf3b`): the nearest catalog level, ties to
+the lower one (`swe-2` with `xhigh` is `swe-2-high`). A model suffix overrides the body's effort and budget (`(auto)`/`(-1)`, `(none)`, `(0)`
+off, `(<budget>)`). An automatic effort (`auto`, `adaptive`) is `medium` clamped to the catalog, and a budget maps through
+`convertBudgetToLevel`. GPT reasoning survives Responses tool calls (`cb5f62f7`): the executor carries the frame's signature type to the
+client, also when it arrives in a frame of its own (`signature_type` on the thought step or the `thought_signature` delta). A
+signature-only thought may follow an open Responses message. Devin's typed list of GPT reasoning items (`signature_type: "openai"`,
+`isDevinOpenAIReasoningSignature`) passes the Interactions -> Responses translator verbatim. On the Devin route only, the executor's
+`devinReasoningReplay` translate option (Go `DevinReasoningReplayKey`) replays two kinds of Responses `reasoning` item as typed thought
+steps: such a list, sent back unchanged as its own assistant turn, and an unprefixed Vertex bare-Tink Gemini signature (`28b281d5`).
+Dead upstream slots fail over (`a9e3ddcf`). A clean EOS with no text, thinking, signature or tool call, no output tokens, and a stop
+reason other than 11 is an empty completion: a 502 `transient_transport`, so the Conductor rotates credentials and cools none. A stream
+that drops (no EOS, read error) before anything reached the client or was generated is `transient_transport` too. One that drops
+mid-generation is `stream_truncated`: no cooldown, no replay. A failure keeps the usage counted so far. So does a canceled stream,
+which gets no completion event. The sanitised apply_patch 502 replaces an upstream failure only after a tool call of the declared tool
+(or one without a name) was seen. The upstream response summary of Go's request log is not ported (request-log files are a non-goal).
+
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 
 No Go counterpart: CLIProxyAPI reaches OpenCode only through an `openai-compatibility` entry (chat only). The Workers port has two
