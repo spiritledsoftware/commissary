@@ -9,6 +9,8 @@
 export interface Weighted {
   readonly id: string;
   readonly weight: number;
+  /** Material version of the credential (`credentialVersion`); a new one starts the credential's credit at zero. */
+  readonly version?: number;
 }
 
 const DEFAULT_MAX_KEYS = 4096;
@@ -44,16 +46,33 @@ const saturatingAdd = (value: number, delta: number): number => {
   return value + delta;
 };
 
-/** Accumulated credits of smooth weighted round-robin for one key. */
+/**
+ * Accumulated credits of smooth weighted round-robin for one key, shared by every subset of its candidates (retry
+ * exclusions, cooldowns, affinity), so a credential left out of a few picks keeps its credit and the rotation does not
+ * collapse onto the lowest ids (CLIProxyAPI 9d7d012b).
+ */
 export class SmoothWeightedState {
   current = new Map<string, number>();
   weights = new Map<string, number>();
+  /** Material version each credential's credit was earned with. */
+  readonly #versions = new Map<string, number>();
+  /** When each credential was last a candidate (a counter of `prepare` calls), for the bound below. */
+  readonly #seen = new Map<string, number>();
+  #tick = 0;
+  /** Largest candidate set seen, so a pool cooling down to a few candidates keeps the others' credits. */
+  #peak = 0;
 
   /**
-   * Syncs configured weights without discarding credits. Credits reset only when a credential's configured weight
-   * changes, never when the candidate set shrinks (retry exclusions, cooldowns, affinity).
+   * Syncs configured weights without discarding credits. All credits reset when a credential's configured weight
+   * changes, never when the candidate set shrinks; a credential whose material changed (removed and added again, a
+   * new login) starts its own credit at zero. Retained state is bounded: past the larger of
+   * {@link MAX_SMOOTH_STATE_ENTRIES} and twice the largest candidate set seen, the credentials not seen for longest are
+   * forgotten.
    */
-  prepare(weights: ReadonlyMap<string, number>): void {
+  prepare(weights: ReadonlyMap<string, number>, versions?: ReadonlyMap<string, number>): void {
+    this.#tick += 1;
+    this.#peak = Math.max(this.#peak, weights.size);
+
     if (this.weights.size > 0) {
       for (const [id, weight] of weights) {
         const previous = this.weights.get(id);
@@ -65,16 +84,38 @@ export class SmoothWeightedState {
       }
     }
 
-    for (const [id, weight] of weights) this.weights.set(id, weight);
+    for (const [id, weight] of weights) {
+      this.weights.set(id, weight);
+      this.#seen.set(id, this.#tick);
+      const version = versions?.get(id);
 
-    if (
-      this.current.size > MAX_SMOOTH_STATE_ENTRIES ||
-      this.weights.size > MAX_SMOOTH_STATE_ENTRIES
-    ) {
-      for (const id of this.current.keys()) if (!weights.has(id)) this.current.delete(id);
+      if (version === undefined) continue;
+      const known = this.#versions.get(id);
 
-      for (const id of this.weights.keys()) if (!weights.has(id)) this.weights.delete(id);
+      if (known !== undefined && known !== version) this.current.delete(id);
+      this.#versions.set(id, version);
     }
+
+    const bound = Math.max(MAX_SMOOTH_STATE_ENTRIES, 2 * this.#peak);
+
+    if (this.weights.size <= bound && this.current.size <= bound) return;
+
+    const stale = [...this.#seen.entries()]
+      .filter(([id]) => !weights.has(id))
+      .toSorted((a, b) => a[1] - b[1]);
+
+    for (const [id] of stale) {
+      if (this.weights.size <= bound && this.current.size <= bound) break;
+      this.forget(id);
+    }
+  }
+
+  /** Drops everything kept about one credential. */
+  forget(id: string): void {
+    this.current.delete(id);
+    this.weights.delete(id);
+    this.#versions.delete(id);
+    this.#seen.delete(id);
   }
 }
 
@@ -149,10 +190,16 @@ export class RotationState {
     }
 
     const weights = new Map<string, number>();
+    const versions = new Map<string, number>();
 
-    for (const candidate of candidates)
-      if (candidate.weight > 0) weights.set(candidate.id, candidate.weight);
-    state.prepare(weights);
+    for (const candidate of candidates) {
+      if (candidate.weight <= 0) continue;
+      weights.set(candidate.id, candidate.weight);
+
+      if (candidate.version !== undefined) versions.set(candidate.id, candidate.version);
+    }
+
+    state.prepare(weights, versions);
 
     return pickSmoothWeighted(candidates, state.current);
   }

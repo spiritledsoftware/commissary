@@ -480,6 +480,38 @@ describe("error table (MarkResult)", () => {
     expect(state.modelStates.m).toMatchObject({ unavailable: true, nextRetryAfter: NOW + MIN });
   });
 
+  it("a live forced cooldown outlasts later failures while cooling is disabled (CLIProxyAPI 9d7d012b)", () => {
+    const forced = fail(429, "stop", {
+      retryAfterMs: HOUR,
+      error: { code: "force_cooldown", message: "stop", retryable: false, httpStatus: 429 },
+    });
+
+    const off = { metadata: { disable_cooling: false } };
+    const cooling = { metadata: { disable_cooling: true } };
+
+    for (const model of ["m", ""]) {
+      let state = mark(emptyState(), model, forced, off);
+
+      const deadline =
+        model === "" ? state.nextRetryAfter : (state.modelStates[model]?.nextRetryAfter ?? 0);
+
+      expect(deadline).toBe(NOW + HOUR);
+
+      // Two interleaved failures with cooling disabled each write a zero deadline.
+      state = mark(state, model, fail(500), { ...cooling, now: NOW + MIN });
+      state = mark(state, model, fail(429), { ...cooling, now: NOW + 2 * MIN });
+
+      const holder = model === "" ? state : state.modelStates[model];
+      expect(holder, model).toMatchObject({ nextRetryAfter: deadline, unavailable: true });
+      expect(blocked(state, "m", NOW + 30 * MIN), model).toBe(true);
+    }
+
+    // An ordinary cooldown is still cleared by a zero write.
+    let plain = mark(emptyState(), "m", fail(500, "x", { retryAfterMs: HOUR }), off);
+    plain = mark(plain, "m", fail(500), { ...cooling, now: NOW + MIN });
+    expect(plain.modelStates.m?.nextRetryAfter).toBe(0);
+  });
+
   it("never cools: request-scoped, connection lifecycle and transient transport failures (connection_lifecycle_cooldown_test.go)", () => {
     for (const result of [
       fail(400, "bad request body", { requestScoped: true }),

@@ -430,6 +430,12 @@ const clearStateOnSuccess = (state: Draft, now: number): void => {
   state.updatedAt = now;
 };
 
+/** Whether the cooldown in place was set by an explicit `force_cooldown` (a `stop-and-cooldown` action) and is live. */
+const forcedCooldownLive = (
+  holder: { readonly nextRetryAfter: number; readonly lastError?: CredentialError | undefined },
+  now: number,
+): boolean => holder.lastError?.code === ErrorCode.forceCooldown && holder.nextRetryAfter > now;
+
 // --- failure with a credential-level result -------------------------------------------------------------------------
 
 /** `applyAuthFailureState`: the failure table at credential level (no model key). */
@@ -446,6 +452,7 @@ const applyCredentialFailure = (
   headers: Readonly<Record<string, string>> | undefined,
 ): void => {
   const previous = state.nextRetryAfter;
+  const previousForced = forcedCooldownLive(state, now) ? state.lastError : undefined;
 
   if (shouldSkipCredentialCooldown(classified)) return;
   state.unavailable = true;
@@ -586,8 +593,17 @@ const applyCredentialFailure = (
     }
   }
 
-  if (state.nextRetryAfter !== 0 && previous > state.nextRetryAfter && previous > now)
+  // A live forced cooldown outlasts a later failure's zero write (cooling disabled) (CLIProxyAPI 9d7d012b).
+  if (
+    (state.nextRetryAfter !== 0 || previousForced !== undefined) &&
+    previous > state.nextRetryAfter &&
+    previous > now
+  ) {
+    if (state.nextRetryAfter === 0 && previousForced !== undefined)
+      state.lastError = previousForced;
     state.nextRetryAfter = previous;
+    state.unavailable = true;
+  }
 
   if (error?.code === ErrorCode.forceCooldown && state.nextRetryAfter === 0) {
     state.nextRetryAfter = now + TRANSIENT_ERROR_COOLDOWN_MS;
@@ -774,6 +790,7 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         model.status = "error";
         model.updatedAt = now;
         const previousRetryAfter = model.nextRetryAfter;
+        const previousForced = forcedCooldownLive(model, now) ? model.lastError : undefined;
         model.lastError = cloneError(failure);
         model.statusMessage = redactSecrets(failure.message);
 
@@ -899,13 +916,18 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
           model.unavailable = true;
         }
 
-        // A later failure only extends a live cooldown; a deliberate zero write (cooling disabled) still clears it.
+        // A later failure only extends a live cooldown; a deliberate zero write (cooling disabled) still clears it,
+        // except an explicit forced cooldown, which outlasts it (CLIProxyAPI 9d7d012b).
         if (
-          model.nextRetryAfter !== 0 &&
+          (model.nextRetryAfter !== 0 || previousForced !== undefined) &&
           previousRetryAfter > model.nextRetryAfter &&
           previousRetryAfter > now
         ) {
+          // The forced deadline stays recognisable, so it outlasts any number of interleaved failures.
+          if (model.nextRetryAfter === 0 && previousForced !== undefined)
+            model.lastError = previousForced;
           model.nextRetryAfter = previousRetryAfter;
+          model.unavailable = true;
         }
 
         state.status = "error";

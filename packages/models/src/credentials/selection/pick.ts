@@ -86,6 +86,8 @@ interface Candidate {
   readonly route: ModelRoute;
   readonly id: string;
   readonly weight: number;
+  /** The credential's material version: a re-registered credential starts its weighted credit afresh. */
+  readonly version: number;
   readonly priority: number;
 }
 
@@ -247,6 +249,7 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
       route,
       id: credential.id,
       weight: credential.weight,
+      version: credential.credentialVersion,
       priority: credential.priority,
     });
   }
