@@ -4590,7 +4590,7 @@ Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_fil
   (`orgScopedName`: `org.<org>.<hex>`, a bare state is `global`'s), so the callback asks only that org's ControlPlane.
 
 Deviations from Go: the Antigravity login uses the Go fallback client version `2.35.1` (the executor reads the polled Hub version, see
-_Antigravity provider_) and project discovery runs inside the login (non-fatal; the executor repeats it when `project_id` is missing); a transport failure or 5xx of one xAI/Kimi/Copilot poll keeps waiting instead of ending the login; Codex
+_Antigravity provider_) and project discovery runs inside the login, which fails when discovery fails or finds no project (CLIProxyAPI `d214f881`; the executor still repeats it for a credential stored without `project_id`); a transport failure or 5xx of one xAI/Kimi/Copilot poll keeps waiting instead of ending the login; Codex
 exchange errors include the (scrubbed) upstream status/body like Go but cap it at 512 chars; device-flow states carry a random
 suffix (`xai-<ms>-<hex>`); Kimi stores the normalised `domain`; Claude's uTLS/ordered-header fingerprint cannot be reproduced (see
 Claude provider). `POST /v9/management/oauth/import?provider=vertex` (`models/management/oauth-import.ts`, Go `ImportVertexCredential`)
