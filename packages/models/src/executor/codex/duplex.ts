@@ -2,7 +2,9 @@
  * Codex WebSocket full duplex / response steering (`upstream.codex.response-steering`).
  *
  * Go source: internal/runtime/executor/codex_websockets_duplex.go (`streamCodexDuplex`, `codexDuplexConnectionError`),
- * wired from codex_websockets_stream.go (ExecuteStream) and sdk/cliproxy/executor/websocket_input.go.
+ * wired from codex_websockets_stream.go (ExecuteStream) and sdk/cliproxy/executor/websocket_input.go. An append inherits
+ * the instructions captured before the payload rules (codex_websockets_stream.go `unconfiguredInstructions`,
+ * CLIProxyAPI b4410dd5).
  *
  * The executor owns the upstream socket until the downstream socket goes away. A terminal event of one response is not a
  * connection terminal event: accepted steering (`response.steer`) may produce an automatic successor response or wait for

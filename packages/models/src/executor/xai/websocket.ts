@@ -3,12 +3,14 @@
  * `websockets` enabled.
  *
  * Go source: internal/runtime/executor/xai_websockets_executor.go (XAIWebsocketsExecutor.ExecuteStream,
- * buildXAIWebsocketRequestBody, buildXAIResponsesWebsocketURL, applyXAIWebsocketHeaders, parseXAIWebsocketError,
- * xaiBareWebsocketErrorStatus, buildXAIWebsocketWarmupCompletedPayload, XAIAutoExecutor routing).
+ * normalizeXAIWebsocketRequestDoc, buildXAIWebsocketRequestBodyDoc, buildXAIResponsesWebsocketURL,
+ * applyXAIWebsocketHeaders, parseXAIWebsocketError, xaiBareWebsocketErrorStatus, buildXAIWebsocketWarmupCompletedPayload,
+ * XAIAutoExecutor routing).
  *
- * The request pipeline is the HTTP one (`executor.ts` `prepare`) plus the WebSocket framing: `type: "response.create"`,
- * no `stream`/`stream_options`/`background`, `store: true`, `instructions` dropped when continuing a response; user
- * payload rules run on that final body and only `type` is re-forced afterwards. WebSocket requests always use the
+ * The request pipeline is the HTTP one (`executor.ts` `prepare`) plus the WebSocket normalisation: no
+ * `stream`/`stream_options`/`background`, `store: true`, `instructions` dropped when continuing a response. The
+ * transcript keeps `input` from before the payload rules (CLIProxyAPI b4410dd5); the rules run on that final body and
+ * only the `type: "response.create"` framing is added afterwards. WebSocket requests always use the
  * official API base URL (or an explicit `base_url`): the CLI chat proxy answers 405 to upgrades. Events pass through the
  * same reasoning-summary normalisation and namespace/alias/X Search pipeline as the SSE path and are forwarded as bare
  * JSON chunks. `generate: false` warm-ups end after `response.created` with a synthesised `response.completed`.

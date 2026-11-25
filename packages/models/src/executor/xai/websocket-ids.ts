@@ -5,7 +5,8 @@
  * Go source: internal/runtime/executor/xai_websockets_executor.go (xaiWebsocketIDState, xaiWebsocketRequestIDMapper,
  * rewriteXAIWebsocketDownstreamIDs). When the upstream target (credential or URL) changes, `previous_response_id` is
  * dropped and the recorded transcript is prepended to `input` ("replay"); downstream ids that would repeat an upstream
- * id get a `-xai-<seq>` suffix. State lives per isolate, keyed by the downstream socket id (the socket keeps its
+ * id get a `-xai-<seq>` suffix. A turn is recorded with its `input` from before the payload rules (`recordTranscriptTurn`'s
+ * input snapshot, CLIProxyAPI b4410dd5). State lives per isolate, keyed by the downstream socket id (the socket keeps its
  * isolate alive), and is released with the execution session.
  */
 import {
