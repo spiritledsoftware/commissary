@@ -513,9 +513,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   without levels, and user-defined ones, pass through.
 - **Claude budgets below the model minimum** after the `max_tokens` cap disable thinking (Go `75d03aea`) instead of
   passing the invalid budget upstream. Antigravity drops its `thinkingConfig` in that case, and with it the
-  `includeThoughts` flag and the summary re-application.
-- **Antigravity** writes `thinkingLevel` upper case (`HIGH`) and replaces a snake_case `thinking_config` object with
-  `thinkingConfig`, keeping its `includeThoughts` (Go `84856805`).
+  `includeThoughts` flag and the summary re-application (Go `b2151d64`).
+- **Antigravity** writes `thinkingLevel` upper case (`HIGH`, Go `127c50bc`) and replaces a snake_case `thinking_config`
+  object with `thinkingConfig`, keeping its `includeThoughts` (Go `84856805`).
 - **OpenAI Chat requests** without a non-blank `reasoning_effort` read Gemini's thinking fields
   (`generationConfig.thinkingConfig`, `generation_config.thinking_config`, then `extra_body.google.thinking_config`,
   snake_case or camelCase; Go `ffa55112`), for validation and the usage effort label. The Gemini and Antigravity Chat
@@ -1202,6 +1202,10 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
     (`builtins.json`) are now additions, so a provider has one catalog: where Go's shared static lookup still reads its
     raw xAI entries under the built-ins, Commissary answers the built-in record. A channel-qualified id (`vertex/<id>`)
     also matches the channel's bare catalog id and answers with the qualified id, as in Go.
+    `gemini` and `aistudio` share `google`, so both serve every Gemini 4 model models.dev lists there (Go's `gemini`
+    section lists only Argon, its `aistudio` section no Neon), and Gemini 4 output limits are models.dev's (`google`
+    gives Argon and Carbon 32768 where Go caps every Gemini 4 model at 65536). Their thinking follows Go through the
+    additions' `facts`: a 128–65535 budget with levels, except Neon everywhere and Hydrogen on Vertex (levels only).
   - _Bundled and stored copies_: `catalog/models-dev.json` is the trimmed snapshot shipped with the Worker (regenerated
     with `pnpm run catalog:sync [url|file]`, `tools/sync-models-dev-catalog.ts`, idempotent). The same document is stored in KV
     `CACHE` (`registry/models-dev.json`) by the refresh; `CatalogStore` (`catalog-store.ts`) serves the KV copy per isolate,

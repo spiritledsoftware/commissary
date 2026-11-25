@@ -135,16 +135,47 @@ describe("static lookups", () => {
 
     expect(ids("codex-free")).not.toContain("gpt-6.2-sol");
 
-    for (const section of ["gemini", "vertex", "aistudio"] as const) {
-      for (const id of [
-        "gemini-4-argon",
-        "gemini-4-carbon",
-        "gemini-4-hydrogen",
-        "gemini-4-neon",
-      ]) {
-        const model = sectionModels(catalogs, section).find((entry) => entry.id === id);
-        expect(model, `${section} ${id}`).toBeDefined();
-        expect(model?.maxCompletionTokens ?? 0, `${section} ${id}`).toBeLessThanOrEqual(65536);
+    // Go's records at dd543d09 (internal/registry/models/models.json): hybrid budget-and-level thinking, except
+    // Hydrogen and Neon on Vertex (levels only, no dynamic budget). Neon has no Go record on gemini/aistudio; it
+    // follows Vertex's. Output limits follow models.dev (ADR 0020): `google` lists 32768 for Argon and Carbon where
+    // Go caps at 65536.
+    const HIGH = ["low", "medium", "high"];
+    const XHIGH = [...HIGH, "xhigh"];
+    const hybrid = (levels: string[]) => ({ min: 128, max: 65535, dynamicAllowed: true, levels });
+    const levelsOnly = (levels: string[]) => ({ dynamicAllowed: false, levels });
+
+    const expected = {
+      gemini: {
+        "gemini-4-argon": [32768, hybrid(HIGH)],
+        "gemini-4-carbon": [32768, hybrid(HIGH)],
+        "gemini-4-hydrogen": [65536, hybrid(XHIGH)],
+        "gemini-4-neon": [65536, levelsOnly(XHIGH)],
+      },
+      aistudio: {
+        "gemini-4-argon": [32768, hybrid(HIGH)],
+        "gemini-4-carbon": [32768, hybrid(HIGH)],
+        "gemini-4-hydrogen": [65536, hybrid(XHIGH)],
+        "gemini-4-neon": [65536, levelsOnly(XHIGH)],
+      },
+      vertex: {
+        "gemini-4-argon": [65536, hybrid(HIGH)],
+        "gemini-4-carbon": [65536, hybrid(HIGH)],
+        "gemini-4-hydrogen": [65536, levelsOnly(XHIGH)],
+        "gemini-4-neon": [65536, levelsOnly(XHIGH)],
+      },
+    } as const;
+
+    for (const [section, models] of Object.entries(expected)) {
+      for (const [id, [maxCompletionTokens, thinking]] of Object.entries(models)) {
+        // SAFETY: `expected`'s keys are catalog sections.
+        const model = sectionModels(catalogs, section as keyof typeof expected).find(
+          (entry) => entry.id === id,
+        );
+
+        expect(
+          { maxCompletionTokens: model?.maxCompletionTokens, thinking: model?.thinking },
+          `${section} ${id}`,
+        ).toEqual({ maxCompletionTokens, thinking });
       }
     }
 

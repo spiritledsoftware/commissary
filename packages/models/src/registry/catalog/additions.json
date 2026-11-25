@@ -294,6 +294,29 @@
             "min": 128,
             "max": 65535
           }
+        },
+        "gemini-4-argon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-carbon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-hydrogen": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-neon": {
+          "thinking": {
+            "dynamicAllowed": false
+          }
         }
       },
       "models": [
@@ -465,6 +488,28 @@
           "thinking": {
             "min": 128,
             "max": 65535
+          }
+        },
+        "gemini-4-argon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-carbon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-hydrogen": {
+          "thinking": {
+            "dynamicAllowed": false
+          }
+        },
+        "gemini-4-neon": {
+          "thinking": {
+            "dynamicAllowed": false
           }
         }
       },
@@ -941,6 +986,29 @@
           "thinking": {
             "min": 128,
             "max": 65535
+          }
+        },
+        "gemini-4-argon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-carbon": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-hydrogen": {
+          "thinking": {
+            "min": 128,
+            "max": 65535
+          }
+        },
+        "gemini-4-neon": {
+          "thinking": {
+            "dynamicAllowed": false
           }
         }
       },

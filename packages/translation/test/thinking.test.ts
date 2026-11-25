@@ -21,7 +21,7 @@ import {
 } from "../src/thinking/index.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
-import { catalogLookup } from "./support/thinking.ts";
+import { catalogLookup, channelCatalogLookup } from "./support/thinking.ts";
 
 // Ports of the Go unit tests in internal/thinking (summary_test.go, claude_enabled_effort_test.go,
 // kimi_max_clamp_repro_test.go, apply_codex_usage_test.go, apply_configured_api_key_test.go).
@@ -1024,7 +1024,7 @@ describe("native Responses effort validation", () => {
     for (const format of ["openai-response", "codex"]) {
       for (const c of cases) {
         it(`${model}/${format}/${c.name}`, () => {
-          const info = catalogLookup(model, "codex");
+          const info = channelCatalogLookup(model, "codex");
 
           expect(info?.supportConfigurationUpdate, `${model} must be native Responses`).toBe(true);
 
@@ -1331,7 +1331,7 @@ describe("configuration_update routing", () => {
       for (const bound of [false, true]) {
         const body = parse(c.body);
         const original = cloneJson(body);
-        const info = catalogLookup("gpt-6-sol", "codex");
+        const info = channelCatalogLookup("gpt-6-sol", "codex");
         expect(
           info?.supportConfigurationUpdate,
           "gpt-6-sol must support configuration updates",
