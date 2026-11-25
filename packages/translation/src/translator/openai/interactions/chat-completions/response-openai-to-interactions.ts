@@ -298,8 +298,10 @@ const convertOpenAIChatStreamToInteractions = (
       if (isArr(toolCalls))
         for (const toolCall of toolCalls) appendToolCallDelta(out, st, modelName, root, toolCall);
 
-      // A JSON null finish_reason still "exists" for gjson, so every chunk closes the active step (kept as in Go).
-      if (get(choice, "finish_reason") !== undefined) appendStepStop(out, st);
+      // Only a non-empty finish_reason closes the step: a null one keeps it open (Go 3dc07c08).
+      const finishReason = get(choice, "finish_reason");
+
+      if (typeof finishReason === "string" && finishReason.trim() !== "") appendStepStop(out, st);
     }
   }
 
