@@ -161,7 +161,12 @@ export class CodexStreamReader {
         this.#buffering = false;
         this.#held.length = 0;
 
-        return { ...step, chunks: [], error: bootstrapOverloadError(body, nowMs()), stop: true };
+        return {
+          ...step,
+          chunks: [],
+          error: bootstrapOverloadError(body, nowMs(), step.error),
+          stop: true,
+        };
       }
 
       // Every other terminal failure keeps its in-stream delivery: the held handshake goes first.

@@ -848,6 +848,21 @@ Core contracts every provider slice implements (Go references in each module hea
   rewrites (`context_too_large`, `thinking_signature_invalid`, `previous_response_not_found`, `auth_unavailable`),
   in-stream `error`/`response.failed` mapping, empty `response.incomplete` -> request-scoped 502, missing terminal ->
   request-scoped 408. 401 refresh/retry is done by the conductor (`withCredentialRefresh`), not by the executor.
+  An untyped envelope that carries `error`, `body.error` or `response.error` (object or non-blank string) or a top-level
+  `code` and `message` counts as an `error` event; an explicit type is authoritative (`codexResponseEventType`, Go `20df0c25`).
+  Policy blocks (`bio_policy`, `cyber_policy[_violation]`, `misalignment_policy_violation`, `invalid_prompt`,
+  `[image_]content_policy_violation`) are 400 request faults, a code-only one gets the official copy as its message
+  (Go `1f76e479`). The headers an error event carries (`headers`, then `body.`, `error.`, `body.error.`, `response.error.`
+  `headers`, the outer name winning) travel with the error, and `Retry-After` is a hint on 429, 408, 500, 502-504 and
+  520-526 (Go `7dd360d9`, `deacbf21`); a WebSocket error frame without a status but with headers gets the status its
+  error implies. Commissary has no SIWC route, refresh journal or nil credential, so Go `d71e9dcd`, `1f5bf2a5` and
+  `335b6987` have no counterpart.
+- **Responses `include`** (`helps/codex-include.ts`, Go `7f22743a`): the Responses -> Codex translator keeps
+  `reasoning.encrypted_content` first, then the Codex-verified `web_search_call.action.sources`, `web_search_call.results` and
+  `output.encrypted_content` in that order. A provider key whose base URL is not the ChatGPT Codex backend (an OpenAI Responses
+  endpoint; Go also counts SIWC, which Commissary lacks) gets every official includable the client asked for once one of them is
+  platform-only. Meta, xAI and OpenCode, which share the translator, drop `output.encrypted_content` and `web_search_call.results`
+  again (OpenCode has no Go counterpart; it keeps the list it had before).
 - **Reasoning replay** (`replay.ts`): Claude-format callers get cached encrypted reasoning/tool calls re-inserted by
   anchor matching. The store is an interface; the default keeps one entry per model in the `SessionState` DO of the session
   (TTL 1 h, appends are compare-and-swap read-modify-writes, session keys are isolated per caller scope), with a per-isolate
@@ -911,8 +926,9 @@ Core contracts every provider slice implements (Go references in each module hea
   48 upstream lines (WebSocket: messages read), 1 MiB and the optional timeout (Go duration or whole seconds,
   `0`/`none`/... = unlimited; the clock is the Effect clock on the WebSocket path, the reader's injected `nowMs` on
   SSE). An overload/rate-limit/capacity rejection inside the HTTP 200 stream (or any upstream `error` frame on the
-  WebSocket) fails the attempt with a 503 before anything reaches the client, so the conductor fails over to the next
-  credential; other terminal failures flush the held handshake and are delivered in-stream, except a terminal
+  WebSocket) fails the attempt before anything reaches the client, so the conductor fails over to the next credential:
+  a 429 that already carries a retry hint passes through as that 429, anything else becomes a 503 that keeps the
+  failure's retry hint (both paths, as in Go); other terminal failures flush the held handshake and are delivered in-stream, except a terminal
   `response.failed` usage limit (`usage_limit_reached`) on the WebSocket, which fails the attempt over like an `error`
   frame (a 429 with its own `resets_at` cooldown, CLIProxyAPI 86a1aabf; the SSE path fails over only on overloads, as in
   Go); a clean EOF while holding fails the attempt without releasing. `grok-pager` / `grok-shell` clients get
@@ -1083,6 +1099,10 @@ request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
   `resp_prewarm_<uuid>`). After a turn that ran on a credential with `websockets` (Codex/xAI) the socket pins that credential and later
   frames pass through (`previous_response_id` kept, state upstream); a model change drops the pin. A continuation that needs the live
   upstream socket but cannot have it closes the client with 1012 "upstream requires HTTP replay" (the client replays full input).
+  A full `response.create` passed through on the pinned credential that fails with a 401, a 429 or a quota/cooldown error
+  before any frame reached the client fails over in place (CLIProxyAPI a8c9c8a4): the pin, upstream mode and compaction
+  marker are dropped and the turn is planned again locally with the failed credential excluded from the pick
+  (`ExecutionInput.excludedIds`), when the picker has another credential; otherwise the error reaches the client as before.
 - **A client socket outlives its upstream socket** (CLIProxyAPI f73e66ac; also for xAI). Once the create frame was
   handed to the upstream socket of a session, a transport loss (close 1006 or a socket `error`; any other close code and
   the idle deadline stay `transient_transport`) fails the request with a request-scoped 502 `upstream_websocket_lost`:

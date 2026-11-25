@@ -257,7 +257,12 @@ export const runResponsesSocket = <R>(
        */
       const answeredLocally = (): boolean => report.local;
 
+      // Frames written to the client so far: a turn that wrote none has committed nothing downstream yet.
+      let framesWritten = 0;
+
       const write = (payload: JsonObject): void => {
+        framesWritten += 1;
+
         if (!closed) io.send(JSON.stringify(payload));
       };
 
@@ -466,9 +471,15 @@ export const runResponsesSocket = <R>(
                 if (options.toolTurn !== undefined) options.toolTurn.recordResponse(payload);
                 else recordToolCallsFromPayload(deps.toolCaches, deps.toolSessionKey, payload);
                 collector.recordPending(payload);
+
                 // In Codex duplex mode the executor owns connection termination: payload errors after response.created are
-                // recoverable events; a failing stream still arrives as an execution error and closes the socket.
-                const preserveErrorEvent = responseStarted && duplexStream();
+                // recoverable events; a failing stream still arrives as an execution error and closes the socket. Credential
+                // quota and cooldown errors are not recoverable on the same socket and still stop the turn (CLIProxyAPI
+                // 14144df5).
+                const preserveErrorEvent =
+                  responseStarted &&
+                  duplexStream() &&
+                  !isQuotaOrCooldownError({ message: JSON.stringify(payload) });
 
                 if (type === "error" && !preserveErrorEvent) {
                   closeResponse("");
@@ -559,11 +570,17 @@ export const runResponsesSocket = <R>(
         } satisfies ForwardResult;
       });
 
-      const executeTurn = Effect.fnUntraced(function* (
+      const executeTurn: (
         plan: Extract<Plan, { _tag: "execute" }>,
         frame: JsonObject,
+        excludedIds?: ReadonlyArray<string>,
+      ) => Effect.Effect<boolean, never, R> = Effect.fnUntraced(function* (
+        plan: Extract<Plan, { _tag: "execute" }>,
+        frame: JsonObject,
+        excludedIds: ReadonlyArray<string> = [],
       ) {
         const { request: planned, nativePassthrough } = plan;
+        const framesWrittenAtStart = framesWritten;
 
         // Native passthrough keeps the state upstream; otherwise tool calls are repaired against the session caches.
         const repaired = nativePassthrough
@@ -603,6 +620,7 @@ export const runResponsesSocket = <R>(
             ...(duplexInput !== undefined ? { duplex: duplexInput } : {}),
           },
           ...(pinnedId !== "" ? { pinnedId } : {}),
+          ...(excludedIds.length > 0 ? { excludedIds } : {}),
           onSelected: (credential) => {
             selected = credential;
             attemptReport.local = false;
@@ -629,6 +647,28 @@ export const runResponsesSocket = <R>(
               return yield* deps.hasAlternative(input, pinnedId);
 
             return false;
+          });
+
+        /**
+         * A self-contained create that failed on its pinned credential with a 401, 429 or quota error before anything
+         * reached the client fails over in place, once, when another credential can serve it (CLIProxyAPI a8c9c8a4).
+         */
+        const failOverInPlace = (error: ExecutionError) =>
+          Effect.gen(function* () {
+            if (!nativePassthrough || plan.requiresCurrentUpstream || !pinnedAuthAttempted)
+              return false;
+
+            if (
+              excludedIds.length > 0 ||
+              framesWritten !== framesWrittenAtStart ||
+              selected === undefined
+            )
+              return false;
+
+            if (error.status !== 401 && error.status !== 429 && !isQuotaOrCooldownError(error))
+              return false;
+
+            return yield* deps.hasAlternative(input, selected.id);
           });
 
         const selectedOutcome = () =>
@@ -702,6 +742,29 @@ export const runResponsesSocket = <R>(
             reportTurnError(result.error);
 
             return false;
+          }
+
+          if (yield* failOverInPlace(result.error)) {
+            const failedId = selected?.id ?? "";
+
+            // Unpin: the create runs again on another credential, as a fallback turn that owns no upstream socket.
+            state.pinned = undefined;
+            state.upstreamMode = "";
+            state.upstreamWebsocketAuthId = "";
+            state.observedCompaction = undefined;
+            const { type: _type, ...request } = planned;
+
+            return yield* executeTurn(
+              {
+                ...plan,
+                request,
+                nativePassthrough: false,
+                requiresCurrentUpstream: false,
+                pinnedId: "",
+              },
+              frame,
+              [...excludedIds, failedId],
+            );
           }
 
           if (yield* replayPinnedFailure(result.error)) {

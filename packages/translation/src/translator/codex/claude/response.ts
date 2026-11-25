@@ -728,6 +728,35 @@ const mapStopReasonToClaude = (stopReason: string, hasToolCall: boolean): string
 // Stream
 // ---------------------------------------------------------------------------------------------------------------
 
+// Mirrors the policy block table of `@commissary/models` (`packages/models/src/http/upstream-error.ts`, `POLICY_BLOCKS`),
+// which translation cannot import: keep the codes and messages in step.
+const POLICY_BLOCK_CODES = new Set([
+  "cyber_policy",
+  "cyber_policy_violation",
+  "bio_policy",
+  "misalignment_policy_violation",
+  "invalid_prompt",
+  "content_policy_violation",
+  "image_content_policy_violation",
+]);
+
+/** The official message of a policy block that names only its code, else the code (1f76e479). */
+const policyFallbackMessage = (code: string): string => {
+  switch (code.toLowerCase()) {
+    case "bio_policy":
+      return "This content was flagged for possible biological risk.";
+    case "cyber_policy":
+    case "cyber_policy_violation":
+      return "This request has been flagged for possible cybersecurity risk.";
+    case "misalignment_policy_violation":
+      return "This request was blocked due to a misalignment policy violation.";
+    case "invalid_prompt":
+      return "Invalid request.";
+    default:
+      return code;
+  }
+};
+
 const streamErrorToClaudeError = (root: Json | undefined): string => {
   let errType = asString(get(root, "error.type")).trim();
 
@@ -739,11 +768,13 @@ const streamErrorToClaudeError = (root: Json | undefined): string => {
 
   if (message === "") message = asString(get(root, "message")).trim();
 
-  if (message === "") message = code;
+  if (message === "") message = policyFallbackMessage(code);
 
   if (message === "") message = errType;
 
-  if (code === "cyber_policy" || errType === "invalid_request") errType = "invalid_request_error";
+  // Policy blocks are request faults (1f76e479).
+  if (POLICY_BLOCK_CODES.has(code.toLowerCase()) || errType === "invalid_request")
+    errType = "invalid_request_error";
 
   return event("error", { type: "error", error: { type: errType, message } });
 };

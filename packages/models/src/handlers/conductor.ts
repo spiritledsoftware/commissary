@@ -166,6 +166,8 @@ export interface Prepared {
   /** LCP fingerprints, derived identity and usage session (see `session-routing/routing.ts`). */
   readonly routing?: SessionRouting;
   readonly pinnedId?: string | undefined;
+  /** Credentials no round may pick (`ExecutionInput.excludedIds`). */
+  readonly excludedIds?: ReadonlyArray<string>;
   /** Skip free-plan Codex credentials. */
   readonly disallowFreeAuth?: boolean;
   /** Select credentials as if for this model while executing `routeModel` (Go `auth_selection_model`). */
@@ -498,7 +500,7 @@ export const conduct = <T, R>(
     /** One retry round: pick credentials until success, a stop condition, or nothing left. */
     const runRound = (round: number, credits = false) =>
       Effect.gen(function* () {
-        const tried: string[] = [];
+        const tried: string[] = [...(prepared.excludedIds ?? [])];
         const attempted: string[] = [];
         let lastError: ExecutionError | undefined;
         let upstreamError: ExecutionError | undefined;

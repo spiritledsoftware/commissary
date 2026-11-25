@@ -61,6 +61,11 @@ export interface ExecutionInput {
   readonly authSelectionModel?: string;
   /** Require this credential (xAI video retrieval is bound to the credential that created the video). */
   readonly pinnedId?: string;
+  /**
+   * Leave these credentials out of every round (Go `ExcludedAuthIDsMetadataKey`: a Responses WebSocket create that failed
+   * on its pinned credential before anything reached the client fails over in place, a8c9c8a4).
+   */
+  readonly excludedIds?: ReadonlyArray<string>;
   /** The request arrives over the Responses WebSocket: prefer `websockets` credentials and tell the executor. */
   readonly websocket?: WebsocketExecution;
   /** Called with each credential an attempt runs on (Go `WithSelectedAuthIDCallback`). */
@@ -246,6 +251,9 @@ const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: bool
     ...(input.disallowFreeAuth === true ? { disallowFreeAuth: true } : {}),
     ...(input.authSelectionModel === undefined ? {} : { selectionModel: input.authSelectionModel }),
     ...(input.pinnedId !== undefined ? { pinnedId: input.pinnedId } : {}),
+    ...(input.excludedIds !== undefined && input.excludedIds.length > 0
+      ? { excludedIds: input.excludedIds }
+      : {}),
     ...(input.websocket !== undefined ? { preferWebsockets: true } : {}),
     ...(input.onSelected !== undefined ? { onSelected: input.onSelected } : {}),
   } satisfies Prepared;

@@ -507,6 +507,89 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
     expect(quota.log.reports[0]?.result.success).toBe(false);
   });
 
+  describe("a pinned full create that fails before anything reaches the client (CLIProxyAPI a8c9c8a4)", () => {
+    const quota = {
+      type: "error",
+      status: 429,
+      error: { type: "usage_limit_reached", message: "limit", resets_in_seconds: 60 },
+    };
+
+    const second = () =>
+      wsCredential({
+        id: "codex-oauth-2",
+        metadata: { access_token: "access-token-2", account_id: "acct_2" },
+      });
+
+    it("fails over in place to another credential", async () => {
+      const s = setup([wsCredential(), second()], {
+        onConnection: scripted((_frame, index, send, connection) => {
+          const first = connection.headers["authorization"] === "Bearer access-token-1";
+
+          if (first && index === 1) return send(quota);
+          send(created);
+          send(done(first ? "resp_1" : "resp_2"));
+        }),
+      });
+
+      const client = await s.connect();
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+      await client.until("response.completed");
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+
+      const completed = await client.until("response.completed");
+
+      expect(completed).toMatchObject({ response: { id: "resp_2" } });
+      expect(client.messages.map((text) => JSON.parse(text)["type"])).not.toContain("error");
+      expect(s.mock.dials.map((dial) => dial.headers["authorization"])).toEqual([
+        "Bearer access-token-1",
+        "Bearer access-token-2",
+      ]);
+      // The second attempt left the failed credential out.
+      expect(s.log.picks.at(-1)?.excluded).toContain("codex-oauth-1");
+      client.close();
+    });
+
+    it("does not replay it once a frame reached the client", async () => {
+      const s = setup([wsCredential(), second()], {
+        onConnection: scripted((_frame, index, send) => {
+          send(created);
+
+          if (index === 1) return send(quota);
+          send(done("resp_1"));
+        }),
+      });
+
+      const client = await s.connect();
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+      await client.until("response.completed");
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+
+      expect(await client.until("response.created")).toMatchObject({ type: "response.created" });
+      expect(await client.until("error")).toMatchObject({ status: 429 });
+      expect(s.mock.dials.map((dial) => dial.headers["authorization"])).toEqual([
+        "Bearer access-token-1",
+      ]);
+      client.close();
+    });
+
+    it("exposes the error when no other credential can serve it", async () => {
+      const s = setup([wsCredential()], {
+        onConnection: scripted((_frame, index, send) => {
+          if (index === 1) return send(quota);
+          send(created);
+          send(done());
+        }),
+      });
+
+      const client = await s.connect();
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+      await client.until("response.completed");
+      client.send({ type: "response.create", model: "gpt-5.4", input: [] });
+      expect(await client.until("error")).toMatchObject({ status: 429 });
+      expect((await client.closed).code).toBe(1011);
+    });
+  });
+
   it("maps a rejected upgrade through the Codex error classification", async () => {
     const s = setup([wsCredential()], {
       reject: () => ({

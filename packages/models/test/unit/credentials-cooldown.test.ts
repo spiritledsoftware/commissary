@@ -564,6 +564,21 @@ describe("classification", () => {
     ).toBe(true);
   });
 
+  it("OpenAI policy blocks are request faults (CLIProxyAPI 1f76e479)", () => {
+    for (const code of ["bio_policy", "cyber_policy_violation", "image_content_policy_violation"])
+      expect(isRequestFault(502, `{"error":{"code":"${code}"}}`)).toBe(true);
+
+    const bio = "This content was flagged for possible biological risk. Please rephrase.";
+
+    expect(isRequestFault(502, bio)).toBe(true);
+    expect(isRequestFault(502, `responses stream terminated after 3 events: ${bio}`)).toBe(true);
+    expect(isRequestFault(502, `{"error":{"message":${JSON.stringify(bio)}}}`)).toBe(true);
+    // A structured non-fault error that merely echoes the text (a prompt) is not a policy block.
+    expect(
+      isRequestFault(502, `{"error":{"type":"server_error","message":${JSON.stringify(bio)}}}`),
+    ).toBe(false);
+  });
+
   it("Devin MCP-configuration and content-policy 403s are request faults (CLIProxyAPI e25b7daf)", () => {
     const mcp =
       "devin upstream error (permission_denied): Unable to process request due to an MCP configuration issue.";

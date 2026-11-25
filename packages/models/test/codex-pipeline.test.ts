@@ -270,6 +270,59 @@ describe("payload rules are the final mutation", () => {
   });
 });
 
+describe("Responses include values by upstream backend (7f22743a)", () => {
+  const include = [
+    "message.output_text.logprobs",
+    "output.encrypted_content",
+    "unknown.value",
+    "web_search_call.results",
+    "file_search_call.results",
+  ];
+
+  const sentInclude = async (credential: CredentialSnapshot) => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM), { credentials: [credential] });
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", input: "hi", include }),
+    );
+
+    expect(response.status).toBe(200);
+
+    return get(tryParseJson(p.calls[0]!.body), "include");
+  };
+
+  it("keeps the Codex-verified values on the ChatGPT backend", async () => {
+    expect(await sentInclude(oauthCredential())).toEqual([
+      "reasoning.encrypted_content",
+      "web_search_call.results",
+      "output.encrypted_content",
+    ]);
+  });
+
+  it("restores every official value on an OpenAI Responses endpoint", async () => {
+    expect(await sentInclude(providerKeyCredential())).toEqual([
+      "reasoning.encrypted_content",
+      "web_search_call.results",
+      "file_search_call.results",
+      "message.output_text.logprobs",
+      "output.encrypted_content",
+    ]);
+  });
+
+  it("keeps the conservative list for a provider key on the ChatGPT backend", async () => {
+    const chatgpt = providerKeyCredential({
+      attributes: { api_key: "sk-codex-1", base_url: "https://chatgpt.com/backend-api/codex" },
+    });
+
+    expect(await sentInclude(chatgpt)).toEqual([
+      "reasoning.encrypted_content",
+      "web_search_call.results",
+      "output.encrypted_content",
+    ]);
+  });
+});
+
 describe("a Claude client's output_config.effort without a thinking object", () => {
   const request = (effort: string) =>
     postJson({

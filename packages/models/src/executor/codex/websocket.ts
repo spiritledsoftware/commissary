@@ -31,6 +31,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { statusText } from "../../http/status.ts";
+import { policyBlockMessage } from "../../http/upstream-error.ts";
 import { responseModelOf } from "../../usage/record.ts";
 import { isResponsesTokenEvent } from "../../usage/ttft.ts";
 import { ErrorCode } from "../../credentials/cooldown/classify.ts";
@@ -55,12 +56,20 @@ import { isCompatModel } from "./compat.ts";
 import { startCodexDuplex } from "./duplex.ts";
 import {
   codexEmptyIncompleteStreamError,
+  codexErrorEventHeaders,
+  codexErrorIsContextLength,
+  codexResponseEventType,
+  codexStatusErrorClassification,
   codexTerminalFailure,
+  codexTerminalFailureBody,
+  codexTerminalFailureStatus,
+  codexTopLevelErrorBody,
   isCodexTransientCapacityError,
   isCodexUsageLimitError,
   isThinkingSignatureInvalid,
   newCodexStatusError,
   parseCodexRetryAfterMs,
+  shouldParseCodexRetryAfterHeader,
 } from "./errors.ts";
 import type { PreparedRequest } from "./executor.ts";
 import { codexBaseUrl } from "./headers.ts";
@@ -154,86 +163,155 @@ const CONNECTION_LIMIT_PATHS = [
   "error",
 ] as const;
 
-/** `buildCodexWebsocketErrorPayload`. */
+const isConnectionLimitError = (event: Json | undefined): boolean =>
+  CONNECTION_LIMIT_PATHS.some(
+    (path) => asString(get(event, path)).trim() === "websocket_connection_limit_reached",
+  );
+
+/**
+ * `buildCodexWebsocketErrorPayload`: `{"type":"error","status":N,...}` with the event's `sequence_number`, `body` and
+ * error object (from `body.error`, `error`, `response.error` or the top-level `code`/`message`). A string error becomes
+ * `{"message": ...}`, and a blank message is filled from the code (policy copy), the type or the status text
+ * (Go 1f76e479, 20df0c25).
+ */
 const websocketErrorBody = (event: Json | undefined, status: number): JsonObject => {
-  const out: JsonObject = { status };
+  const out: JsonObject = { type: "error", status };
+  const sequence = get(event, "sequence_number");
+
+  if (sequence !== undefined) out["sequence_number"] = asInt(sequence);
+
+  const withError = (error: Json): JsonObject => {
+    let node: JsonObject;
+
+    if (isJsonObject(error)) node = { ...error };
+    else {
+      const scalar = typeof error === "string" ? error : "";
+
+      if (scalar.trim() !== "") {
+        out["error"] = { message: scalar };
+
+        return out;
+      }
+
+      node = {};
+    }
+
+    if (asString(node["message"]).trim() === "") {
+      const code = asString(node["code"]).trim();
+      const type = asString(node["type"]).trim();
+
+      if (code !== "") node["message"] = policyBlockMessage(code) ?? code;
+      else if (type !== "") node["message"] = type;
+      else node["message"] = statusText(status);
+    }
+
+    out["error"] = node;
+
+    return out;
+  };
+
   const body = get(event, "body");
 
   if (body !== undefined) {
     out["body"] = body;
     const bodyError = get(body, "error");
 
-    if (bodyError !== undefined) {
-      out["error"] = bodyError;
-
-      return out;
-    }
+    if (bodyError !== undefined && bodyError !== null) return withError(bodyError);
   }
 
-  const error = get(event, "error");
+  for (const path of ["error", "response.error"]) {
+    const error = get(event, path);
 
-  if (error !== undefined) {
-    out["error"] = error;
-
-    return out;
+    if (error !== undefined && error !== null) return withError(error);
   }
+
+  const topLevel = get(codexTopLevelErrorBody(event), "error");
+
+  if (topLevel !== undefined) return withError(topLevel);
 
   out["error"] = { type: "server_error", message: statusText(status) };
 
   return out;
 };
 
-const websocketErrorHeaders = (event: Json | undefined): Record<string, string> | undefined => {
-  const headers = get(event, "headers");
+const STATUS_PATHS = [
+  "body.status",
+  "body.status_code",
+  "error.status",
+  "error.status_code",
+  "body.error.status",
+  "body.error.status_code",
+  "response.error.status",
+  "response.error.status_code",
+] as const;
 
-  if (!isJsonObject(headers)) return undefined;
-  const out: Record<string, string> = {};
+/** `codexWebsocketErrorStatus`: the frame's own status, then an HTTP error status nested in its error (Go 5a373ede). */
+const websocketErrorStatus = (event: Json | undefined): number => {
+  for (const path of ["status", "status_code"]) {
+    const status = asInt(get(event, path));
 
-  for (const [key, value] of Object.entries(headers)) {
-    const name = key.trim();
-
-    if (name === "") continue;
-
-    if (typeof value === "string" && value.trim() !== "") out[name.toLowerCase()] = value.trim();
-    else if (typeof value === "number" || typeof value === "boolean")
-      out[name.toLowerCase()] = String(value);
+    if (status > 0) return status;
   }
 
-  return Object.keys(out).length === 0 ? undefined : out;
+  for (const path of STATUS_PATHS) {
+    const status = asInt(get(event, path));
+
+    if (status >= 400 && status <= 599) return status;
+  }
+
+  return 0;
 };
 
 /**
- * `parseCodexWebsocketErrorWithCooling`: an `error` frame with a positive `status`/`status_code`. A connection-limit
- * error retries immediately (`retryAfterMs` 0) on another credential.
+ * `inferCodexWebsocketErrorStatus` (Go 7dd360d9): the status a status-less error frame that carries headers stands for,
+ * read from its error the way an HTTP failure would be classified.
+ */
+const inferWebsocketErrorStatus = (event: Json | undefined): number => {
+  if (isConnectionLimitError(event)) return 429;
+  const body = codexTerminalFailureBody(event);
+
+  if (body === undefined) return 0;
+  const text = JSON.stringify(body);
+
+  if (isCodexUsageLimitError(text) || isCodexTransientCapacityError(text)) return 429;
+
+  if (codexErrorIsContextLength(body)) return 400;
+  const classification = codexStatusErrorClassification(400, text);
+
+  if (classification !== undefined) return classification.code === "auth_unavailable" ? 401 : 400;
+  const type = asString(get(body, "error.type")).trim().toLowerCase();
+  const code = asString(get(body, "error.code")).trim().toLowerCase();
+
+  if (type === "service_unavailable_error" || code === "server_is_overloaded") return 503;
+
+  return codexTerminalFailureStatus(body);
+};
+
+/**
+ * `parseCodexWebsocketErrorWithCooling`: an `error` frame (an untyped error envelope counts) with a positive status, its
+ * own or nested; a frame without one that carries headers gets the status its error implies. A connection-limit error
+ * retries immediately (`retryAfterMs` 0) on another credential.
  */
 export const parseCodexWebsocketError = (
   event: Json | undefined,
   options: { readonly modelLevelCooling: boolean; readonly nowMs: number },
 ): { readonly error: ExecutionError; readonly body: string } | undefined => {
-  if (asString(get(event, "type")).trim() !== "error") return undefined;
-  let status = asInt(get(event, "status"));
+  if (codexResponseEventType(event) !== "error") return undefined;
+  const headers = codexErrorEventHeaders(event);
+  let status = websocketErrorStatus(event);
 
-  if (status === 0) status = asInt(get(event, "status_code"));
+  if (status <= 0 && headers !== undefined) status = inferWebsocketErrorStatus(event);
 
   if (status <= 0) return undefined;
   const body = JSON.stringify(websocketErrorBody(event, status));
   const usageLimit = isCodexUsageLimitError(body);
   let retryAfterMs = parseCodexRetryAfterMs(status, body, options.nowMs);
 
-  if (
-    retryAfterMs === undefined &&
-    CONNECTION_LIMIT_PATHS.some(
-      (path) => asString(get(event, path)).trim() === "websocket_connection_limit_reached",
-    )
-  ) {
-    retryAfterMs = 0;
-  }
-
-  const headers = websocketErrorHeaders(event);
+  if (retryAfterMs === undefined && isConnectionLimitError(event)) retryAfterMs = 0;
 
   // Hint precedence: the quota body reset, then the connection-limit immediate retry, then the generic `Retry-After`
-  // header of the frame (CLIProxyAPI 9a35fa12).
-  if (retryAfterMs === undefined && status === 429)
+  // header of the frame (CLIProxyAPI 9a35fa12), on every status that honours one (7dd360d9).
+  if (retryAfterMs === undefined && shouldParseCodexRetryAfterHeader(status))
     retryAfterMs = parseRetryAfterMs(headers?.["retry-after"] ?? null, options.nowMs);
   const transient = !usageLimit && status === 429 && isCodexTransientCapacityError(body);
 
@@ -516,7 +594,11 @@ export const makeCodexWebsocketStream =
                   if (Outcome.$is("failure")(outcome)) {
                     if (outcome.overload && !timeoutReached) {
                       return yield* fail(
-                        bootstrapOverloadError(outcome.body, yield* Clock.currentTimeMillis),
+                        bootstrapOverloadError(
+                          outcome.body,
+                          yield* Clock.currentTimeMillis,
+                          outcome.error,
+                        ),
                       );
                     }
 

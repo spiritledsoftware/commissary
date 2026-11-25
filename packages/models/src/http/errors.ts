@@ -18,6 +18,7 @@ import {
 import { statusText } from "./status.ts";
 import { safeRetryAfter } from "../executor/errors.ts";
 import { formatDurationSeconds } from "./duration.ts";
+import { ERROR_EVENT_TYPES, policyBlockMessage } from "./upstream-error.ts";
 
 type JsonRecord = JsonObject;
 
@@ -282,12 +283,25 @@ const responsesErrorClass = (status: number): ResponsesErrorClass => {
   }
 };
 
-/** `applyOpenAIResponsesNestedErrorCode`: Anthropic reports input overflow by message only; Responses clients key on the code. */
-const withOverflowCode = (error: JsonObject): JsonObject => {
+/** gjson `String()` of an error code: a string as is, any other value as its JSON text. */
+const codeText = (code: Json): string =>
+  (typeof code === "string" ? code : JSON.stringify(code)).trim();
+
+/**
+ * `applyOpenAIResponsesNestedErrorCode`: a coded error with a blank message gets the policy copy or its code (Go
+ * 1f76e479); Anthropic reports input overflow by message only, and Responses clients key on the code.
+ */
+const withNestedErrorCode = (error: JsonObject): JsonObject => {
   const existing = error["code"];
 
   if (existing !== undefined && existing !== null) {
-    if (typeof existing !== "string" || existing.trim() !== "") return error;
+    const code = codeText(existing);
+
+    if (code !== "") {
+      if (nonBlank(error["message"]) !== undefined) return error;
+
+      return { ...error, message: policyBlockMessage(code) ?? code };
+    }
   }
 
   const m = error["message"];
@@ -302,6 +316,8 @@ const withOverflowCode = (error: JsonObject): JsonObject => {
   return error;
 };
 
+/** Event types that are not an error's own type. */
+
 const responsesErrorDetail = (
   status: number,
   errText: string,
@@ -314,22 +330,43 @@ const responsesErrorDetail = (
   const payload = trimmed !== "" ? parseObject(trimmed) : undefined;
 
   if (payload !== undefined) {
-    const error = asRecord(payload["error"]);
+    let hasScalarMessage = false;
 
-    if (error !== undefined) return withOverflowCode(error);
-    const responseError = asRecord(asRecord(payload["response"])?.["error"]);
+    // The first error object of `error`, `response.error` and `body.error` is the detail; a string error is its
+    // message (Go 80e8350c).
+    for (const node of [
+      payload["error"],
+      asRecord(payload["response"])?.["error"],
+      asRecord(payload["body"])?.["error"],
+    ]) {
+      if (node === undefined || node === null) continue;
+      const error = asRecord(node);
 
-    if (responseError !== undefined) return withOverflowCode(responseError);
+      if (error !== undefined) return withNestedErrorCode(error);
+
+      if (typeof node === "string" && !hasScalarMessage) {
+        message = node.trim() !== "" ? node.trim() : statusText(status);
+        hasScalarMessage = true;
+      }
+    }
+
     const m = nonBlank(payload["message"]);
 
     if (m !== undefined) message = m.trim();
     const c = payload["code"];
+    let hasTopLevelCode = false;
 
-    if (c !== undefined && c !== null)
-      code =
-        typeof c === "string" && c.trim() !== ""
-          ? c.trim()
-          : (typeof c === "object" ? JSON.stringify(c) : String(c)).trim();
+    if (c !== undefined && c !== null) {
+      const text = codeText(c);
+
+      if (text !== "") {
+        code = text;
+        hasTopLevelCode = true;
+      }
+    }
+
+    if (hasTopLevelCode && !hasScalarMessage && m === undefined)
+      message = policyBlockMessage(code) ?? code;
   }
 
   const detail: JsonObject = { type: responsesErrorClass(status).type, code, message, param: null };
@@ -337,7 +374,7 @@ const responsesErrorDetail = (
   if (payload !== undefined) {
     const t = nonBlank(payload["type"]);
 
-    if (t !== undefined && t.trim() !== "error") detail["type"] = t.trim();
+    if (t !== undefined && !ERROR_EVENT_TYPES.has(t.trim())) detail["type"] = t.trim();
 
     if (Object.hasOwn(payload, "param")) detail["param"] = payload["param"] ?? null;
   }
