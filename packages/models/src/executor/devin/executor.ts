@@ -117,17 +117,6 @@ const devinStreamFailure = (message: string, preOutput: boolean) =>
     code: preOutput ? ErrorCode.transientTransport : ErrorCode.streamTruncated,
   });
 
-/** Nothing was generated and no output token counted (Go `hasGeneratedOutput` and `CompletionTokens`). */
-const noOutput = (generated: boolean, usage: DevinUsage | undefined): boolean =>
-  !generated && (usage === undefined || usage.completionTokens === 0);
-
-/** `isDevinEmptyCompletion`: a clean end with no output, unless the stop reason is 11. */
-const isEmptyCompletion = (
-  generated: boolean,
-  stopReason: number,
-  usage: DevinUsage | undefined,
-): boolean => stopReason !== 11 && noOutput(generated, usage);
-
 /** `RestoreDevinToolCallIDs`: decodes the ids of the history's calls and results in place. */
 const restoreToolCallIds = (prompts: ReadonlyArray<DevinPrompt>): void => {
   for (const prompt of prompts) {
@@ -427,7 +416,8 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     // Go: a consume failure is the sanitised gateway error only once apply_patch activity was observed. The failure
     // keeps the partial usage counted so far (`publishDevinUsageFailure`).
     const consumeFailure = (error: ExecutionError) => {
-      const failure = patchRequested && aggregator.patchActivity ? applyPatchGatewayError() : error;
+      const failure =
+        patchRequested && aggregator.output.patchActivity ? applyPatchGatewayError() : error;
 
       if (aggregator.usage !== undefined) context.usage.publish(devinUsageDetail(aggregator.usage));
       context.usage.fail(failure.status, failure.message, failure.code);
@@ -437,7 +427,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
 
     /** A read failure before any output is transient; after some, the generation was truncated. */
     const streamFailure = (message: string) =>
-      devinStreamFailure(message, noOutput(aggregator.generatedOutput, aggregator.usage));
+      devinStreamFailure(message, aggregator.output.producedNothing());
 
     yield* Effect.gen(function* () {
       const body = yield* response.arrayBuffer.pipe(
@@ -500,9 +490,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     }
 
     // A clean end without any output is a dead upstream slot: fail over (Go `isDevinEmptyCompletion`).
-    if (
-      isEmptyCompletion(aggregator.generatedOutput, aggregator.lastStopReason, aggregator.usage)
-    ) {
+    if (aggregator.output.isEmptyCompletion()) {
       return yield* consumeFailure(devinStreamFailure(EMPTY_COMPLETION, true));
     }
 
@@ -574,13 +562,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
             }
 
             // A clean end without any output is a dead upstream slot: fail over (Go `isDevinEmptyCompletion`).
-            if (
-              isEmptyCompletion(
-                this.assembler.generatedOutput,
-                this.assembler.lastStopReason,
-                this.assembler.usage,
-              )
-            ) {
+            if (this.assembler.output.isEmptyCompletion()) {
               return {
                 events,
                 failureEvents: this.assembler.abort("empty_completion", EMPTY_COMPLETION),
@@ -619,10 +601,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
 
     /** Nothing reached the client and nothing was generated (Go `!createdSent && !hasGeneratedOutput`). */
     get #preOutput(): boolean {
-      return (
-        !this.assembler.createdSent &&
-        noOutput(this.assembler.generatedOutput, this.assembler.usage)
-      );
+      return !this.assembler.createdSent && this.assembler.output.producedNothing();
     }
 
     /** Clean EOF before the EOS trailer. */
@@ -721,7 +700,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       if (step.failureEvents !== undefined && translation.state.toolInputError === undefined) {
         // `EndApplyPatchStream`: a patch-enabled stream that ends abnormally after apply_patch activity fails with the
         // one translated frame.
-        const ended = state.assembler.patchActivity
+        const ended = state.assembler.output.patchActivity
           ? endApplyPatchStream(translation.state)
           : { chunks: [], failed: false };
 
