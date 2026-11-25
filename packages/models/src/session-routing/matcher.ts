@@ -890,11 +890,10 @@ export const canonicalLcpProvider = (provider: string): string => {
   const value = provider.trim().toLowerCase();
 
   switch (value) {
+    // Vertex and AI Studio keep namespaces of their own (CLIProxyAPI 3b20ee22).
     case "google":
     case "gemini":
-    case "vertex":
-    case "aistudio":
-      return "google";
+      return "gemini";
     case "codex":
     case "openai":
       return "openai";
