@@ -161,9 +161,18 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
 
     if (replayApplied && originalPairingValid && replayScopeValid(scope)) {
       // Replay broke the call/response pairing: invalidate the entry (not while only counting) and degrade to the
-      // original payload.
-      if (reserve)
-        yield* ledger.deleteIfUnchanged(scope.modelName, scope.sessionKey, scope.snapshot);
+      // original payload. The request then holds the tombstone's snapshot, so its own commit of this turn still
+      // passes the guard (CLIProxyAPI e9dd8bad).
+      if (reserve) {
+        const tombstone = yield* ledger.deleteIfUnchangedWithSnapshot(
+          scope.modelName,
+          scope.sessionKey,
+          scope.snapshot,
+        );
+
+        if (tombstone !== undefined) scope = { ...scope, snapshot: tombstone };
+      }
+
       yield* Effect.logWarning(
         `${mode.executor ?? "antigravity executor"}: reasoning replay broke Gemini function call pairing; degrading`,
       );
