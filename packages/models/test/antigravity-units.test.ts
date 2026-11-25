@@ -21,9 +21,9 @@ import { ExecutionError } from "../src/executor/errors.ts";
 import {
   decideAntigravity429,
   hasExplicitCreditsBalanceExhaustedReason,
-  parseGoDuration,
-  parseRetryDelayMs,
 } from "../src/executor/antigravity/errors.ts";
+import { parseGoDuration } from "../src/config/accessors.ts";
+import { parseGoogleRetryDelayMs } from "../src/executor/helps/google-retry.ts";
 import {
   geminiToAntigravity,
   requestBaseUrl,
@@ -101,7 +101,7 @@ describe("429 decisions and retry delays", () => {
   });
 
   it("reads RetryInfo, quotaResetDelay and message hints in Go's order", () => {
-    expect(parseRetryDelayMs(body("X", "2.000s"))).toBe(2000);
+    expect(parseGoogleRetryDelayMs(body("X", "2.000s"))).toBe(2000);
 
     const meta = JSON.stringify({
       error: {
@@ -114,14 +114,14 @@ describe("429 decisions and retry delays", () => {
       },
     });
 
-    expect(parseRetryDelayMs(meta)).toBe(9000);
-    expect(parseRetryDelayMs(JSON.stringify({ error: { message: "Try again after 12s." } }))).toBe(
-      12_000,
-    );
-    expect(parseRetryDelayMs(JSON.stringify({ error: { message: "reset after 1h30m" } }))).toBe(
-      5_400_000,
-    );
-    expect(parseRetryDelayMs("{}")).toBeUndefined();
+    expect(parseGoogleRetryDelayMs(meta)).toBe(9000);
+    expect(
+      parseGoogleRetryDelayMs(JSON.stringify({ error: { message: "Try again after 12s." } })),
+    ).toBe(12_000);
+    expect(
+      parseGoogleRetryDelayMs(JSON.stringify({ error: { message: "reset after 1h30m" } })),
+    ).toBe(5_400_000);
+    expect(parseGoogleRetryDelayMs("{}")).toBeUndefined();
   });
 
   it("follows the decision table", () => {

@@ -13,7 +13,8 @@ import { parseRetryAfterMs } from "./retry-after.ts";
 
 const RETRY_INFO = "type.googleapis.com/google.rpc.RetryInfo";
 
-const ERROR_INFO = "type.googleapis.com/google.rpc.ErrorInfo";
+/** The google.rpc `ErrorInfo` detail type (its `reason` and `metadata.quotaResetDelay`). */
+export const ERROR_INFO = "type.googleapis.com/google.rpc.ErrorInfo";
 
 const MESSAGE_RETRY_DURATION =
   /\b(?:after|retry\s+in)\s+(\d+(?:\.\d+)?(?:h|ms|m|s)(?:\d+(?:\.\d+)?(?:ms|m|s))*)\b/gi;
