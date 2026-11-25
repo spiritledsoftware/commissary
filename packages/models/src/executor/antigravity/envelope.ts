@@ -7,6 +7,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
+  asInt,
   asString,
   del,
   exists,
@@ -277,8 +278,21 @@ export const constrainRequestPayload = (modelName: string, payload: Json): Json 
 
     const limit = info?.maxCompletionTokens ?? 0;
 
-    if (limit > 0 && Math.trunc(maxOut) > limit)
+    if (limit > 0 && Math.trunc(maxOut) > limit) {
       set(payload, "request.generationConfig.maxOutputTokens", limit);
+
+      // A Claude thinking budget must stay below the capped output (CLIProxyAPI 16bcf5a0).
+      if (modelName.includes("claude")) {
+        for (const budgetPath of [
+          "request.generationConfig.thinkingConfig.thinkingBudget",
+          "request.generationConfig.thinkingConfig.thinking_budget",
+        ]) {
+          const budget = get(payload, budgetPath);
+
+          if (budget !== undefined && asInt(budget) >= limit) set(payload, budgetPath, limit - 1);
+        }
+      }
+    }
   }
 
   const useAntigravitySchema =
@@ -294,9 +308,31 @@ export const constrainRequestPayload = (modelName: string, payload: Json): Json 
   }
 
   if (modelName.includes("claude")) {
-    if (!promptStructuredOutput)
+    if (!promptStructuredOutput && !toolChoiceModeIsNone(payload))
       set(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED");
   } else del(payload, "request.generationConfig.maxOutputTokens");
 
   return payload;
+};
+
+/**
+ * `antigravityToolChoiceModeIsNoneDoc`: the request already turns function calling off (`NONE`, under the camelCase or
+ * snake_case proto-JSON names), so `VALIDATED` must not turn it back on. A non-canonical `NONE` is canonicalized in
+ * place (CLIProxyAPI e0cc1cf8).
+ */
+const toolChoiceModeIsNone = (payload: Json): boolean => {
+  for (const container of ["request.toolConfig", "request.tool_config"]) {
+    for (const key of ["functionCallingConfig", "function_calling_config"]) {
+      const modePath = `${container}.${key}.mode`;
+      const mode = get(payload, modePath);
+
+      if (typeof mode === "string" && mode.trim().toUpperCase() === "NONE") {
+        if (mode !== "NONE") set(payload, modePath, "NONE");
+
+        return true;
+      }
+    }
+  }
+
+  return false;
 };

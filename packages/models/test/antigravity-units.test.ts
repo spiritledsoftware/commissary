@@ -71,7 +71,11 @@ import {
   makeMemorySignatureStore,
   prefetchSignatures,
 } from "@commissary/translation/signature";
-import { builtinTranslators, makeTranslationState } from "@commissary/translation";
+import {
+  builtinTranslators,
+  makeTranslationState,
+  withModelInfoLookup,
+} from "@commissary/translation";
 import { mockHttpClient, type UpstreamCall } from "./support/pipeline.ts";
 import { CurrentOrg, GLOBAL_ORG, OrgId, orgKv } from "@commissary/core";
 import { envContext } from "./support/context.ts";
@@ -259,6 +263,54 @@ describe("envelope", () => {
     expect(get(gemini, "request.generationConfig.maxOutputTokens")).toBeUndefined();
     const claude = constrainRequestPayload("claude-sonnet-4-5", structuredClone(payload));
     expect(get(claude, "request.toolConfig.functionCallingConfig.mode")).toBe("VALIDATED");
+  });
+});
+
+describe("Claude request constraints", () => {
+  it("keeps a NONE function calling mode instead of VALIDATED (Go e0cc1cf8)", () => {
+    for (const [container, key] of [
+      ["toolConfig", "functionCallingConfig"],
+      ["tool_config", "function_calling_config"],
+    ] as const) {
+      const payload: Json = { request: { [container]: { [key]: { mode: " none " } } } };
+
+      constrainRequestPayload("claude-sonnet-4-5", payload);
+      expect(get(payload, `request.${container}.${key}.mode`)).toBe("NONE");
+      expect(get(payload, "request.toolConfig.functionCallingConfig.mode")).toBe(
+        container === "toolConfig" ? "NONE" : undefined,
+      );
+    }
+  });
+
+  it("re-clamps a Claude thinking budget below the capped output (Go 16bcf5a0)", () => {
+    const lookup = (id: string) =>
+      id.startsWith("claude-") || id.startsWith("gemini-")
+        ? { id, maxCompletionTokens: 64000 }
+        : undefined;
+
+    const constrained = (model: string): Json =>
+      withModelInfoLookup(lookup, () =>
+        constrainRequestPayload(model, {
+          request: {
+            generationConfig: {
+              maxOutputTokens: 128000,
+              thinkingConfig: { thinkingBudget: 100000, thinking_budget: 64000 },
+            },
+          },
+        }),
+      );
+
+    const claude = constrained("claude-opus-4-6-thinking");
+    expect(get(claude, "request.generationConfig.maxOutputTokens")).toBe(64000);
+    expect(get(claude, "request.generationConfig.thinkingConfig.thinkingBudget")).toBe(63999);
+    expect(get(claude, "request.generationConfig.thinkingConfig.thinking_budget")).toBe(63999);
+    // Only Claude budgets are re-clamped.
+    expect(
+      get(
+        constrained("gemini-3-pro-high"),
+        "request.generationConfig.thinkingConfig.thinkingBudget",
+      ),
+    ).toBe(100000);
   });
 });
 
@@ -681,7 +733,8 @@ describe("SSE handling", () => {
           ],
         },
       },
-      { response: { candidates: [{ content: { parts: [{ text: "Hel" }, { text: "lo" }] } }] } },
+      { response: { candidates: [{ content: { parts: [{ text: "Hel" }] } }] } },
+      { response: { candidates: [{ content: { parts: [{ text: "lo" }] } }] } },
       {
         response: {
           candidates: [
@@ -708,6 +761,48 @@ describe("SSE handling", () => {
     expect(get(merged, "response.candidates.0.finishReason")).toBe("STOP");
     expect(get(merged, "response.usageMetadata.promptTokenCount")).toBe(1);
     expect(get(convertStreamToNonStream([]), "response.usageMetadata.totalTokenCount")).toBe(0);
+  });
+
+  it("keeps text signatures, empty-text carriers and same-chunk part boundaries (Go 9176cb22)", () => {
+    const chunk = (parts: Json[]): string =>
+      JSON.stringify({ response: { candidates: [{ content: { parts } }] } });
+
+    const merged = convertStreamToNonStream([
+      chunk([{ text: "a" }, { text: "b" }]),
+      chunk([{ text: " " }]),
+      chunk([
+        { text: "", thoughtSignature: "s1" },
+        { text: "", thoughtSignature: "s2" },
+      ]),
+      chunk([{ text: "signed", thoughtSignature: "s3" }]),
+      chunk([{ text: "after" }]),
+    ]);
+
+    expect(get(merged, "response.candidates.0.content.parts")).toEqual([
+      { text: "a" },
+      { text: "b " },
+      { text: "", thoughtSignature: "s1" },
+      { text: "", thoughtSignature: "s2" },
+      { text: "signed", thoughtSignature: "s3" },
+      { text: "after" },
+    ]);
+  });
+
+  it("keeps grounding from an earlier chunk when the terminal chunk has none (Go d0da9a9a)", () => {
+    const grounding = { groundingChunks: [{ web: { uri: "https://example.com" } }] };
+
+    const merged = convertStreamToNonStream([
+      JSON.stringify({
+        response: {
+          candidates: [{ content: { parts: [{ text: "x" }] }, groundingMetadata: grounding }],
+        },
+      }),
+      JSON.stringify({
+        response: { candidates: [{ content: { parts: [] }, finishReason: "STOP" }] },
+      }),
+    ]);
+
+    expect(get(merged, "response.candidates.0.groundingMetadata")).toEqual(grounding);
   });
 
   it("keeps the usage of a stream without a terminal usage chunk (Go d5eb4ca1)", () => {
