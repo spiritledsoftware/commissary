@@ -501,6 +501,55 @@ describe("request-scoped error rules", () => {
       }),
   );
 
+  it.effect("a 429 plan that ended the request already answered for the pool: no second call", () =>
+    Effect.gen(function* () {
+      const queries: Array<{ readonly poolOnly?: boolean }> = [];
+
+      // `b` is never tried (one credential per round), so the pool is not all cooling and the plan has no reset.
+      const run = yield* setup(
+        config(group("a") + group("b"), "routing:\n  retry:\n    max-retry-credentials: 1"),
+        () => upstreamError(429, "quota", { "retry-after": "600" }),
+        {
+          prepare: (harness) => {
+            const plan = harness.pool.planRetry.bind(harness.pool);
+
+            harness.pool.planRetry = (query) => {
+              queries.push(query);
+
+              return plan(query);
+            };
+          },
+        },
+      );
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.strictEqual(error.status, 429);
+      assert.notStrictEqual(error.modelCooldown, true);
+      assert.deepStrictEqual(
+        queries.map((query) => query.poolOnly === true),
+        [false],
+      );
+    }),
+  );
+
+  it.effect("the attempt cap's terminal 429 carries the pool's reset (CLIProxyAPI 4da9f685)", () =>
+    Effect.gen(function* () {
+      // Each credential has its own retry budget, so planning never stops the request before the cap; every key
+      // cools after its 429 and then the 16th attempt ends it.
+      const keys = Array.from({ length: 16 }, (_, index) => group(`k${index}`)).join("");
+
+      const run = yield* setup(config(keys, "routing:\n  retry:\n    request-retry: 0"), () =>
+        upstreamError(429, "quota", { "retry-after": "600" }),
+      );
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.strictEqual(run.calls.length, 16);
+      assert.strictEqual(error.status, 429);
+      assert.strictEqual(error.modelCooldown, true);
+      assert.strictEqual(error.safeHeaders?.["retry-after"], "600");
+    }),
+  );
+
   it.effect("a rule that does not match leaves the default classification in place", () =>
     Effect.gen(function* () {
       const run = yield* setup(config(group("a", rule("continue"))), () =>

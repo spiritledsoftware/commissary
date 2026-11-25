@@ -758,6 +758,9 @@ export const conduct = <T, R>(
         }
       });
 
+    /** The last plan already asked for the pool's cooldown: the terminal error needs no second call. */
+    let poolAsked = false;
+
     const NO_RETRY: RetryPlan = { retry: false };
 
     /** `shouldRetryAfterErrorWithAttempted`: class check here, cooldown knowledge in the ControlPlane. */
@@ -766,8 +769,12 @@ export const conduct = <T, R>(
         const error = outcome.error;
 
         if (outcome.stop || isRequestInvalid(error) || !isRetryRoundError(error)) return NO_RETRY;
+        const query = retryQuery(error, round, outcome.attempted);
+        const plan = yield* picker.planRetry(query);
+        // A 429 plan that ends the request already answered for the pool (`poolCooldownMs`, or none).
+        poolAsked = !plan.retry && query.status === 429;
 
-        return yield* picker.planRetry(retryQuery(error, round, outcome.attempted));
+        return plan;
       });
 
     const retryQuery = (
@@ -851,11 +858,13 @@ export const conduct = <T, R>(
       shouldAttemptCreditsFallback(error)
     ) {
       const credited = yield* runRound(0, true);
+      // The credits round changed the pool's state since the plan.
+      poolAsked = false;
 
       if (credited.ok) return { ok: true, value: credited.value } satisfies ConductResult<T>;
     }
 
-    if (poolCooldownMs === undefined)
+    if (poolCooldownMs === undefined && !poolAsked)
       poolCooldownMs = yield* terminalPoolCooldown(error, last.attempted);
 
     return {
