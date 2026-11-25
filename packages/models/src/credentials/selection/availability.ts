@@ -79,9 +79,9 @@ export const isBlockedForModel = (
 
   const states = Object.entries(state.modelStates);
 
-  if (quota.exceeded && quota.reason === "credential_quota" && quota.nextRecoverAt > now) {
-    // The model's own later deadline (or a disabled model) outranks the credential quota's (cb70eacf).
-    let next = quota.nextRecoverAt;
+  /** A credential-wide block until `until`: the model's own later deadline (or a disabled model) outranks it. */
+  const credentialWide = (until: number): Block => {
+    let next = until;
 
     if (model !== "") {
       const key = canonicalModelLookupKey(model);
@@ -98,7 +98,21 @@ export const isBlockedForModel = (
     }
 
     return { blocked: true, reason: "cooldown", next };
-  }
+  };
+
+  const credentialQuota =
+    quota.exceeded && quota.reason === "credential_quota" && quota.nextRecoverAt > now
+      ? quota.nextRecoverAt
+      : 0;
+
+  // A live credential-level forced cooldown blocks every model (Go `effectiveAuthForceUntil`, CLIProxyAPI 9d7d012b).
+  const forcedUntil = state.forcedUntil ?? 0;
+
+  if (forcedUntil > now && state.nextRetryAfter > now)
+    return credentialWide(Math.max(forcedUntil, credentialQuota));
+
+  // The credential quota's deadline extends to a later model one (cb70eacf).
+  if (credentialQuota !== 0) return credentialWide(credentialQuota);
 
   if (model !== "") {
     if (states.length === 0) {

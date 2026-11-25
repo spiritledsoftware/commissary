@@ -522,6 +522,30 @@ describe("error table (MarkResult)", () => {
     expect(plain.modelStates.m?.nextRetryAfter).toBe(0);
   });
 
+  it("a model failure does not shorten a credential-level forced cooldown (effectiveAuthForceUntil)", () => {
+    const forced = fail(429, "stop", {
+      retryAfterMs: HOUR,
+      error: { code: "force_cooldown", message: "stop", retryable: false, httpStatus: 429 },
+    });
+
+    let state = mark(emptyState(), "", forced);
+    expect(state.forcedUntil).toBe(NOW + HOUR);
+
+    // The model's own 60 s cooldown would set the credential's deadline from the model states alone.
+    state = mark(state, "m", fail(500), { now: NOW + MIN });
+    expect(state).toMatchObject({
+      unavailable: true,
+      nextRetryAfter: NOW + HOUR,
+      forcedUntil: NOW + HOUR,
+    });
+    expect(blocked(state, "other", NOW + 30 * MIN)).toBe(true);
+
+    // A model success keeps it as well.
+    state = mark(state, "m", { success: true }, { now: NOW + 2 * MIN });
+    expect(state).toMatchObject({ unavailable: true, nextRetryAfter: NOW + HOUR });
+    expect(blocked(state, "other", NOW + 30 * MIN)).toBe(true);
+  });
+
   it("never cools: request-scoped, connection lifecycle and transient transport failures (connection_lifecycle_cooldown_test.go)", () => {
     for (const result of [
       fail(400, "bad request body", { requestScoped: true }),

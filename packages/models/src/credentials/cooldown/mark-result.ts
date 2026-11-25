@@ -325,8 +325,22 @@ const clearAggregatedAvailability = (state: Draft): void => {
   applyCooldownFields(state.quota, { exceeded: false, nextRecoverAt: 0, backoffLevel: 0 });
 };
 
-/** `updateAggregatedAvailability`: derives the credential-level flags from the model states. */
+/**
+ * `updateAggregatedAvailability`: derives the credential-level flags from the model states. A live credential-level
+ * forced cooldown holds whatever the models say (Go `effectiveAuthForceUntil`, CLIProxyAPI 9d7d012b).
+ */
 export const updateAggregatedAvailability = (state: Draft, now: number): void => {
+  const forcedUntil = state.forcedUntil ?? 0;
+  aggregateAvailability(state, now);
+
+  if (forcedUntil > now) {
+    state.forcedUntil = forcedUntil;
+    state.unavailable = true;
+    state.nextRetryAfter = Math.max(state.nextRetryAfter, forcedUntil);
+  }
+};
+
+const aggregateAvailability = (state: Draft, now: number): void => {
   // A disabled credential stays unavailable whatever its models say (CLIProxyAPI 29de31a8).
   if (state.status === "disabled") {
     state.unavailable = true;
@@ -778,7 +792,7 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
       resetModelState(modelState, now);
       updateAggregatedAvailability(state, now);
 
-      if (!hasModelError(state, now)) {
+      if (!hasModelError(state, now) && !((state.forcedUntil ?? 0) > now)) {
         delete state.lastError;
         delete state.statusMessage;
         state.status = "active";
