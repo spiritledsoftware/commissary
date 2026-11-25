@@ -34,6 +34,7 @@ import {
 import { prepareClaudeStructuredOutput } from "../src/executor/antigravity/structured-output.ts";
 import { scopeAntigravitySessionIdForCredential } from "../src/executor/antigravity/derived-session.ts";
 import { serializeAntigravityPayload } from "../src/executor/antigravity/payload-order.ts";
+import { aggregatesStream } from "../src/executor/antigravity/executor.ts";
 import {
   antigravitySignatureScope,
   scopedSignatureCache,
@@ -421,6 +422,46 @@ describe("Claude request constraints", () => {
         "request.generationConfig.thinkingConfig.thinkingBudget",
       ),
     ).toBe(100000);
+  });
+
+  // Go `CapAntigravityMaxOutputTokensDoc` on the static-catalog path (antigravity_executor_request.go).
+  it("merges the max_output_tokens alias and keeps a smaller caller limit when capping", () => {
+    const lookup = (id: string) =>
+      id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined;
+
+    const capped = withModelInfoLookup(lookup, () =>
+      constrainRequestPayload("claude-sonnet-4-5", {
+        request: { generationConfig: { maxOutputTokens: 128000, max_output_tokens: 500 } },
+      }),
+    );
+
+    expect(get(capped, "request.generationConfig.maxOutputTokens")).toBe(500);
+    expect(get(capped, "request.generationConfig.max_output_tokens")).toBeUndefined();
+  });
+
+  // CLIProxyAPI 18a03e40: model families match case-insensitively, with a lower-case catalog retry.
+  it("treats a mixed-case Claude model as Claude", () => {
+    const lookup = (id: string) =>
+      id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined;
+
+    const out = withModelInfoLookup(lookup, () =>
+      constrainRequestPayload("Claude-Sonnet-4-5", {
+        request: {
+          generationConfig: {
+            maxOutputTokens: 128000,
+            thinkingConfig: { thinkingBudget: 100000 },
+          },
+        },
+      }),
+    );
+
+    expect(get(out, "request.generationConfig.maxOutputTokens")).toBe(64000);
+    expect(get(out, "request.generationConfig.thinkingConfig.thinkingBudget")).toBe(63999);
+    expect(get(out, "request.toolConfig.functionCallingConfig.mode")).toBe("VALIDATED");
+    expect(aggregatesStream("Claude-Sonnet-4-5")).toBe(true);
+    expect(aggregatesStream("Gemini-3-Pro-High")).toBe(true);
+    expect(aggregatesStream("Gemini-3.1-Flash-Image")).toBe(true);
+    expect(aggregatesStream("gemini-2.5-flash")).toBe(false);
   });
 });
 

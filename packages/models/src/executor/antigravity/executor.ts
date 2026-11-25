@@ -128,6 +128,7 @@ import {
   geminiToAntigravity,
   requestBaseUrl,
   constrainRequestPayload,
+  schemaSanitizationFlags,
   needsSchemaSanitization,
   sanitizeRequestSchemas,
 } from "./envelope.ts";
@@ -185,10 +186,16 @@ const coolingDisabled = (context: ExecutionContext): boolean => {
 };
 
 /** Models served through a streaming upstream request and aggregated for non-stream callers. */
-export const aggregatesStream = (baseModel: string): boolean =>
-  baseModel.toLowerCase().includes("claude") ||
-  baseModel.includes("gemini-3-pro") ||
-  baseModel.includes("gemini-3.1-flash-image");
+export const aggregatesStream = (baseModel: string): boolean => {
+  // Model families are matched case-insensitively (CLIProxyAPI 18a03e40).
+  const lower = baseModel.toLowerCase();
+
+  return (
+    lower.includes("claude") ||
+    lower.includes("gemini-3-pro") ||
+    lower.includes("gemini-3.1-flash-image")
+  );
+};
 
 interface PreparedRequest {
   readonly url: string;
@@ -1223,16 +1230,8 @@ export const makeAntigravityExecutor = (
     }
 
     // The schemas are cleaned as for a generate request (CLIProxyAPI 94b164bf).
-    if (needsSchemaSanitization(body)) {
-      const lower = baseModel.toLowerCase();
-      const isClaudeModel = lower.includes("claude");
-
-      sanitizeRequestSchemas(body, {
-        useAntigravitySchema:
-          isClaudeModel || lower.includes("gemini-3-pro") || lower.includes("gemini-3.1-pro"),
-        isClaudeModel,
-      });
-    }
+    if (needsSchemaSanitization(body))
+      sanitizeRequestSchemas(body, schemaSanitizationFlags(baseModel));
 
     const alt = options.alt;
     const base = requestBaseUrl(context.credential.attributes, context.credential.metadata);

@@ -334,55 +334,101 @@ export const sanitizeRequestSchemas = (
 };
 
 /**
- * The model-dependent shaping of `buildRequest`: Claude 5.5 structured output as a prompt (CLIProxyAPI 1d45a5f3),
- * `maxOutputTokens` cap, schema cleaning, Claude `VALIDATED` function calling (skipped when the schema became a
- * prompt; non-Claude models lose `maxOutputTokens`). The result still has to go through the payload rules.
+ * `CapAntigravityMaxOutputTokensDoc`: the output limit becomes `request.generationConfig.maxOutputTokens`, a smaller
+ * positive caller limit (under either spelling) is kept, the `max_output_tokens` alias goes, and a Claude thinking
+ * budget stays below the effective limit (CLIProxyAPI 16bcf5a0).
  */
-export const constrainRequestPayload = (modelName: string, payload: Json): Json => {
+export const capMaxOutputTokens = (payload: Json, limit: number, isClaudeModel: boolean): void => {
+  if (limit <= 0) return;
+  let effective = limit;
+
+  for (const path of [
+    "request.generationConfig.maxOutputTokens",
+    "request.generationConfig.max_output_tokens",
+  ]) {
+    const value = get(payload, path);
+
+    if (typeof value === "number" && Math.trunc(value) > 0 && Math.trunc(value) < effective)
+      effective = Math.trunc(value);
+  }
+
+  del(payload, "request.generationConfig.max_output_tokens");
+  set(payload, "request.generationConfig.maxOutputTokens", effective);
+
+  if (!isClaudeModel) return;
+
+  for (const budgetPath of [
+    "request.generationConfig.thinkingConfig.thinkingBudget",
+    "request.generationConfig.thinkingConfig.thinking_budget",
+  ]) {
+    const budget = get(payload, budgetPath);
+
+    if (budget !== undefined && asInt(budget) >= effective) set(payload, budgetPath, effective - 1);
+  }
+};
+
+/** How a model's schemas are cleaned (`antigravitySchemaSanitizationFlags`). */
+export interface SchemaSanitizationFlags {
+  readonly useAntigravitySchema: boolean;
+  readonly isClaudeModel: boolean;
+}
+
+/** `antigravitySchemaSanitizationFlags`: model families are matched case-insensitively (CLIProxyAPI 18a03e40). */
+export const schemaSanitizationFlags = (modelName: string): SchemaSanitizationFlags => {
+  const lower = modelName.toLowerCase();
+  const isClaudeModel = lower.includes("claude");
+
+  return {
+    isClaudeModel,
+    useAntigravitySchema:
+      isClaudeModel || lower.includes("gemini-3-pro") || lower.includes("gemini-3.1-pro"),
+  };
+};
+
+/**
+ * The model-dependent shaping of `buildRequest`: Claude 5.5 structured output as a prompt (CLIProxyAPI 1d45a5f3), the
+ * output cap, schema cleaning, Claude `VALIDATED` function calling (skipped when the schema became a prompt). A thinking
+ * variant the credential's catalog selected (`selectedMaxOutputTokens > 0`) is capped at its own limit and keeps
+ * `maxOutputTokens`; otherwise the static catalog's limit caps a larger request, and non-Claude models lose
+ * `maxOutputTokens`. The result still has to go through the payload rules.
+ */
+export const constrainRequestPayload = (
+  modelName: string,
+  payload: Json,
+  selectedMaxOutputTokens = 0,
+): Json => {
   const promptStructuredOutput = prepareClaudeStructuredOutput(modelName, payload);
   // The native wire format (`NormalizeAntigravityRequestDoc`, CLIProxyAPI 38067a29): a payload rule or the structured
   // output prompt may have added a system instruction the translator never saw.
   normalizeAntigravityRequest(payload);
-  const maxOut = get(payload, "request.generationConfig.maxOutputTokens");
+  const lower = modelName.toLowerCase();
+  const { useAntigravitySchema, isClaudeModel } = schemaSanitizationFlags(modelName);
 
-  if (typeof maxOut === "number") {
-    const info = lookupModelInfo(modelName, "antigravity");
+  if (selectedMaxOutputTokens > 0) {
+    capMaxOutputTokens(payload, selectedMaxOutputTokens, isClaudeModel);
+  } else {
+    const maxOut = get(payload, "request.generationConfig.maxOutputTokens");
 
-    const limit = info?.maxCompletionTokens ?? 0;
+    if (typeof maxOut === "number") {
+      const info =
+        lookupModelInfo(modelName, "antigravity") ??
+        (lower === modelName ? undefined : lookupModelInfo(lower, "antigravity"));
 
-    if (limit > 0 && Math.trunc(maxOut) > limit) {
-      set(payload, "request.generationConfig.maxOutputTokens", limit);
+      const limit = info?.maxCompletionTokens ?? 0;
 
-      // A Claude thinking budget must stay below the capped output (CLIProxyAPI 16bcf5a0).
-      if (modelName.includes("claude")) {
-        for (const budgetPath of [
-          "request.generationConfig.thinkingConfig.thinkingBudget",
-          "request.generationConfig.thinkingConfig.thinking_budget",
-        ]) {
-          const budget = get(payload, budgetPath);
-
-          if (budget !== undefined && asInt(budget) >= limit) set(payload, budgetPath, limit - 1);
-        }
-      }
+      if (limit > 0 && Math.trunc(maxOut) > limit)
+        capMaxOutputTokens(payload, limit, isClaudeModel);
     }
   }
 
-  const useAntigravitySchema =
-    modelName.includes("claude") ||
-    modelName.includes("gemini-3-pro") ||
-    modelName.includes("gemini-3.1-pro");
+  if (needsSchemaSanitization(payload))
+    sanitizeRequestSchemas(payload, { useAntigravitySchema, isClaudeModel });
 
-  if (needsSchemaSanitization(payload)) {
-    sanitizeRequestSchemas(payload, {
-      useAntigravitySchema,
-      isClaudeModel: modelName.includes("claude"),
-    });
-  }
-
-  if (modelName.includes("claude")) {
+  if (isClaudeModel) {
     if (!promptStructuredOutput && !toolChoiceModeIsNone(payload))
       set(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED");
-  } else del(payload, "request.generationConfig.maxOutputTokens");
+  } else if (selectedMaxOutputTokens === 0)
+    del(payload, "request.generationConfig.maxOutputTokens");
 
   return payload;
 };
