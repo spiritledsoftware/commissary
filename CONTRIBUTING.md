@@ -22,13 +22,15 @@ The `cla-signatures` branch must exist and stay unprotected (no branch protectio
 
 ## Working on the code
 
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the workspace, scripts and conventions; [AGENTS.md](AGENTS.md) the commands to run before a pull request:
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the workspace, scripts and conventions; [AGENTS.md](AGENTS.md) the targeted
+checks to run before a pull request: the test files a change touches, the typecheck of the packages it changed, and format
+and lint on its changed files. CI runs the full suite on every pull request; to run it locally:
 
 ```sh
 pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run smoke
 ```
 
-Commits follow [Conventional Commits](https://www.conventionalcommits.org) with a lowercase subject (`feat(tools): ...`). Vite+'s Git hooks (`.vite-hooks/`) format and lint staged files and check the message.
+Commits follow [Conventional Commits](https://www.conventionalcommits.org) with a lowercase subject (`feat(tools): ...`). Vite+'s Git hooks (`.vite-hooks/`) format and lint staged files, check the message, and before a push format, lint and typecheck what the branch changes.
 
 A change that copies from CLIProxyAPI names the Go source it copies at the top of the module; [NOTICE](NOTICE) explains why that matters.
 

@@ -1,2 +1,2 @@
-# Fast checks only; the test suite runs in CI.
-pnpm run typecheck && pnpm run lint
+# Targeted checks on what the push changes (tools/pre-push.sh); CI runs the full suite and the repo-wide checks.
+bash tools/pre-push.sh

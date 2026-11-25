@@ -299,8 +299,9 @@ curl localhost:1339/v1/models
 curl 'localhost:1339/cdn-cgi/handler/scheduled?cron=0+*/3+*+*+*'   # run the cron jobs
 ```
 
-Before sending a change: `pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run smoke`. Scripts, module layout and
-conventions are in [DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Before sending a change, run the targeted checks in [AGENTS.md](AGENTS.md); CI runs the full suite
+(`pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run smoke`) on every pull request. Scripts, module layout
+and conventions are in [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Documentation
 
