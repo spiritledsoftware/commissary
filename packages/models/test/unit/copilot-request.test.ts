@@ -15,7 +15,12 @@ import {
   seedCopilotDefaults,
   visibleChatReasoning,
 } from "../../src/executor/copilot/request.ts";
-import { copilotNativeModel, resolveCopilotRoute } from "../../src/executor/copilot/routes.ts";
+import {
+  copilotNativeModel,
+  copilotProfileIds,
+  resolveCopilotRoute,
+} from "../../src/executor/copilot/routes.ts";
+import { catalogAdditions } from "../../src/registry/catalog.ts";
 
 const route = (model: string) => {
   const resolved = resolveCopilotRoute(model, undefined);
@@ -59,6 +64,15 @@ describe("resolveCopilotRoute", () => {
     expect(
       resolveCopilotRoute("grok-4.7", { id: "x", thinking: { levels: ["low", "medium"] } }),
     ).toMatchObject({ defaultEffort: undefined });
+  });
+
+  it("has a CLI profile for every Copilot preset of the catalog, and a preset for every profile", () => {
+    const presets = (catalogAdditions().providers.copilot?.models ?? []).map((model) => model.id);
+
+    expect(presets.length).toBeGreaterThan(0);
+    expect([...presets].sort()).toEqual([...copilotProfileIds()].sort());
+
+    for (const id of presets) expect(resolveCopilotRoute(id, undefined), id).toBeDefined();
   });
 
   it("routes no model without a preset, and drops the copilot/ prefix", () => {

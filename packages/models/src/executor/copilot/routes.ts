@@ -141,6 +141,9 @@ const FORMATS = {
 } as const;
 
 /** Go `Route`: the endpoint, its protocol and the defaults of one model for this attempt. */
+/** The preset ids with a CLI profile (the catalog's `copilot` additions must list the same ids). */
+export const copilotProfileIds = (): ReadonlyArray<string> => [...PROFILES.keys()];
+
 export interface CopilotRoute {
   /** The native model id sent upstream. */
   readonly model: string;
