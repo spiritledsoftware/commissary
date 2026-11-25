@@ -24,6 +24,8 @@ const REFRESH_LEADS_MS = new Map<string, number>([
   ["claude", 4 * HOUR],
   ["antigravity", 30 * MINUTE],
   ["xai", 5 * MINUTE],
+  // The Copilot token lives about 30 minutes (Go `CopilotAuthenticator.RefreshLead`).
+  ["copilot", 5 * MINUTE],
   ["kimi", 5 * MINUTE],
   ["kimi-ai", 5 * MINUTE],
   ["kimi.ai", 5 * MINUTE],

@@ -276,10 +276,26 @@ interface PendingToolCall {
 }
 
 /** `ConvertOpenAIRequestToCodex`. Throws `UnsupportedPartError` when a user turn is left with nothing to send. */
-export const convertOpenAIRequestToCodex = (
+export const convertOpenAIRequestToCodex = (modelName: string, body: Json, stream: boolean): Json =>
+  convertOpenAIRequestToResponsesBody(modelName, body, stream, true);
+
+/**
+ * `ConvertOpenAIRequestToResponses` (7ae771fc): standard Responses without the Codex wire defaults. The client's
+ * `temperature`, `top_p`, `service_tier`, `parallel_tool_calls`, `store` and `verbosity` pass through; no default
+ * `reasoning.effort`, `include` or `store` is added. Only the Copilot executor uses it.
+ */
+export const convertOpenAIRequestToResponses = (
   modelName: string,
   body: Json,
   stream: boolean,
+): Json => convertOpenAIRequestToResponsesBody(modelName, body, stream, false);
+
+/** `convertOpenAIRequestToResponses`: `codex` adds the Codex wire defaults. */
+const convertOpenAIRequestToResponsesBody = (
+  modelName: string,
+  body: Json,
+  stream: boolean,
+  codex: boolean,
 ): Json => {
   const drops = new UserTurnDrops();
   const tools = get(body, "tools");
@@ -287,14 +303,38 @@ export const convertOpenAIRequestToCodex = (
   let out: Json = { instructions: "" };
   out = set(out, "stream", stream);
 
-  const effort = get(body, "reasoning_effort");
-  out = set(out, "reasoning.effort", effort !== undefined ? effort : "medium");
-  const serviceTier = normalizeCodexServiceTier(get(body, "service_tier"));
+  // Standard Responses carries the client's output limit (01b24f1f); Codex leaves it out (#395).
+  if (!codex) {
+    for (const path of ["max_completion_tokens", "max_tokens", "max_output_tokens"]) {
+      const limit = get(body, path);
 
-  if (serviceTier !== "") out = set(out, "service_tier", serviceTier);
-  // An explicit false survives; null, absent and anything else default to true (99d1698f).
-  out = set(out, "parallel_tool_calls", get(body, "parallel_tool_calls") !== false);
-  out = set(out, "include", ["reasoning.encrypted_content"]);
+      if (typeof limit === "number") {
+        out = set(out, "max_output_tokens", Math.trunc(limit));
+        break;
+      }
+    }
+  }
+
+  const effort = get(body, "reasoning_effort");
+
+  if (effort !== undefined) out = set(out, "reasoning.effort", effort);
+  else if (codex) out = set(out, "reasoning.effort", "medium");
+
+  if (codex) {
+    const serviceTier = normalizeCodexServiceTier(get(body, "service_tier"));
+
+    if (serviceTier !== "") out = set(out, "service_tier", serviceTier);
+    // An explicit false survives; null, absent and anything else default to true (99d1698f).
+    out = set(out, "parallel_tool_calls", get(body, "parallel_tool_calls") !== false);
+    out = set(out, "include", ["reasoning.encrypted_content"]);
+  } else {
+    for (const key of ["temperature", "top_p", "service_tier", "parallel_tool_calls", "store"]) {
+      const value = get(body, key);
+
+      if (value !== undefined) out = set(out, key, cloneJson(value));
+    }
+  }
+
   out = set(out, "model", modelName);
 
   const customToolNames = new Set<string>();
@@ -569,18 +609,12 @@ export const convertOpenAIRequestToCodex = (
         break;
       }
     }
-
-    const verbosity = get(text, "verbosity");
-
-    if (verbosity !== undefined) out = set(out, "text.verbosity", verbosity);
-  } else if (text !== undefined) {
-    const verbosity = get(text, "verbosity");
-
-    if (verbosity !== undefined) {
-      if (get(out, "text") === undefined) out = set(out, "text", {});
-      out = set(out, "text.verbosity", verbosity);
-    }
   }
+
+  // Standard Responses also takes Chat's top-level `verbosity`.
+  const verbosity = get(text, "verbosity") ?? (codex ? undefined : get(body, "verbosity"));
+
+  if (verbosity !== undefined) out = set(out, "text.verbosity", verbosity);
 
   // Map tools (flatten function fields).
   if (toolList.length > 0) {
@@ -663,7 +697,7 @@ export const convertOpenAIRequestToCodex = (
     }
   }
 
-  out = set(out, "store", false);
+  if (codex) out = set(out, "store", false);
   const err = drops.err(out);
 
   if (err !== undefined) throw err;

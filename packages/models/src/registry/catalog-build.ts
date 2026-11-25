@@ -10,8 +10,8 @@
  *
  * Models.dev provider -> our provider: `anthropic` -> Claude, `google` -> Gemini and AI Studio, `google-vertex` ->
  * Vertex (Gemini only), `xai` -> xAI, `meta` -> Meta, `kimi-code-plan-global` -> Kimi (`kimi-` prefixed ids, which
- * the Kimi executor normalizes), `openai` -> Codex (details only). Antigravity and Devin have private model ids and
- * are catalog additions entirely, like the System One models (ADR 0032) of TypeSafe, SubQ and OpenCode Zen (the
+ * the Kimi executor normalizes), `openai` -> Codex (details only). Antigravity, Devin and Copilot (the Copilot CLI's
+ * presets) have private model ids and are catalog additions entirely, like the System One models (ADR 0032) of TypeSafe, SubQ and OpenCode Zen (the
  * `opencode-zen` section holds only those; Zen's other models come from models.dev, `opencode-catalog.ts`).
  */
 import type { Types } from "effect";
@@ -40,6 +40,7 @@ export const SECTIONS = [
   "antigravity",
   "xai",
   "devin",
+  "copilot",
   "meta",
   "typesafe",
   "subq",
@@ -418,7 +419,7 @@ const planSection = (
   return out;
 };
 
-/** Antigravity and Devin: private ids, catalog additions entirely. */
+/** Antigravity, Devin and Copilot: private ids, catalog additions entirely. */
 const recordsSection = (additions: ProviderAdditions | undefined): ModelInfo[] =>
   (additions?.models ?? []).map(modelInfoFromAddition);
 
@@ -442,6 +443,7 @@ export const buildModelsCatalog = (
     antigravity: recordsSection(providers.antigravity),
     xai: sourceSection(SOURCES.xai, doc, providers.xai),
     devin: recordsSection(providers.devin),
+    copilot: recordsSection(providers.copilot),
     meta: sourceSection(SOURCES.meta, doc, providers.meta),
     typesafe: recordsSection(providers.typesafe),
     subq: recordsSection(providers.subq),

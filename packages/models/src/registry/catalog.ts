@@ -258,6 +258,8 @@ export const staticModelsByChannel = (
       return sectionModels(catalogs, "xai");
     case "devin":
       return sectionModels(catalogs, "devin");
+    case "copilot":
+      return sectionModels(catalogs, "copilot");
     case "meta":
     case "muse":
       return sectionModels(catalogs, "meta");
@@ -376,6 +378,8 @@ const lookupInStaticCatalogs = (
     models.antigravity,
     models.xai,
     models.meta,
+    // cbfc90ad: Copilot's presets come right after Meta's, as in Go.
+    models.copilot,
     models.typesafe,
     models.subq,
     models["opencode-zen"],

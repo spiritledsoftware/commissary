@@ -3,7 +3,7 @@
  */
 import { Formats } from "../formats.ts";
 import type { TranslatorRegistry } from "../registry.ts";
-import { convertClaudeRequestToCodex } from "./claude/request.ts";
+import { convertClaudeRequestToCodex, convertClaudeRequestToResponses } from "./claude/request.ts";
 import {
   claudeTokenCount,
   convertCodexResponseToClaude,
@@ -20,7 +20,10 @@ import {
   convertCodexResponseToInteractions,
   convertCodexResponseToInteractionsNonStream,
 } from "./interactions/response.ts";
-import { convertOpenAIRequestToCodex } from "./openai-chat/request.ts";
+import {
+  convertOpenAIRequestToCodex,
+  convertOpenAIRequestToResponses,
+} from "./openai-chat/request.ts";
 import {
   convertCodexResponseToOpenAI,
   convertCodexResponseToOpenAINonStream,
@@ -55,3 +58,23 @@ export const registerCodexTranslators = (registry: TranslatorRegistry): Translat
       stream: convertCodexResponseToOpenAIResponses,
       nonStream: convertCodexResponseToOpenAIResponsesNonStream,
     });
+
+/**
+ * Replaces the OpenAI and Claude `-> codex` request transforms (the compat one too) with the standard Responses
+ * conversions, without the Codex wire defaults; the response transforms stay. Go: helps/copilot_translation.go
+ * (`copilotResponses`, 7ae771fc), the registry only a Copilot Responses attempt uses.
+ */
+export const registerStandardResponsesRequests = (
+  registry: TranslatorRegistry,
+): TranslatorRegistry =>
+  registry
+    .register(Formats.OpenAI, Formats.Codex, convertOpenAIRequestToResponses, {
+      stream: convertCodexResponseToOpenAI,
+      nonStream: convertCodexResponseToOpenAINonStream,
+    })
+    .register(Formats.Claude, Formats.Codex, convertClaudeRequestToResponses, {
+      stream: convertCodexResponseToClaude,
+      nonStream: convertCodexResponseToClaudeNonStream,
+      tokenCount: claudeTokenCount,
+    })
+    .registerCompatRequest(Formats.Claude, Formats.Codex, convertClaudeRequestToResponses);

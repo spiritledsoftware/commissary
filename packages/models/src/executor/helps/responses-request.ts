@@ -1,6 +1,6 @@
 /**
  * OpenAI Responses request shaping shared by the executors that post Codex-format bodies to a `/responses` endpoint
- * that always streams (Meta, OpenCode Zen/Go).
+ * that always streams (Meta, OpenCode Zen/Go, GitHub Copilot).
  *
  * Go source: internal/runtime/executor/meta_executor_execute.go (`prepareResponsesRequest`),
  * openai_responses_signature.go (keep-foreign reasoning sanitising, in `executor/codex/request.ts`). Order: translate
@@ -26,7 +26,7 @@ import {
 import { ApplyPatchResponsesState, normalizeApplyPatchResponses } from "./apply-patch-responses.ts";
 import { stripCodexOnlyIncludes } from "./codex-include.ts";
 import { finalizePayload } from "./payload.ts";
-import { parseSuffix } from "@commissary/translation/thinking";
+import { parseSuffix, type SummaryConfig } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
 import {
   type ExecutionContext,
@@ -53,6 +53,13 @@ export interface ResponsesShaping {
   readonly provider: string;
   /** Protocol the payload rules match against (Meta passes its executor identifier, as Go does). */
   readonly payloadProtocol: string;
+  /**
+   * Provider defaults on the translated body, run before the thinking pipeline so it validates them (Copilot: the CLI
+   * profile's effort).
+   */
+  readonly seedDefaults?: (body: Json) => Json;
+  /** The provider's summary default when the request names none (`ThinkingRequest.defaultSummary`). */
+  readonly defaultSummary?: (body: Json) => SummaryConfig | undefined;
   /** Provider tool preparation, run after the reasoning sanitising (Meta: web_search sanitising, muse namespace). */
   readonly prepareTools?: (body: Json) => Json;
   /**
@@ -152,8 +159,10 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
       ? syncPromptCacheRetention(stripped, originalSource)
       : stripped;
 
+  const translatedBody = stripIncludes ? stripCodexOnlyIncludes(translated.body) : translated.body;
+
   let body = yield* thinking.apply({
-    body: stripIncludes ? stripCodexOnlyIncludes(translated.body) : translated.body,
+    body: shaping.seedDefaults?.(translatedBody) ?? translatedBody,
     model: request.model,
     from,
     to,
@@ -163,6 +172,7 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     configurationUpdatesChanged: translated.configurationUpdatesChanged === true,
     modelInfo: request.modelInfo,
     lookupModelInfo: request.modelLookup,
+    ...(shaping.defaultSummary === undefined ? {} : { defaultSummary: shaping.defaultSummary }),
   });
 
   body = setIfDifferent(body, "model", baseModel);

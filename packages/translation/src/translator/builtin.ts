@@ -13,7 +13,7 @@ import {
 import { registerInteractionsTranslators } from "./interactions/register.ts";
 import { registerOpenAICompatTranslators } from "./openai/register.ts";
 import { TranslatorRegistry } from "./registry.ts";
-import { registerCodexTranslators } from "./codex/register.ts";
+import { registerCodexTranslators, registerStandardResponsesRequests } from "./codex/register.ts";
 import { convertClaudeRequestToCodexWithCompat } from "./codex/claude/request.ts";
 import { convertOpenAIRequestToClaudeWithCompat } from "./claude/openai/chat-completions/request.ts";
 import { convertOpenAIResponsesRequestToClaudeWithCompat } from "./claude/openai/responses/request.ts";
@@ -64,4 +64,13 @@ export const registerBuiltinTranslators = (registry: TranslatorRegistry): Transl
 /** Process-wide registry populated with the built-in translators (immutable after module load). */
 export const builtinTranslators: TranslatorRegistry = registerBuiltinTranslators(
   new TranslatorRegistry(),
+);
+
+/**
+ * The built-in translators with OpenAI and Claude clients converted to standard Responses rather than the Codex wire
+ * (no default `reasoning.effort`, `include` or `store`; `temperature` and `top_p` pass through). Only the GitHub
+ * Copilot executor's Responses route uses it (Go: helps/copilot_translation.go, `CopilotTranslationRegistry`).
+ */
+export const standardResponsesTranslators: TranslatorRegistry = registerStandardResponsesRequests(
+  registerBuiltinTranslators(new TranslatorRegistry()),
 );

@@ -4863,6 +4863,842 @@
         }
       ]
     },
+    "copilot": {
+      "models": [
+        {
+          "id": "claude-fable-5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Fable 5",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 64000
+        },
+        {
+          "id": "claude-fable-5.1",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Fable 5.1",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 64000
+        },
+        {
+          "id": "claude-fable-5.2",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Fable 5.2",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1000000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "claude-haiku-4.5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Haiku 4.5",
+          "contextLength": 144000,
+          "maxCompletionTokens": 32000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "min": 1024,
+            "max": 32000,
+            "zeroAllowed": true
+          },
+          "inputTokenLimit": 128000,
+          "outputTokenLimit": 32000
+        },
+        {
+          "id": "claude-haiku-5.5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Haiku 5.5",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "claude-opus-4.8-fast",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Opus 4.8 (fast mode)",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 64000
+        },
+        {
+          "id": "claude-opus-5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Opus 5",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 64000
+        },
+        {
+          "id": "claude-opus-5.5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Opus 5.5",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1000000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "claude-sonnet-5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Sonnet 5",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 64000
+        },
+        {
+          "id": "claude-sonnet-5.5",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Claude Sonnet 5.5",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gemini-4-argon",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Gemini 4 Argon",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 983040,
+          "outputTokenLimit": 65536
+        },
+        {
+          "id": "gemini-4-carbon",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Gemini 4 Carbon",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 936000,
+          "outputTokenLimit": 64000
+        },
+        {
+          "id": "gemini-4-hydrogen",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Gemini 4 Hydrogen",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 983040,
+          "outputTokenLimit": 65536
+        },
+        {
+          "id": "gemini-4-neon",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Gemini 4 Neon",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 983040,
+          "outputTokenLimit": 65536
+        },
+        {
+          "id": "kimi-k3",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Kimi K3",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 131072,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 917504,
+          "outputTokenLimit": 131072
+        },
+        {
+          "id": "gpt-5.3-codex",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-5.3-Codex",
+          "contextLength": 400000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "inputTokenLimit": 272000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-5.6 Luna",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 922000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-5.6 Sol",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 922000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6-astra",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6 Astra",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1050000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6-luna",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6 Luna",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 872000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6-sol",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6 Sol",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "zeroAllowed": true,
+            "levels": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 872000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6.1 Sol",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 922000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6.1 Terra",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1000000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6.2-astra",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6.2 Astra",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1050000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "GPT-6.2 Sol",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1050000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "grok-4.6",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Grok 4.6",
+          "contextLength": 500000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "inputTokenLimit": 372000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "grok-4.7",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "Grok 4.7",
+          "contextLength": 500000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "inputTokenLimit": 372000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "mai-code-1.1-flash",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "MAI-Code-1.1-Flash",
+          "contextLength": 256000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 128000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "mai-code-2",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "MAI Code 2",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 922000,
+          "outputTokenLimit": 128000
+        },
+        {
+          "id": "mai-code-2-flash",
+          "object": "model",
+          "ownedBy": "copilot",
+          "type": "copilot",
+          "created": 0,
+          "displayName": "MAI Code 2 Flash",
+          "contextLength": 1050000,
+          "maxCompletionTokens": 128000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 922000,
+          "outputTokenLimit": 128000
+        }
+      ]
+    },
     "typesafe": {
       "models": [
         {

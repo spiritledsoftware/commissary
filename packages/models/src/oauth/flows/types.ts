@@ -11,9 +11,14 @@ import type { JsonObject } from "@commissary/json";
 import type { OAuthProvider } from "../names.ts";
 
 /** A failed step; `message` is what `GET /oauth/status` reports (Go `SetOAuthSessionError` text). */
-export class FlowFailure extends Data.TaggedError("FlowFailure")<{ readonly message: string }> {}
+export class FlowFailure extends Data.TaggedError("FlowFailure")<{
+  readonly message: string;
+  /** The upstream HTTP status, when the failure is a non-2xx answer (token refresh classifies by it). */
+  readonly status?: number;
+}> {}
 
-export const flowFailure = (message: string): FlowFailure => new FlowFailure({ message });
+export const flowFailure = (message: string, status?: number): FlowFailure =>
+  new FlowFailure(status === undefined ? { message } : { message, status });
 
 /** The credential a finished login produces: auth file name and its complete JSON content. */
 export interface CredentialRecord {

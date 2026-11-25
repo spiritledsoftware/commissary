@@ -1411,7 +1411,7 @@ Port of `auto_refresh_loop.go` + `conductor_refresh.go` + the per-provider `Refr
 (Cloudflare-free, unit tested with a fake host/alarm/clock) is owned by the `ControlPlane` DO, which is the only writer:
 
 - **Scheduling** (`schedule.ts`): `nextRefreshCheckAt` is a pure function of (now, credential, state) with the Go leads
-  (codex 96 h, claude 4 h, antigravity 30 min, xai/kimi/kimi-ai/kimi.ai 5 min; devin, meta, kimi.com, vertex never).
+  (codex 96 h, claude 4 h, antigravity 30 min, xai/copilot/kimi/kimi-ai/kimi.ai 5 min; devin, meta, kimi.com, vertex never).
   One alarm is multiplexed over all credentials: `rearm()` takes the minimum over the stored credentials (no heap) and
   is called after every credential mutation, after each alarm run and by the cron `sweepRefresh()`. `alarm()` refreshes
   what is due (`oauth.auth-auto-refresh-workers`, default 16, concurrently) and always re-arms, never sooner than 30 s
@@ -1426,7 +1426,7 @@ Port of `auto_refresh_loop.go` + `conductor_refresh.go` + the per-provider `Refr
   back-off 5 min / invalid_grant 1->30 min, terminal 401, 30 s ineffective-refresh guard, concurrent cooldowns kept).
   A refresh whose base tokens were replaced meanwhile (re-login) is discarded. `credentialVersion` bumps on rotation,
   so leases of the old tokens are ignored by `report`.
-- **Protocols** (`claude|codex|antigravity|xai|kimi|meta.ts`): `(context) => Effect<updatedMetadata, RefreshError,
+- **Protocols** (`claude|codex|antigravity|xai|copilot|kimi|meta.ts`): `(context) => Effect<updatedMetadata, RefreshError,
   HttpClient>` over the injectable Effect `HttpClient` (`FetchHttpClient.layer` in production, a recording client in
   tests). Each HTTP call is bounded to 30 s, a whole refresh to 120 s. Claude retries only HTTP >= 500 and blocks the
   credential for `Retry-After` on 429; Codex retries three times except `refresh_token_reused`.
@@ -2959,6 +2959,46 @@ mid-generation is `stream_truncated`: no cooldown, no replay. A failure keeps th
 which gets no completion event. The sanitised apply_patch 502 replaces an upstream failure only after a tool call of the declared tool
 (or one without a name) was seen. The upstream response summary of Go's request log is not ported (request-log files are a non-goal).
 
+## GitHub Copilot provider (`models/executor/copilot/`, `models/credentials/refresh/copilot.ts`)
+
+Port of Go's Copilot executor (`7ae771fc`, `d059cf28`, `5dff8b67`, `b824c052`, `9792ac28`, `20211183`, `cbfc90ad`, `f911b453`,
+`9abeef8c`; `internal/runtime/executor/copilot_executor*.go`, `helps/copilot*.go`, `internal/auth/copilot/catalog.go`). A signed-in
+Copilot credential (_Provider OAuth logins_) serves the Copilot CLI's preset models:
+
+- **Catalog**: the presets are the `copilot` section of the catalog additions (`catalog/additions.json`, Go `models.json`
+  `copilot`): private ids, additions entirely, like Devin's. Every Copilot credential registers them under their native ids
+  (`claude-sonnet-5.5`, `gpt-6-sol`, ...); `oauth.model-alias.copilot` aliases them and the alias reaches Copilot as the native
+  id. They are in the static lookup after Meta's (`cbfc90ad`).
+- **Routes** (`routes.ts`): each preset goes to the endpoint of its CLI profile (Go `compat.json`): Chat Completions
+  (`/chat/completions`, Gemini and Kimi models), Messages (`/v1/messages`, Claude models) or Responses (`/responses`, GPT, Grok
+  and MAI models), with the CLI's defaults (effort or budget where the request names none, Messages `max_tokens` capped by the
+  model and without streaming by the 16k non-streaming limit, verbosity, `tool_choice`, `snippy`, the block-binding betas). A
+  model without a preset and a profile gets a 404.
+- **Requests** (`request.ts`, `attempt.ts`, one file per route: `chat.ts`, `messages.ts`, `responses.ts`): the client request
+  is translated to the route's protocol (OpenAI and Claude clients of a Responses route to standard Responses, without the
+  Codex wire defaults: `standardResponsesTranslators`, Go `CopilotTranslationRegistry`, `7ae771fc`; their `temperature` and
+  `top_p` pass through, and their output limit as `max_output_tokens`, `01b24f1f`), then the CLI defaults (with reasoning
+  summaries on for a model with a default effort, Go `ApplyCopilotThinking`), the thinking pipeline that validates them, Copilot's protocol fixes (`NormalizeCopilotRequest`: plain-text assistant history flattened to a string for
+  every client, `9abeef8c`/`f911b453`; a leading system prompt moved to `instructions` or kept as `system` input, the model's
+  CLI choice) and the payload rules last. A request only goes to the credential's `base_url`, re-checked with
+  `isTrustedCopilotApi` before each send, with the CLI's identity headers (`Copilot-Integration-Id`, `Editor-Version`,
+  `X-Initiator` `user` or `agent` for a tool-result follow-up, the turn ids). Streams are translated event by event for every
+  client format (`9792ac28`); a streamed Chat answer gives the OpenAI -> Claude translator the stream hint whatever the client's
+  body said (`20211183`). Token counts are local and in the client's format (Gemini `totalTokens`, `b824c052`).
+- **Token refresh** (`credentials/refresh/copilot.ts`): the Copilot token lives about 30 minutes; the refresh machinery
+  exchanges the GitHub token (`refresh_token`) again 5 minutes before `expired` (Go `RefreshLead`), at request time when it has
+  expired, and after an upstream 401, through the sign-in's `exchangeCopilotToken`, so `base_url` stays a trusted origin. A
+  401 from GitHub (revoked token) is terminal until a new sign-in.
+
+Deliberate differences from Go: no per-account `/models` discovery (Go intersects the presets with each account's directory,
+refreshed every 2 hours in its own worker pool, and revokes it when the origin changes): every credential serves every preset
+through its preset ("cold") route, and an account that lacks a model answers with its own error. No in-memory turn links and
+no server-side replay of private reasoning or signatures: the session, interaction and task ids are derived (UUIDv5 of the
+credential, caller, session and the digest of the user turns, so a tool follow-up shares its turn's ids), and reasoning
+round-trips through the client like on the other Responses upstreams. Responses requests go through the shared Responses
+shaping (`helps/responses-request.ts`) and always stream upstream (a non-stream client gets the collected answer). Messages
+answers for non-Claude clients stream upstream, as on the other Messages upstreams. Home dispatch and the upstream API request log are not ported.
+
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 
 No Go counterpart: CLIProxyAPI reaches OpenCode only through an `openai-compatibility` entry (chat only). The Workers port has two
@@ -4377,8 +4417,8 @@ Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_fil
   and the Copilot token exchange (`/copilot_internal/v2/token`). The file keeps the GitHub token as `refresh_token`, the
   Copilot token as `access_token` with its `expired`, and the inference `base_url` the token names, accepted only on Go's
   trusted `api.*githubcopilot.com` hosts (`isTrustedCopilotApi`); an untrusted endpoint fails the login. Its `username`
-  (the GitHub login) is the account's label, as Go's `Label`. Serving requests, refreshing the Copilot token and the
-  model catalog come with the Copilot executor.
+  (the GitHub login) is the account's label, as Go's `Label`. Serving, the token refresh and the catalog: _GitHub Copilot
+  provider_.
 - **Credentials** are the Go files (same keys, same names: `claude-<sha8(org|account)>-<email>.json`, `codex-<sha8(account)>-<email>-<plan>.json`,
   `antigravity-<email>.json`, `xai-<email|sub>.json`, `copilot-<github id>.json`, `meta-<email>-<sha16>.json`, `kimi[-ai]-<ms>.json`, `devin-<user>.json`, plus
   `disabled`). `record.ts` replays `saveTokenRecord`: same-name user settings are kept (never tokens), a Claude login migrates the

@@ -19,7 +19,7 @@ export {
   TranslatorRegistry,
 } from "./translator/registry.ts";
 
-export { builtinTranslators } from "./translator/builtin.ts";
+export { builtinTranslators, standardResponsesTranslators } from "./translator/builtin.ts";
 
 export {
   isReasoningEffortActive,
@@ -73,7 +73,11 @@ export {
   wrapApplyPatchInput,
 } from "./translator/common/apply-patch.ts";
 
-export { sseEventData } from "./translator/common/bytes.ts";
+export {
+  claudeInputTokensJson,
+  geminiTokenCountJson,
+  sseEventData,
+} from "./translator/common/bytes.ts";
 
 export { TOOL_SEARCH_ID_PREFIX } from "./translator/common/responses-tools.ts";
 

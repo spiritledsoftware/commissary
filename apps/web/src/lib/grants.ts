@@ -43,6 +43,7 @@ export const GRANT_PROVIDERS: ReadonlyArray<string> = [
   "antigravity",
   "claude",
   "codex",
+  "copilot",
   "devin",
   "gemini",
   "gemini-interactions",

@@ -27,7 +27,7 @@ export const COPILOT_DEFAULT_API = "https://api.individual.githubcopilot.com";
 const COPILOT_TOKEN_URL = `${GITHUB_API}/copilot_internal/v2/token`;
 
 /** `CLIUserAgent`: the official CLI's agent; Workers report the `linux` platform. */
-const COPILOT_USER_AGENT = "copilot/1.0.114 (linux v24.22.1) term/unknown";
+export const COPILOT_USER_AGENT = "copilot/1.0.114 (linux v24.22.1) term/unknown";
 
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -102,7 +102,7 @@ const formPost = (url: string, params: Record<string, string>) =>
 /** A 2xx JSON object, else a failure in Go's `copilot: upstream HTTP <status>` / invalid JSON wording. */
 const jsonReply = (reply: HttpReply): Effect.Effect<JsonObject, FlowFailure> => {
   if (reply.status < 200 || reply.status >= 300)
-    return Effect.fail(flowFailure(`copilot: upstream HTTP ${reply.status}`));
+    return Effect.fail(flowFailure(`copilot: upstream HTTP ${reply.status}`, reply.status));
   const parsed = parseJsonObject(reply.text);
 
   return parsed === undefined

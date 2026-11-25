@@ -5,6 +5,7 @@ import type { JsonObject } from "@commissary/json";
 import { refreshAntigravity } from "../src/credentials/refresh/antigravity.ts";
 import { refreshClaude } from "../src/credentials/refresh/claude.ts";
 import { refreshCodex } from "../src/credentials/refresh/codex.ts";
+import { refreshCopilot } from "../src/credentials/refresh/copilot.ts";
 import { RefreshError } from "../src/credentials/refresh/error.ts";
 import { refreshKimi } from "../src/credentials/refresh/kimi.ts";
 import { refreshMeta } from "../src/credentials/refresh/meta.ts";
@@ -627,5 +628,74 @@ describe("meta", () => {
     expect(success(keyOnly.outcome)).toEqual({ api_key: "k", access_token: "k" });
     const none = await run(refreshMeta, { type: "meta" }, routes({}));
     expect(failure(none.outcome)).toMatchObject({ status: 401 });
+  });
+});
+
+// Go: internal/runtime/executor/copilot_executor.go (`Refresh`), copilot_executor_refresh_test.go.
+describe("copilot", () => {
+  const TOKEN = "GET https://api.github.com/copilot_internal/v2/token";
+
+  const metadata = {
+    type: "copilot",
+    account_id: "42",
+    access_token: "old-copilot",
+    refresh_token: "github-grant",
+    base_url: "https://api.individual.githubcopilot.com",
+    expired: rfc(T0),
+  };
+
+  it("exchanges the GitHub token again and keeps the trusted origin it names", async () => {
+    const expiresAt = Math.floor(T0 / 1000) + 1800;
+
+    const { outcome, requests } = await run(
+      refreshCopilot,
+      metadata,
+      routes({
+        [TOKEN]: {
+          body: {
+            token: "new-copilot",
+            expires_at: expiresAt,
+            endpoints: { api: "https://api.business.githubcopilot.com" },
+          },
+        },
+      }),
+    );
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api.github.com/copilot_internal/v2/token",
+    ]);
+    expect(requests[0]?.headers["authorization"]).toBe("Bearer github-grant");
+    expect(success(outcome)).toEqual({
+      ...metadata,
+      access_token: "new-copilot",
+      base_url: "https://api.business.githubcopilot.com",
+      expired: rfc(expiresAt * 1000),
+      last_refresh: rfc(T0),
+    });
+  });
+
+  it("refuses an untrusted endpoint and keeps a revoked GitHub token's 401", async () => {
+    const untrusted = await run(
+      refreshCopilot,
+      metadata,
+      routes({
+        [TOKEN]: {
+          body: {
+            token: "new-copilot",
+            expires_at: Math.floor(T0 / 1000) + 1800,
+            endpoints: { api: "https://evil.example" },
+          },
+        },
+      }),
+    );
+
+    expect(failure(untrusted.outcome).message).toContain("untrusted API endpoint");
+
+    const revoked = await run(refreshCopilot, metadata, routes({ [TOKEN]: { status: 401 } }));
+    expect(failure(revoked.outcome)).toMatchObject({ status: 401 });
+
+    const missing = await run(refreshCopilot, { type: "copilot" }, routes({}));
+    expect(failure(missing.outcome)).toMatchObject({ status: 401 });
+    expect(missing.requests).toHaveLength(0);
   });
 });
