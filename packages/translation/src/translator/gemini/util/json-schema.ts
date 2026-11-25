@@ -55,7 +55,7 @@ interface Doc {
 
 // --- path helpers ------------------------------------------------------------------------------------------------------
 
-const escapeKey = (key: string): string => key.replace(/[.*?]/g, (c) => `\\${c}`);
+const escapeKey = (key: string): string => key.replace(/[\\.*?]/g, (c) => `\\${c}`);
 
 const unescapeKey = (key: string): string => {
   if (!key.includes("\\")) return key;
@@ -712,6 +712,8 @@ const UNSUPPORTED_CONSTRAINTS = [
   "pattern",
   "minItems",
   "maxItems",
+  "minProperties",
+  "maxProperties",
   "uniqueItems",
   "contains",
   "format",
@@ -1627,6 +1629,9 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
     sanitizeObjectProperties(doc);
     sanitizeArrayItems(doc, options);
   }
+
+  // Gemini has no tuple schemas (CLIProxyAPI 65ba7863).
+  if (options.preserveStandardConstraints !== true) removeKeywords(doc, ["prefixItems"]);
 
   if (options.addPlaceholder === true) addEmptySchemaPlaceholder(doc);
 
