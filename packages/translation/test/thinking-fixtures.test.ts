@@ -27,7 +27,7 @@ import {
 import {
   type ApplyFixture,
   bodyKey,
-  catalogLookup,
+  channelCatalogLookup,
   collectMismatches,
   decodeConfig,
   decodeFullConfig,
@@ -265,7 +265,7 @@ describe("thinking golden fixtures", () => {
         fromFormat: c.from,
         toFormat: c.to,
         providerKey: c.providerKey,
-        lookupModelInfo: catalogLookup,
+        lookupModelInfo: channelCatalogLookup,
         ...(c.variant === "source" || c.variant === "modelInfo" || c.variant === "modelInfoSummary"
           ? { sourceBody: source }
           : {}),
@@ -395,14 +395,20 @@ describe("thinking golden fixtures", () => {
 
         if (c.kind === "plain") out = applySummaryConfig(body, c.format, c.config);
         else if (c.kind === "model")
-          out = applySummaryConfigForModel(body, c.format, c.model ?? "", c.config, catalogLookup);
+          out = applySummaryConfigForModel(
+            body,
+            c.format,
+            c.model ?? "",
+            c.config,
+            channelCatalogLookup,
+          );
         else
           out = applyTranslatedSummaryToClaude(
             body,
             parseBody(c.source ?? ""),
             c.format,
             c.model ?? "",
-            catalogLookup,
+            channelCatalogLookup,
           );
         const expected = expectedKey(c.same === true ? c.body : (c.out ?? ""));
 

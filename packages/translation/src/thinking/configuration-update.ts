@@ -4,9 +4,12 @@
  * Go source: internal/thinking/configuration_update.go.
  */
 import { get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
-import { delPath, getString, isEmptyObject, normalize } from "./json.ts";
-import { autoConfig, EMPTY_CONFIG, levelConfig, noneConfig } from "./types.ts";
-import type { ThinkingConfig } from "./types.ts";
+import { hasLevel } from "./convert.ts";
+import type { ThinkingError } from "./errors.ts";
+import { delPath, getString, isEmptyObject, normalize, setPath } from "./json.ts";
+import { autoConfig, EMPTY_CONFIG, isUserDefinedModel, levelConfig, noneConfig } from "./types.ts";
+import type { ProviderApplier, ThinkingConfig, ThinkingModelInfo } from "./types.ts";
+import { validateConfig } from "./validate.ts";
 
 export const isResponsesFormat = (format: string): boolean =>
   format === "codex" || format === "openai-response";
@@ -61,4 +64,63 @@ export const stripResponsesEffort = (body: Json | undefined): Json | undefined =
   const result = delPath(body, "reasoning.effort");
 
   return isEmptyObject(get(result, "reasoning")) ? delPath(result, "reasoning") : result;
+};
+
+/** The body with its native Responses efforts validated, or the validation error and the body so far. */
+export interface NativeEffortResult {
+  readonly body: Json | undefined;
+  readonly error?: ThinkingError | undefined;
+}
+
+/**
+ * Validates each native Responses effort (the top-level baseline unless a thinking suffix replaces it, and every
+ * `configuration_update`) without collapsing the timeline: an effort the model does not list is validated and
+ * rewritten with the provider's output rules (for example `none` to the lowest level of a model that cannot turn
+ * thinking off), and an invalid one is an error. Models without levels, and user-defined ones, pass through.
+ */
+export const normalizeNativeResponsesEffort = (
+  body: Json | undefined,
+  modelInfo: ThinkingModelInfo | undefined,
+  applier: ProviderApplier,
+  fromFormat: string,
+  toFormat: string,
+  skipBaseline: boolean,
+): NativeEffortResult => {
+  const levels = modelInfo?.thinking?.levels ?? [];
+
+  if (body === undefined || isUserDefinedModel(modelInfo) || levels.length === 0) return { body };
+
+  const paths = skipBaseline ? [] : ["reasoning.effort"];
+  const input = get(body, "input");
+
+  if (isJsonArray(input)) {
+    input.forEach((item, index) => {
+      if (getString(item, "type") === "configuration_update")
+        paths.push(`input.${index}.reasoning.effort`);
+    });
+  }
+
+  let result: Json | undefined = body;
+
+  for (const path of paths) {
+    const effort = get(result, path);
+
+    if (typeof effort !== "string" || effort.trim() === "" || hasLevel(levels, effort)) continue;
+
+    const validation = validateConfig(
+      levelConfig(normalize(effort)),
+      modelInfo,
+      fromFormat,
+      toFormat,
+      false,
+    );
+
+    if (validation.error !== undefined) return { body: result, error: validation.error };
+
+    const value = get(applier.apply({}, validation.config, modelInfo), "reasoning.effort");
+
+    if (typeof value === "string" && value !== effort) result = setPath(result, path, value);
+  }
+
+  return { body: result };
 };

@@ -7,10 +7,35 @@
 import { asInt, get, type Json } from "@commissary/json";
 import { delPath, ensureBody, setPath } from "../json.ts";
 import { isUserDefinedModel } from "../types.ts";
-import type { ProviderApplier, ThinkingModelInfo } from "../types.ts";
-import { applyBudgetFormat, applyLevelFormat } from "./google.ts";
+import type { ProviderApplier, ThinkingConfig, ThinkingModelInfo } from "../types.ts";
+import { applyBudgetFormat, applyLevelFormat, readIncludeThoughts } from "./google.ts";
 
 const PREFIX = "request.generationConfig.thinkingConfig";
+
+/** The snake_case spelling of {@link PREFIX}: replaced by the canonical object, its includeThoughts kept. */
+const ALIAS_PREFIX = "request.generationConfig.thinking_config";
+
+/** Drops the `thinking_config` alias, moving its includeThoughts to `thinkingConfig` when that has none. */
+const dropAlias = (body: Json | undefined): Json | undefined => {
+  if (get(body, ALIAS_PREFIX) === undefined) return body;
+  const include = readIncludeThoughts(body, PREFIX) ?? readIncludeThoughts(body, ALIAS_PREFIX);
+  let result = delPath(body, ALIAS_PREFIX);
+
+  if (include !== undefined && readIncludeThoughts(result, PREFIX) === undefined)
+    result = setPath(result, `${PREFIX}.includeThoughts`, include);
+
+  return result;
+};
+
+/** Antigravity writes levels upper case (`HIGH`). */
+const levelFormat = (body: Json | undefined, config: ThinkingConfig): Json | undefined => {
+  const result = applyLevelFormat(dropAlias(body), config, PREFIX);
+  const level = get(result, `${PREFIX}.thinkingLevel`);
+
+  return typeof level === "string"
+    ? setPath(result, `${PREFIX}.thinkingLevel`, level.trim().toUpperCase())
+    : result;
+};
 
 const MAX_OUTPUT_PATH = "request.generationConfig.maxOutputTokens";
 
@@ -56,7 +81,7 @@ const normalizeClaudeBudget = (
   const minBudget = modelInfo.thinking?.min ?? 0;
 
   if (minBudget > 0 && budget >= 0 && budget < minBudget) {
-    return { budget: "removed", body: delPath(payload, PREFIX) };
+    return { budget: "removed", body: delPath(delPath(payload, PREFIX), ALIAS_PREFIX) };
   }
 
   if (fromModel && max > 0) payload = setPath(payload, MAX_OUTPUT_PATH, max);
@@ -70,7 +95,7 @@ const budgetFormat = (
   config: Parameters<typeof applyBudgetFormat>[1],
 ) =>
   applyBudgetFormat(
-    body,
+    dropAlias(body),
     config,
     PREFIX,
     isClaudeModel(modelInfo) && modelInfo !== undefined
@@ -91,15 +116,14 @@ export const antigravityApplier: ProviderApplier = {
 
     if (userDefined) {
       if (config.mode === "level" || (config.mode === "none" && config.level !== "")) {
-        return applyLevelFormat(root, config, PREFIX);
+        return levelFormat(root, config);
       }
 
       return budgetFormat(root, modelInfo, config);
     }
 
     // Known models choose the format from their capabilities.
-    if ((modelInfo?.thinking?.levels?.length ?? 0) > 0)
-      return applyLevelFormat(root, config, PREFIX);
+    if ((modelInfo?.thinking?.levels?.length ?? 0) > 0) return levelFormat(root, config);
 
     return budgetFormat(root, modelInfo, config);
   },

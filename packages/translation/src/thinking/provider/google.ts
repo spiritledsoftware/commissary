@@ -97,8 +97,8 @@ export const applyBudgetFormat = (
     const normalized = normalize(budget, result);
     result = normalized.body;
 
-    // The thinking amount was removed entirely; keep an explicit visibility control.
-    if (normalized.budget === "removed") return restoreIncludeThoughts(result, prefix, include);
+    // The thinking amount was removed entirely, and its visibility control with it.
+    if (normalized.budget === "removed") return result;
     budget = normalized.budget;
   }
 

@@ -47,10 +47,10 @@ const normalizeLevels = (levels: readonly string[]): string[] => levels.map(norm
 export const isBudgetCapableProvider = (provider: string): boolean =>
   provider === "gemini" || provider === "antigravity" || provider === "claude";
 
-const isGeminiFamily = (provider: string): boolean =>
+export const isGeminiFamily = (provider: string): boolean =>
   provider === "gemini" || provider === "antigravity";
 
-const isOpenAIFamily = (provider: string): boolean =>
+export const isOpenAIFamily = (provider: string): boolean =>
   provider === "openai" || provider === "openai-response" || provider === "codex";
 
 /** gemini∼antigravity and openai∼openai-response∼codex are interchangeable families; others only match themselves. */
@@ -191,16 +191,14 @@ export const validateConfig = (
     }
   }
 
-  const allowClampUnsupported =
-    toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch);
+  const userDefined = modelInfo?.userDefined === true;
+  const sameFamily = isSameProviderFamily(fromFormat, toFormat);
+  const allowClampUnsupported = !sameFamily || (modelFamilyMismatch && !userDefined);
 
   const strictBudget =
-    !fromSuffix &&
-    fromFormat !== "" &&
-    isSameProviderFamily(fromFormat, toFormat) &&
-    !modelFamilyMismatch;
+    !userDefined && !fromSuffix && fromFormat !== "" && sameFamily && !modelFamilyMismatch;
 
-  let budgetDerivedFromLevel = false;
+  const originalMode = config.mode;
 
   if (capability === "budget-only") {
     if (config.mode === "level" && config.level !== Level.auto) {
@@ -211,24 +209,50 @@ export const validateConfig = (
       }
 
       config = { mode: "budget", budget, level: "" };
-      budgetDerivedFromLevel = true;
     }
-  } else if (capability === "level-only") {
-    if (config.mode === "budget") {
-      const level = convertBudgetToLevel(config.budget);
+  } else if (
+    config.mode === "budget" &&
+    (capability === "level-only" ||
+      (capability === "hybrid" &&
+        (toFormat === "interactions" || (toFormat === "claude" && fromFormat !== "claude"))))
+  ) {
+    // Interactions sends levels on the wire. Claude hybrid models still accept native budgets, but translated
+    // budgets use adaptive effort.
+    const level = convertBudgetToLevel(config.budget);
 
-      if (level === undefined) {
-        return {
-          error: thinkingError(
-            "UNKNOWN_LEVEL",
-            `budget ${config.budget} cannot be converted to a valid level`,
-          ),
-        };
-      }
-
-      // Clamp the derived standard level to the nearest supported one; none/auto are preserved.
-      config = { mode: "level", level: clampLevel(level, modelInfo), budget: 0 };
+    if (level === undefined) {
+      return {
+        error: thinkingError(
+          "UNKNOWN_LEVEL",
+          `budget ${config.budget} cannot be converted to a valid level`,
+        ),
+      };
     }
+
+    config = { mode: "level", level, budget: 0 };
+  }
+
+  // Budget-derived levels, and explicit levels crossing families, clamp to the nearest supported level.
+  if (
+    config.mode === "level" &&
+    toHasLevelSupport &&
+    (originalMode === "budget" || allowClampUnsupported)
+  ) {
+    config.level = clampLevel(config.level, modelInfo);
+  }
+
+  const budgetDerivedFromLevel = config.mode === "budget" && originalMode === "level";
+
+  if (userDefined) {
+    // Custom settings stay outside capability-based conversion. An OpenAI-family body can carry an effort that
+    // was translated to a budget.
+    const translatedBudget =
+      config.mode === "budget" &&
+      capability === "budget-only" &&
+      !fromSuffix &&
+      isOpenAIFamily(fromFormat);
+
+    if (!budgetDerivedFromLevel && !translatedBudget) return { config };
   }
 
   if (config.mode === "level" && config.level === Level.none)
@@ -243,18 +267,14 @@ export const validateConfig = (
   const levels = support.levels ?? [];
 
   if (levels.length > 0 && config.mode === "level" && !isLevelSupported(config.level, levels)) {
-    if (allowClampUnsupported) config.level = clampLevel(config.level, modelInfo);
+    const valid = normalizeLevels(levels).join(", ");
 
-    if (!isLevelSupported(config.level, levels)) {
-      const valid = normalizeLevels(levels).join(", ");
-
-      return {
-        error: thinkingError(
-          "LEVEL_NOT_SUPPORTED",
-          `level ${JSON.stringify(config.level.toLowerCase())} not supported, valid levels: ${valid}`,
-        ),
-      };
-    }
+    return {
+      error: thinkingError(
+        "LEVEL_NOT_SUPPORTED",
+        `level ${JSON.stringify(config.level.toLowerCase())} not supported, valid levels: ${valid}`,
+      ),
+    };
   }
 
   const min = support.min ?? 0;

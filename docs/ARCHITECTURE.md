@@ -496,6 +496,34 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   (OpenAI-compatible models) is clamped to a supported level, as across families, instead of being rejected
   (`LEVEL_NOT_SUPPORTED`). The thinking golden test masks those cases by that predicate.
 - `stripThinkingConfig` matches the provider name case-insensitively and strips `openai-response` like `codex` (Go `6e6afab9`).
+- **Budget ↔ level** (Go `a308c55b`, `f110136a`). A budget above `xhigh`'s 32768 converts to `max`. A budget becomes a
+  level for level-only models, and on hybrid models when the target is Interactions or a Claude target the client did
+  not send as Claude (translated budgets use adaptive effort; a native Claude budget stays a budget); the derived level
+  then clamps to the nearest level the model lists, ties to the lower. OpenAI Chat, Codex and xAI see a hybrid model as
+  level-only, since they accept effort levels only. A same-family explicit level the model does not list is a 400
+  (`LEVEL_NOT_SUPPORTED`); across families it clamps.
+- **User-defined models** are validated too when they carry thinking support, so a translated budget clamps to the
+  model's range, but validation stops before the range and level checks and keeps custom settings. A level stays a
+  level for a budget-capable target when the client sent Gemini or Interactions or the model lists levels (Go
+  `3d1a0e0d`); `none` and `auto` still become budgets.
+- **Native Responses** (Go `f03f4cd8`): a Codex/xAI model with configuration updates keeps its effort timeline (top-level
+  baseline and each `configuration_update`), but each effort the model does not list is validated and rewritten with
+  the applier's rules (`none` on a model that cannot turn thinking off becomes its lowest level, `auto` its fallback),
+  and an invalid one is a 400. A thinking suffix replaces the baseline, so only the updates are checked then. Models
+  without levels, and user-defined ones, pass through.
+- **Claude budgets below the model minimum** after the `max_tokens` cap disable thinking (Go `75d03aea`) instead of
+  passing the invalid budget upstream. Antigravity drops its `thinkingConfig` in that case, and with it the
+  `includeThoughts` flag and the summary re-application.
+- **Antigravity** writes `thinkingLevel` upper case (`HIGH`) and replaces a snake_case `thinking_config` object with
+  `thinkingConfig`, keeping its `includeThoughts` (Go `84856805`).
+- **OpenAI Chat requests** without a non-blank `reasoning_effort` read Gemini's thinking fields
+  (`generationConfig.thinkingConfig`, `generation_config.thinking_config`, then `extra_body.google.thinking_config`,
+  snake_case or camelCase; Go `ffa55112`), for validation and the usage effort label. The Gemini and Antigravity Chat
+  request translators' use of them belongs with those translators.
+- **Model lookup per provider** (Go `3d1a0e0d`): Go's `LookupModelInfo(id, provider)` prefers the provider channel's
+  static definition (Antigravity's `gemini-3.1-flash-lite` differs from Gemini's). The thinking fixture dumps those
+  channel definitions (`catalogByChannel`), and the thinking golden test looks models up through them
+  (`channelCatalogLookup`).
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
   leniently in `extractCodexConfig`; the Workers port only handles parsed bodies, so the applier cases whose body and

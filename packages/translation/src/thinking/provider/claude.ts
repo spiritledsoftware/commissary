@@ -64,7 +64,10 @@ const effectiveMaxTokens = (
   return { max: 0, fromModel: false };
 };
 
-/** Anthropic requires max_tokens > budget_tokens: caps the budget at max_tokens-1 unless that goes below the model minimum. */
+/**
+ * Anthropic requires max_tokens > budget_tokens: caps the budget at max_tokens-1, and disables thinking when that goes
+ * below the model minimum.
+ */
 const normalizeClaudeBudget = (
   body: Json | undefined,
   budgetTokens: number,
@@ -82,8 +85,8 @@ const normalizeClaudeBudget = (
 
   const minBudget = modelInfo?.thinking?.min ?? 0;
 
-  // Leave the request unchanged when the cap would push the budget below the model minimum.
-  if (minBudget > 0 && adjusted > 0 && adjusted < minBudget) return result;
+  // A budget the cap pushes below the model minimum is invalid: turn thinking off instead.
+  if (minBudget > 0 && adjusted >= 0 && adjusted < minBudget) return disable(result, modelInfo);
 
   if (adjusted !== budgetTokens) result = setPath(result, "thinking.budget_tokens", adjusted);
 

@@ -14,20 +14,21 @@ import { cloneJson, get, type Json } from "@commissary/json";
 import {
   extractConfigurationUpdateConfig,
   isResponsesFormat,
+  normalizeNativeResponsesEffort,
   stripConfigurationUpdates,
   stripResponsesEffort,
 } from "./configuration-update.ts";
-import { convertLevelToBudget } from "./convert.ts";
+import { convertLevelToBudget, detectModelCapability } from "./convert.ts";
 import type { ThinkingError } from "./errors.ts";
 import {
   extractCodexUsageConfig,
   extractSourceThinkingConfig,
   extractThinkingConfig,
 } from "./extract.ts";
-import { delPath, normalize } from "./json.ts";
+import { delPath, equalFold, normalize } from "./json.ts";
 import { getProviderApplier } from "./provider/index.ts";
 import { stripThinkingConfig } from "./strip.ts";
-import { parseSuffix, parseSuffixToConfig } from "./suffix.ts";
+import { hasThinkingSuffix, parseSuffix, parseSuffixToConfig } from "./suffix.ts";
 import {
   applySummaryConfigForProvider,
   extractSummaryConfig,
@@ -45,7 +46,9 @@ import {
 } from "./types.ts";
 import {
   isBudgetCapableProvider,
+  isGeminiFamily,
   isLevelSupported,
+  isOpenAIFamily,
   isSameProviderFamily,
   validateConfig,
 } from "./validate.ts";
@@ -116,10 +119,29 @@ const mapConfiguredHighIntent = (levelRaw: string, modelInfo: ThinkingModelInfo)
   return candidates.find((candidate) => isLevelSupported(candidate, levels)) ?? level;
 };
 
-/** User-defined models: levels become budgets for budget providers (except Claude); no validation. */
-const normalizeUserDefinedConfig = (config: ThinkingConfig, toFormat: string): ThinkingConfig => {
+/**
+ * User-defined models: levels become budgets for budget providers (except Claude). A level stays a level when the
+ * client sent Gemini or Interactions, or the model lists levels; none and auto always convert.
+ */
+const normalizeUserDefinedConfig = (
+  config: ThinkingConfig,
+  modelInfo: ThinkingModelInfo | undefined,
+  fromFormat: string,
+  toFormat: string,
+): ThinkingConfig => {
   if (config.mode !== "level" || toFormat === "claude" || !isBudgetCapableProvider(toFormat))
     return config;
+
+  if (
+    !equalFold(config.level, Level.none) &&
+    !equalFold(config.level, Level.auto) &&
+    (isGeminiFamily(fromFormat) ||
+      fromFormat === "interactions" ||
+      (modelInfo?.thinking?.levels?.length ?? 0) > 0)
+  ) {
+    return config;
+  }
+
   const budget = convertLevelToBudget(config.level);
 
   return budget === undefined ? config : { mode: "budget", budget, level: "" };
@@ -173,12 +195,51 @@ const applyUserDefinedModel = (
 
   if (applier === undefined) return { body };
 
-  config = normalizeUserDefinedConfig(config, toFormat);
+  if (modelInfo?.thinking !== undefined) {
+    // Clamps a translated budget to the model's limits; validation keeps custom settings otherwise.
+    const validation = validateConfig(config, modelInfo, fromFormat, toFormat, suffix.hasSuffix);
+
+    if (validation.error === undefined) config = validation.config;
+  }
+
+  config = normalizeUserDefinedConfig(config, modelInfo, fromFormat, toFormat);
   const applied = applier.apply(body, config, modelInfo);
 
-  if (thinkingIsFullyDisabled(config) || nativeResponses) return { body: applied };
+  if (
+    thinkingIsFullyDisabled(config) ||
+    nativeResponses ||
+    thinkingConfigRemovedByApplier(toFormat, applied)
+  )
+    return { body: applied };
 
   return { body: summarize(applied) };
+};
+
+/**
+ * The applier removed the whole thinking config (Antigravity: a Claude budget below the model minimum), so no summary
+ * visibility is re-applied.
+ */
+const thinkingConfigRemovedByApplier = (provider: string, body: Json | undefined): boolean =>
+  provider === "antigravity" &&
+  body !== undefined &&
+  get(body, "request.generationConfig.thinkingConfig") === undefined;
+
+/**
+ * OpenAI Chat/Responses and xAI accept effort levels only: a hybrid model is seen as level-only there, its budget
+ * range kept in the catalog.
+ */
+const levelOnlyView = (
+  provider: string,
+  modelInfo: ThinkingModelInfo | undefined,
+): ThinkingModelInfo | undefined => {
+  if (
+    modelInfo?.thinking === undefined ||
+    !(isOpenAIFamily(provider) || provider === "xai") ||
+    detectModelCapability(modelInfo) !== "hybrid"
+  )
+    return modelInfo;
+
+  return { ...modelInfo, thinking: { ...modelInfo.thinking, min: 0, max: 0 } };
 };
 
 /** The caller asked for thinking off: mode none, or a zero budget. */
@@ -261,6 +322,22 @@ export const applyThinking = (
   if (applier === undefined) return { body };
 
   // 3. Model capability check.
+  modelInfo = levelOnlyView(providerFormat, modelInfo);
+
+  if (nativeResponses) {
+    const normalized = normalizeNativeResponsesEffort(
+      body,
+      modelInfo,
+      applier,
+      fromFormat,
+      providerFormat,
+      hasThinkingSuffix(model),
+    );
+
+    if (normalized.error !== undefined) return normalized;
+    body = normalized.body;
+  }
+
   if (
     !suffix.hasSuffix &&
     sourceBody !== undefined &&
@@ -272,7 +349,7 @@ export const applyThinking = (
     return { body };
   }
 
-  // Native Responses keeps the top-level baseline and in-turn updates as-is.
+  // Native Responses keeps the validated baseline and update timeline.
   if (nativeResponses && !suffix.hasSuffix) return { body };
 
   if (
@@ -398,7 +475,12 @@ export const applyThinking = (
   // processing. A fully disabled amount takes precedence over visibility.
   let applied = applier.apply(body, validation.config, modelInfo);
 
-  if (thinkingIsFullyDisabled(validation.config) || nativeResponses) return { body: applied };
+  if (
+    thinkingIsFullyDisabled(validation.config) ||
+    nativeResponses ||
+    thinkingConfigRemovedByApplier(providerFormat, applied)
+  )
+    return { body: applied };
 
   if (providerFormat === "claude" && thinkingRequestedOff(config)) {
     // The model cannot turn thinking off, so validation fell back to its lowest level. Drop any stale

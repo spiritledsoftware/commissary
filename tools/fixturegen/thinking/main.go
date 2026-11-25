@@ -324,18 +324,21 @@ type applierCase struct {
 }
 
 type fixture struct {
-	Catalog        map[string]*modelSpec `json:"catalog"`
-	Synthetic      map[string]*modelSpec `json:"synthetic"`
-	Suffix         []suffixCase          `json:"suffix"`
-	Convert        convertFixture        `json:"convert"`
-	Validate       []validateGroup       `json:"validate"`
-	Apply          []applyCase           `json:"apply"`
-	Applier        []applierCase         `json:"applier"`
-	SummaryExtract []summaryExtractCase  `json:"summaryExtract"`
-	SummaryApply   []summaryApplyCase    `json:"summaryApply"`
-	Strip          []stripCase           `json:"strip"`
-	Text           []textCase            `json:"text"`
-	Usage          []usageCase           `json:"usage"`
+	Catalog map[string]*modelSpec `json:"catalog"`
+	// CatalogByChannel holds, per provider key, the models whose channel definition differs from Catalog's:
+	// registry.LookupModelInfo(id, provider) prefers the channel's static definition.
+	CatalogByChannel map[string]map[string]*modelSpec `json:"catalogByChannel"`
+	Synthetic        map[string]*modelSpec            `json:"synthetic"`
+	Suffix           []suffixCase                     `json:"suffix"`
+	Convert          convertFixture                   `json:"convert"`
+	Validate         []validateGroup                  `json:"validate"`
+	Apply            []applyCase                      `json:"apply"`
+	Applier          []applierCase                    `json:"applier"`
+	SummaryExtract   []summaryExtractCase             `json:"summaryExtract"`
+	SummaryApply     []summaryApplyCase               `json:"summaryApply"`
+	Strip            []stripCase                      `json:"strip"`
+	Text             []textCase                       `json:"text"`
+	Usage            []usageCase                      `json:"usage"`
 }
 
 func main() {
@@ -344,6 +347,7 @@ func main() {
 	log.SetOutput(io.Discard)
 
 	fx := fixture{Catalog: buildCatalog(), Synthetic: map[string]*modelSpec{}}
+	fx.CatalogByChannel = buildCatalogByChannel(fx.Catalog)
 	for id, model := range syntheticTable {
 		fx.Synthetic[id] = model
 	}
@@ -400,6 +404,39 @@ func buildCatalog() map[string]*modelSpec {
 	}
 	return catalog
 }
+
+// buildCatalogByChannel dumps, for each provider key, the catalog models that registry.LookupStaticModelInfoByChannel
+// resolves differently from the provider-independent catalog.
+func buildCatalogByChannel(catalog map[string]*modelSpec) map[string]map[string]*modelSpec {
+	ids := make([]string, 0, len(catalog))
+	for id := range catalog {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	byChannel := map[string]map[string]*modelSpec{}
+	for _, channel := range lookupChannels {
+		for _, id := range ids {
+			info := registry.LookupStaticModelInfoByChannel(id, channel)
+			if info == nil {
+				continue
+			}
+			spec := specFromInfo(info)
+			global, _ := json.Marshal(catalog[id])
+			local, _ := json.Marshal(spec)
+			if string(global) == string(local) {
+				continue
+			}
+			if byChannel[channel] == nil {
+				byChannel[channel] = map[string]*modelSpec{}
+			}
+			byChannel[channel][id] = spec
+		}
+	}
+	return byChannel
+}
+
+// lookupChannels are the static catalog channels and the provider keys the apply cases look models up with.
+var lookupChannels = []string{"claude", "gemini", "vertex", "aistudio", "codex", "kimi", "antigravity", "xai", "devin", "meta", "openai", "gemini-interactions"}
 
 func validateCount(groups []validateGroup) int {
 	n := 0
