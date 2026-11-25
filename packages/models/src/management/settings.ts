@@ -15,6 +15,7 @@ import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from 
 import { parseGoDuration } from "../config/accessors.ts";
 import { encodeConfig } from "../config/codec.ts";
 import { compileGoRegex } from "../config/payload/re2.ts";
+import { normalizeSensitiveWordsReplace } from "../config/normalize.ts";
 import { Config } from "../config/schema.ts";
 import { isJsonObject, type Json, type JsonObject, jsonEquals, setOwn } from "@commissary/json";
 import type { Revisions } from "@commissary/contract/config";
@@ -177,18 +178,20 @@ const invalidPattern = (value: Json): string | undefined => {
   return undefined;
 };
 
-/** The first target of a `sensitive-words-replace` mapping that is blank or has surrounding space. */
-const invalidTarget = (value: Json): string | undefined => {
-  if (!isJsonObject(value)) return undefined;
-
-  for (const target of Object.keys(value)) {
-    if (target.trim() === "") return "a word to replace is empty";
-
-    if (target !== target.trim()) return `${quoted(target)} has surrounding space`;
-  }
-
-  return undefined;
-};
+/**
+ * A value written as the config stores it: a `sensitive-words-replace` mapping with its targets trimmed and blank ones
+ * dropped (Go `NormalizeSensitiveWordsReplace` trims rather than refuses them).
+ */
+const storedForm = (key: string, value: Json): Json =>
+  WORD_REPLACEMENTS.has(key) && isJsonObject(value)
+    ? normalizeSensitiveWordsReplace(
+        Object.fromEntries(
+          Object.entries(value).flatMap(([target, replacement]) =>
+            typeof replacement === "string" ? [[target, replacement]] : [],
+          ),
+        ),
+      )
+    : value;
 
 /**
  * A message when a typed value is not what Workers would apply as written (the semantic rules of each key). It names
@@ -210,8 +213,6 @@ const valueRule = (key: string, value: Json, policy: OutboundPolicy): string | u
       : OUTBOUND_REFUSED_MESSAGE;
 
   if (PATTERN_RULES.has(key)) return invalidPattern(value);
-
-  if (WORD_REPLACEMENTS.has(key)) return invalidTarget(value);
 
   if (typeof value === "string" && key === "upstream.codex.stream-bootstrap-timeout") {
     const ok =
@@ -276,7 +277,7 @@ const collect = (
       if (refused !== undefined) return refused;
     }
 
-    edits.push({ path, value });
+    edits.push({ path, value: value === null ? null : storedForm(dotted(path), value) });
   }
 
   return undefined;

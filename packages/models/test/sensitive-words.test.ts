@@ -8,6 +8,9 @@ import { makeDevinExecutor } from "../src/executor/devin/executor.ts";
 import { credential as geminiCredential, makeGeminiHarness } from "./support/gemini.ts";
 import { credential, execute, harness, json, options } from "./support/executor-run.ts";
 import { jsonResponse, loadConfig, makePipeline, postJson } from "./support/pipeline.ts";
+import { oauthCredential, oauthPipeline } from "./support/claude-oauth.ts";
+import { resolveWirePolicy } from "../src/executor/claude/credentials.ts";
+import type { CredentialSnapshot } from "../src/executor/picker.ts";
 
 const RULES = `
               sensitive-words: ["proxy"]
@@ -74,6 +77,147 @@ ${RULES.replaceAll("\n              ", "\n            ")}
     expect(sent).not.toContain("Acme Bot");
     expect(sent).not.toContain("RFC 2119");
     expect(sent).not.toContain("secret-");
+  });
+});
+
+describe("Claude: the credential's cloak_sensitive_*_replace", () => {
+  const API_KEY = "sk-ant-api03-credential";
+
+  /** A Claude API key credential (not Claude Code CLI-profiled, so not cloaked by default). */
+  const apiKey = (overrides: Partial<CredentialSnapshot> = {}): CredentialSnapshot => ({
+    id: "claude-key-1",
+    provider: "claude",
+    kind: "apikey",
+    label: "key",
+    attributes: { api_key: API_KEY },
+    metadata: {},
+    ...overrides,
+  });
+
+  const resolve = async (credential: CredentialSnapshot, yaml = "requests: {}") =>
+    resolveWirePolicy(await loadConfig(yaml), credential, API_KEY, false);
+
+  it("turns cloaking on alone, read from an attribute, metadata or metadata JSON text", async () => {
+    expect((await resolve(apiKey())).policy.cloak).toBe(false);
+
+    const fromAttribute = await resolve(
+      apiKey({
+        attributes: {
+          api_key: API_KEY,
+          cloak_sensitive_words_replace: '{" Acme Bot ": "Assistant", "n": 1}',
+        },
+      }),
+    );
+
+    expect(fromAttribute.policy.cloak).toBe(true);
+    expect(fromAttribute.settings.sensitive.replacements).toEqual({ "Acme Bot": "Assistant" });
+
+    const fromMetadata = await resolve(
+      apiKey({
+        metadata: {
+          cloak_sensitive_patterns_replace: [
+            { pattern: "secret-(\\d+)", replacement: "[$1]" },
+            { pattern: " " },
+            { replacement: "no pattern" },
+          ],
+        },
+      }),
+    );
+
+    expect(fromMetadata.policy.cloak).toBe(true);
+    expect(fromMetadata.settings.sensitive.patterns).toEqual([
+      { pattern: "secret-(\\d+)", replacement: "[$1]" },
+    ]);
+
+    const fromMetadataText = await resolve(
+      apiKey({ metadata: { cloak_sensitive_patterns_replace: '[{"pattern": "RFC"}]' } }),
+    );
+
+    expect(fromMetadataText.policy.cloak).toBe(true);
+    expect(fromMetadataText.settings.sensitive.patterns).toEqual([
+      { pattern: "RFC", replacement: "" },
+    ]);
+  });
+
+  it("gives way to the key's own non-empty values", async () => {
+    const credential = apiKey({
+      attributes: {
+        api_key: API_KEY,
+        cloak_sensitive_words_replace: '{"Acme Bot": "Credential"}',
+        cloak_sensitive_patterns_replace: '[{"pattern": "a+", "replacement": "b"}]',
+      },
+    });
+
+    const resolved = await resolve(
+      credential,
+      `
+api-keys:
+  claude:
+    - keys:
+        - api-key: ${API_KEY}
+          cloak:
+            sensitive-words-replace: { "Acme Bot": "Key" }
+            sensitive-patterns-replace: []
+`,
+    );
+
+    expect(resolved.settings.sensitive.replacements).toEqual({ "Acme Bot": "Key" });
+    // An empty list on the key keeps the credential's rules.
+    expect(resolved.settings.sensitive.patterns).toEqual([{ pattern: "a+", replacement: "b" }]);
+  });
+
+  const message = () =>
+    jsonResponse({
+      id: "msg_01",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-4-8",
+      content: [{ type: "text", text: "hello" }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+
+  const ask = postJson({
+    model: "claude-opus-4-8",
+    max_tokens: 32,
+    system: [{ type: "text", text: "Acme Bot keeps secret-42" }],
+    messages: [{ role: "user", content: "Hello Acme Bot" }],
+  });
+
+  const ruled = oauthCredential({
+    attributes: {
+      cloak_sensitive_words_replace: '{"Acme Bot": "Assistant"}',
+      cloak_sensitive_patterns_replace:
+        '[{"pattern": "secret-\\\\d+", "replacement": "[redacted]"}]',
+    },
+  });
+
+  it("applies them to a cloaked request at the full level", async () => {
+    const h = oauthPipeline(message, await loadConfig("requests: {}"), ruled);
+
+    afterAll(h.pipeline.dispose);
+    await h.pipeline.call("/v1/messages", ask);
+    const sent = h.pipeline.calls[0]?.body ?? "";
+
+    expect(sent).toContain("Assistant keeps [redacted]");
+    expect(sent).toContain("Hello Assistant");
+    expect(sent).not.toContain("Acme Bot");
+  });
+
+  it("skips them at the minimal level, like the sensitive words", async () => {
+    const h = oauthPipeline(
+      message,
+      await loadConfig("upstream: { claude: { cloak-level: minimal } }"),
+      ruled,
+    );
+
+    afterAll(h.pipeline.dispose);
+    await h.pipeline.call("/v1/messages", ask);
+    const sent = h.pipeline.calls[0]?.body ?? "";
+
+    expect(sent).toContain("Acme Bot keeps secret-42");
+    expect(sent).toContain("Hello Acme Bot");
   });
 });
 

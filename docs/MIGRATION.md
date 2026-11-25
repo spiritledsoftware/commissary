@@ -61,6 +61,16 @@ curl "${H[@]}" -X POST "$M/settings/import" -H 'content-type: application/yaml' 
   (refused when the service account is imported or uploaded). Under `alchemy dev`, loopback
   (`http://localhost:11434/v1`) is allowed only for fetches a request drives (the client API, the panel); the cron jobs
   and the ControlPlane (the catalog refresh, token refreshes) refuse it.
+- **Sensitive words** carry over as in Go: `sensitive-words` (obfuscated), `sensitive-words-replace` (word or phrase →
+  literal text, `""` deletes, matched in any case, longest first) and `sensitive-patterns-replace` (ordered
+  `{pattern, replacement}` Go RE2 rules, `$1` for a group, a missing replacement deletes; applied before the words).
+  Antigravity applies them to the system instruction (`oauth.providers.antigravity.*`) and Devin to the system prompt
+  (`oauth.providers.devin.*`; a line keeping a sensitive word is left out): both are in Settings › Providers, edited as
+  one `target => replacement` rule per line. A cloaked Claude request takes them from its key's `cloak` block
+  (`api-keys.claude[].cloak.sensitive-words-replace` / `sensitive-patterns-replace`) or from an auth file's
+  `cloak_sensitive_words_replace` (a JSON object) and `cloak_sensitive_patterns_replace` (a JSON array), the key's
+  non-empty values winning; the `minimal` cloak level applies none of them. A pattern Go's RE2 would refuse is dropped on
+  import and refused by `PATCH /settings` (422 `invalid_setting`); replacement targets are stored trimmed.
 - Dropped on import (no effect on Workers): `host`/`port`/`tls`, `remote-management.*` (Access replaces it), `auth-dir`, `pprof`,
   logging to files, `wire-policy`/TLS fingerprint, plugins, Home, Postgres/git/object store settings.
 

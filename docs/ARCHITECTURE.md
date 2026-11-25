@@ -469,8 +469,10 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
   Differences from Go: matchers are cached per isolate in one map keyed by their settings (Go: one per executor, a
   1024-entry map for Claude); case-insensitive matching is JavaScript's `iu` folding rather than RE2's; an invalid
   pattern is dropped without a log line when the config is stored and refused with `422 invalid_setting` by
-  `/settings`. The panel edits the two replace settings as one `target => replacement` rule per line (nothing after
-  `=>` deletes; surrounding space of a target or pattern is dropped, so a pattern needing it writes `\x20`).
+  `/settings`, which stores replacement targets trimmed as the normaliser does. The panel edits the two replace
+  settings as one `target => replacement` rule per line, split at the first `=>` with both sides trimmed: a target or
+  pattern cannot contain `=>` (a pattern writes `=\x3E`), a replacement keeps no surrounding space and holds no line
+  break, and nothing after `=>` (or no `=>`) deletes. Operator notes: `MIGRATION.md`, "Config".
 - **Config normalisation** follows the Go `Sanitize*` functions on the _flattened_ list: gemini/interactions keys are
   deduplicated across all groups of a family (key, base URL, proxy, prefix, order-independent headers; entry values override
   the group's), vertex keys by `api-key|base-url` (keys without api-key and models without name or alias are dropped), and

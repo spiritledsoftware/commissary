@@ -447,7 +447,7 @@ export const makeAntigravityExecutor = (
       lookupModelInfo: request.modelLookup,
     });
 
-    body = obfuscateSensitiveWords(body, context.config);
+    body = applyAntigravitySensitiveWords(body, context.config);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
 
     if (stream) del(body, "request.stream");
@@ -968,7 +968,7 @@ export const makeAntigravityExecutor = (
       lookupModelInfo: request.modelLookup,
     });
 
-    body = obfuscateSensitiveWords(body, context.config);
+    body = applyAntigravitySensitiveWords(body, context.config);
     // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3).
     prepareClaudeStructuredOutput(baseModel, body);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
@@ -1049,8 +1049,8 @@ const jsonPayloadOf = (line: string): string | undefined => {
   return trimmed.startsWith("{") ? trimmed : undefined;
 };
 
-/** `obfuscateSensitiveWordsDoc`: the configured words and replacements in the system instruction. */
-const obfuscateSensitiveWords = (body: Json, config: Config): Json => {
+/** `AntigravityExecutor.obfuscateSensitiveWordsDoc`: the configured words and replacements in the system instruction. */
+const applyAntigravitySensitiveWords = (body: Json, config: Config): Json => {
   const settings = config.oauth.providers.antigravity;
 
   const matcher = buildAntigravitySensitiveWordMatcher({

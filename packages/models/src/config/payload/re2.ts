@@ -619,31 +619,18 @@ export const findAllGo = (re: RegExp, text: string): RegExpExecArray[] => {
   return out;
 };
 
-/** `Regexp.ReplaceAllString`: Go's search positions, so an empty match right after a match is not replaced. */
+/**
+ * `Regexp.ReplaceAllString`: every match of {@link findAllGo} replaced by the expanded template (an empty match right
+ * after a match is not replaced, as in Go).
+ */
 export const replaceAllGo = (re: RegExp, text: string, template: string): string => {
   let out = "";
-  let lastMatchEnd = 0;
-  let searchPos = 0;
+  let last = 0;
 
-  while (searchPos <= text.length) {
-    re.lastIndex = searchPos;
-    const match = re.exec(text);
-
-    if (match === null) break;
-    const start = match.index;
-    const end = start + match[0].length;
-    out += text.slice(lastMatchEnd, start);
-
-    if (end > lastMatchEnd || start === 0) out += expandGoTemplate(template, match);
-    lastMatchEnd = end;
-
-    const width =
-      searchPos < text.length ? ((text.codePointAt(searchPos) ?? 0) > 0xffff ? 2 : 1) : 0;
-
-    if (searchPos + width > end) searchPos += width;
-    else if (searchPos + 1 > end) searchPos++;
-    else searchPos = end;
+  for (const match of findAllGo(re, text)) {
+    out += text.slice(last, match.index) + expandGoTemplate(template, match);
+    last = match.index + match[0].length;
   }
 
-  return out + text.slice(lastMatchEnd);
+  return out + text.slice(last);
 };

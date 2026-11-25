@@ -17,6 +17,7 @@ import { type Json, type JsonObject, get, isJsonArray, isJsonObject, set } from 
 import { isArr, isObj, str } from "@commissary/translation";
 import type { SensitivePatternRule } from "@commissary/contract/provider-keys";
 import { compileGoRegex, expandGoTemplate, findAllGo } from "../../config/payload/re2.ts";
+import { normalizeSensitiveWordsReplace } from "../../config/normalize.ts";
 
 export type { SensitivePatternRule };
 
@@ -143,13 +144,6 @@ export class SensitiveWordMatcher {
     private readonly obfuscateWordFn: (word: string) => string,
     private readonly patternRules: ReadonlyArray<PatternRule>,
   ) {}
-
-  /** `Matches`: the text holds a sensitive word, a replacement target, or a pattern match. */
-  matches(text: string): boolean {
-    if (this.literal !== undefined && text.search(this.literal) >= 0) return true;
-
-    return this.patternRules.some((rule) => text.search(rule.regex) >= 0);
-  }
 
   /** `ObfuscateText`: the pattern replacements, then the literal replacements and obfuscated words between them. */
   obfuscate(text: string): string {
@@ -414,7 +408,8 @@ const build = (
   obfuscateFn: (word: string) => string,
   marker: string,
 ): SensitiveWordMatcher | undefined => {
-  const replacements = settings.replacements ?? {};
+  // Targets trimmed, blank ones dropped, a target written without surrounding space winning (as the config stores them).
+  const replacements = normalizeSensitiveWordsReplace(settings.replacements ?? {});
 
   const patternRules = (settings.patterns ?? []).flatMap((rule): PatternRule[] => {
     // An invalid pattern is skipped (the config normaliser already drops it).
@@ -429,13 +424,8 @@ const build = (
   const lower = new Map<string, string>();
   const seen = new Set<string>();
 
-  for (const rawKey of Object.keys(replacements).toSorted()) {
-    const target = rawKey.trim();
-
-    if (target === "") continue;
-    const replacement = replacements[rawKey] ?? "";
-
-    if (!exact.has(target) || rawKey === target) exact.set(target, replacement);
+  for (const [target, replacement] of Object.entries(replacements)) {
+    exact.set(target, replacement);
     const lowerTarget = target.toLowerCase();
 
     if (!lower.has(lowerTarget)) lower.set(lowerTarget, replacement);
@@ -509,9 +499,16 @@ const cached = (
     return undefined;
   const key = cacheKey(kind, settings);
 
-  if (cache.has(key)) return cache.get(key);
+  if (cache.has(key)) {
+    const hit = cache.get(key);
 
-  // The oldest entry goes first when the cache is full.
+    // Least recently used first out: a hit moves to the back.
+    cache.delete(key);
+    cache.set(key, hit);
+
+    return hit;
+  }
+
   if (cache.size >= CACHE_CAPACITY) {
     const oldest = cache.keys().next();
 
@@ -543,6 +540,14 @@ export const buildAntigravitySensitiveWordMatcher = (
 
 const BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 
+/** A text block's `text`, rewritten by the matcher. */
+const obfuscateTextBlock = (block: JsonObject, matcher: SensitiveWordMatcher): void => {
+  const text = str(block.text);
+  const obfuscated = matcher.obfuscate(text);
+
+  if (obfuscated !== text) block.text = obfuscated;
+};
+
 /** `ObfuscateSensitiveWordsDoc`: the text system blocks (not the billing header) and message text of a Claude body. */
 export const obfuscateSensitiveWords = (body: JsonObject, matcher: SensitiveWordMatcher): void => {
   const system = body.system;
@@ -553,12 +558,8 @@ export const obfuscateSensitiveWords = (body: JsonObject, matcher: SensitiveWord
         isObj(block) &&
         str(block.type) === "text" &&
         !str(block.text).startsWith(BILLING_HEADER_PREFIX)
-      ) {
-        const text = str(block.text);
-        const obfuscated = matcher.obfuscate(text);
-
-        if (obfuscated !== text) block.text = obfuscated;
-      }
+      )
+        obfuscateTextBlock(block, matcher);
     }
   } else if (typeof system === "string" && !system.startsWith(BILLING_HEADER_PREFIX)) {
     body.system = matcher.obfuscate(system);
@@ -571,13 +572,8 @@ export const obfuscateSensitiveWords = (body: JsonObject, matcher: SensitiveWord
 
     if (typeof message.content === "string") message.content = matcher.obfuscate(message.content);
     else if (isArr(message.content)) {
-      for (const block of message.content) {
-        if (!isObj(block) || str(block.type) !== "text") continue;
-        const text = str(block.text);
-        const obfuscated = matcher.obfuscate(text);
-
-        if (obfuscated !== text) block.text = obfuscated;
-      }
+      for (const block of message.content)
+        if (isObj(block) && str(block.type) === "text") obfuscateTextBlock(block, matcher);
     }
   }
 };

@@ -129,7 +129,7 @@ describe("sensitive-patterns-replace", () => {
       }),
     );
 
-    expect(matcher.matches("<system-directive>hello</system-directive>")).toBe(true);
+    expect(matcher.obfuscate("<system-directive>hello</system-directive>")).toBe("");
     expect(
       matcher.obfuscate(
         "You are omp's assistant.\n<system-directive>\nRFC 2119\n</system-directive>\nKeep Codex and omp.",

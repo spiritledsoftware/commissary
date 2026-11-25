@@ -308,7 +308,7 @@ describe("management settings", () => {
         { upstream: { claude: { "header-defaults": { "native-entrypoints": [" T3-Code "] } } } },
         "upstream.claude.header-defaults.native-entrypoints",
       ],
-      // A pattern RE2 rejects (look-behind), a blank one, and a replacement target with surrounding space.
+      // A pattern RE2 rejects (look-behind), and a blank one.
       [
         {
           oauth: {
@@ -324,10 +324,6 @@ describe("management settings", () => {
       [
         { oauth: { providers: { devin: { "sensitive-patterns-replace": [{ pattern: " " }] } } } },
         "oauth.providers.devin.sensitive-patterns-replace",
-      ],
-      [
-        { oauth: { providers: { devin: { "sensitive-words-replace": { " Codex": "x" } } } } },
-        "oauth.providers.devin.sensitive-words-replace",
       ],
     ];
 
@@ -394,6 +390,17 @@ describe("management settings", () => {
       { pattern: "secret-(\\d+)", replacement: "[$1]" },
     ]);
     expect(view.defaults.oauth.providers.devin["sensitive-patterns-replace"]).toEqual([]);
+  });
+
+  it("stores replacement targets trimmed, blank ones dropped, as the config does", async () => {
+    const saved = await save({
+      oauth: { providers: { devin: { "sensitive-words-replace": { " Codex ": "x", "  ": "y" } } } },
+    });
+
+    expect(saved.status).toBe(200);
+    expect((await getView()).values.oauth.providers.devin["sensitive-words-replace"]).toEqual({
+      Codex: "x",
+    });
   });
 
   it("refuses bodies without revisions or patch object", async () => {
