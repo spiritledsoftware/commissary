@@ -269,13 +269,23 @@ export const antigravityCatalogScope = (
   );
 };
 
-/** The stored record of one credential (best effort). */
+/** Go `readAntigravityModelEnumDoc`: a stored catalog over 2 MiB is not read. */
+const MAX_MODELS_RECORD_BYTES = 2 << 20;
+
+// A UTF-8 character takes one to three bytes per UTF-16 unit, so only a record in between needs encoding.
+const tooLarge = (raw: string): boolean =>
+  raw.length > MAX_MODELS_RECORD_BYTES ||
+  (raw.length * 3 > MAX_MODELS_RECORD_BYTES && utf8Length(raw) > MAX_MODELS_RECORD_BYTES);
+
+/** The stored record of one credential (best effort; one over 2 MiB counts as none). */
 export const readModelsRecord = async (
   kv: OrgKv,
   credentialId: string,
 ): Promise<ModelsRecord | undefined> => {
   try {
     const raw = await kv.get(antigravityModelsName(credentialId));
+
+    if (raw !== null && tooLarge(raw)) return undefined;
 
     // SAFETY: the cron task only stores `ModelsRecord` values under this key (see `writeRecord`).
     return raw === null ? undefined : (JSON.parse(raw) as ModelsRecord);

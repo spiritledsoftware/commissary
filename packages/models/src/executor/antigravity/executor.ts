@@ -84,7 +84,7 @@ import {
   parseSuffix,
   requestedAntigravityThinkingLevel,
 } from "@commissary/translation/thinking";
-import { type ModelsRecord, readModelsRecord } from "./models.ts";
+import { readModelsRecord } from "./models.ts";
 import {
   type AntigravityModelSelection,
   antigravityExcludedModels,
@@ -243,8 +243,6 @@ interface Attempt {
   readonly signatures: MemorySignatureCache;
   /** The credential's scope within the org's signature cache (`signature-scope.ts`); `""` recovers nothing. */
   readonly signatureScope: string;
-  /** The credential's stored `fetchAvailableModels` catalog (model enums, thinking groups), when there is one. */
-  readonly catalog: ModelsRecord | undefined;
   /** The request's org: the state, signatures and credential belong to it. */
   readonly org: OrgId;
   readonly waitUntil: ((promise: Promise<unknown>) => void) | undefined;
@@ -331,7 +329,6 @@ export const makeAntigravityExecutor = (
       deploymentKv: deploymentKvIfBound(env),
       signatures: orgSignatureCache(org),
       signatureScope: antigravitySignatureScope(context.credential.id, context.credential.metadata),
-      catalog: yield* readCatalog(orgKvIfBound(env, org), context.credential.id),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
       accessToken,
@@ -377,13 +374,14 @@ export const makeAntigravityExecutor = (
 
   /**
    * `SelectAntigravityRequestModel`: the caller's explicit thinking level, read before translation or validation, picks
-   * the credential's grouped variant; a token count without a level keeps the requested model.
+   * the credential's grouped variant; a token count without a level keeps the requested model without reading the
+   * catalog. Anything else reads it, for the requested model's enum at least.
    */
-  const selectModel = (
+  const selectModel = Effect.fnUntraced(function* (
     attempt: Attempt,
     baseModel: string,
     countTokens: boolean,
-  ): AntigravityModelSelection => {
+  ) {
     const { context, request, options } = attempt;
 
     const level = requestedAntigravityThinkingLevel(
@@ -394,18 +392,25 @@ export const makeAntigravityExecutor = (
 
     if (level === "" && countTokens) return plainSelection(baseModel);
 
-    const selection = selectAntigravityModel(
-      attempt.catalog,
+    return selectAntigravityModel(
+      yield* readCatalog(attempt.kv, context.credential.id),
       context.credential,
       baseModel,
       level,
       antigravityExcludedModels(context.credential, context.config),
     );
+  });
 
-    // Usage is reported against the model actually scheduled (Go `SetAttemptModel`).
-    if (selection.id !== baseModel) context.usage.setAttemptModel(selection.id);
-
-    return selection;
+  /**
+   * Usage is reported against the model actually scheduled (Go `SetAttemptModel`), once the short cooldown let the
+   * attempt through: a rejected attempt records nothing. Token counts keep the requested model, as in Go.
+   */
+  const reportSelectedModel = (
+    attempt: Attempt,
+    baseModel: string,
+    selection: AntigravityModelSelection,
+  ) => {
+    if (selection.id !== baseModel) attempt.context.usage.setAttemptModel(selection.id);
   };
 
   /**
@@ -858,9 +863,10 @@ export const makeAntigravityExecutor = (
   ) {
     const attempt = yield* resolve(context, request, options);
     const baseModel = parseSuffix(request.model).modelName;
-    const selection = selectModel(attempt, baseModel, false);
+    const selection = yield* selectModel(attempt, baseModel, false);
 
     yield* checkShortCooldown(attempt, selection.id);
+    reportSelectedModel(attempt, baseModel, selection);
     const agent = yield* userAgent(attempt);
     yield* maybeRefreshCredits(attempt, agent);
 
@@ -1088,8 +1094,11 @@ export const makeAntigravityExecutor = (
     options: ExecutorOptions,
   ) {
     const attempt = yield* resolve(context, request, options);
-    const selection = selectModel(attempt, parseSuffix(request.model).modelName, false);
+    const baseModel = parseSuffix(request.model).modelName;
+    const selection = yield* selectModel(attempt, baseModel, false);
+
     yield* checkShortCooldown(attempt, selection.id);
+    reportSelectedModel(attempt, baseModel, selection);
     const agent = yield* userAgent(attempt);
     yield* maybeRefreshCredits(attempt, agent);
     const prepared = yield* prepare(attempt, "stream", agent, selection);
@@ -1268,7 +1277,7 @@ export const makeAntigravityExecutor = (
     const attempt = yield* resolve(context, request, options);
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
-    const selection = selectModel(attempt, baseModel, true);
+    const selection = yield* selectModel(attempt, baseModel, true);
     const model = selection.id;
     const from = options.sourceFormat;
     yield* checkShortCooldown(attempt, model, true);
@@ -1434,11 +1443,14 @@ export const makeAntigravityExecutor = (
 
     if (status !== undefined) return yield* upstreamError(attempt, prepared, status, headers, raw);
 
-    if (typeof root["totalTokens"] !== "number")
+    // The first of duplicate members, as Go reads it.
+    const written = firstTopLevelMember(raw, "totalTokens");
+
+    if (written === undefined || typeof tryParseJson(written) !== "number")
       return yield* invalid("antigravity count_tokens response missing numeric totalTokens");
 
     // `strconv.ParseUint(raw, 10, 63)`: the number as written must be plain digits (`1.0` and `1e3` are not).
-    const total = parseCountTokensTotal(raw);
+    const total = countTokensTotalOf(written);
 
     if (total === undefined)
       return yield* invalid("antigravity count_tokens response has invalid totalTokens");
@@ -1454,26 +1466,77 @@ export const makeAntigravityExecutor = (
 const COUNT_TOKENS_MAX_RESPONSE_BYTES = 1 << 20;
 
 /**
- * The top-level `totalTokens` of a `countTokens` body, read from its source text as Go's `strconv.ParseUint(raw, 10,
- * 63)` does: only decimal digits, within JavaScript's safe integers (the counts are far below either bound).
+ * The source text of the first top-level `key` member of a JSON object (Go's gjson `Get` reads the first of duplicate
+ * keys, where `JSON.parse` keeps the last). `raw` must already be valid JSON.
  */
-export const parseCountTokensTotal = (raw: string): number | undefined => {
-  // The source text of every `totalTokens` member, by the object that holds it (JSON source text access).
-  const sources = new Map<Json, string>();
+const firstTopLevelMember = (raw: string, key: string): string | undefined => {
+  let depth = 0;
+  let index = 0;
 
-  const root: Json = JSON.parse(
-    raw,
-    function (this: Json, key: string, value: Json, context?: { readonly source?: string }) {
-      if (key === "totalTokens" && context?.source !== undefined && !sources.has(this))
-        sources.set(this, context.source);
+  /** The index just past the string literal that starts at `from`. */
+  const skipString = (from: number): number => {
+    let at = from + 1;
 
-      return value;
-    },
-  );
+    while (at < raw.length && raw[at] !== '"') at += raw[at] === "\\" ? 2 : 1;
 
-  const source = sources.get(root);
+    return at + 1;
+  };
 
-  if (source === undefined || !/^[0-9]+$/.test(source)) return undefined;
+  while (index < raw.length) {
+    const char = raw[index];
+
+    if (char === '"') {
+      const end = skipString(index);
+
+      if (depth === 1) {
+        const after = raw.slice(end).match(/^\s*:\s*/);
+
+        if (after !== null) {
+          // SAFETY: a string literal of valid JSON parses to a string.
+          const name = JSON.parse(raw.slice(index, end)) as string;
+          const valueStart = end + after[0].length;
+
+          if (name === key) {
+            // The value ends at the first `,` or `}` back at the object's own depth.
+            let at = valueStart;
+            let nested = 0;
+
+            while (at < raw.length) {
+              const inner = raw[at];
+
+              if (inner === '"') {
+                at = skipString(at);
+                continue;
+              }
+
+              if (inner === "{" || inner === "[") nested++;
+              else if (inner === "}" || inner === "]") {
+                if (nested === 0) break;
+                nested--;
+              } else if (inner === "," && nested === 0) break;
+              at++;
+            }
+
+            return raw.slice(valueStart, at).trim();
+          }
+        }
+      }
+
+      index = end;
+      continue;
+    }
+
+    if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+    index++;
+  }
+
+  return undefined;
+};
+
+/** `strconv.ParseUint(source, 10, 63)` within JavaScript's safe integers. */
+const countTokensTotalOf = (source: string): number | undefined => {
+  if (!/^[0-9]+$/.test(source)) return undefined;
   const total = Number(source);
 
   return Number.isSafeInteger(total) ? total : undefined;

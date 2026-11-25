@@ -769,6 +769,31 @@ describe("antigravity executor: token counting", () => {
     expect(nested.status).toBe(200);
   });
 
+  it("reads the first of duplicate totalTokens members, as Go does", async () => {
+    const raw = (body: string) => () =>
+      new Response(body, { headers: { "content-type": "application/json" } });
+
+    const first = await count(
+      raw('{"a":{"totalTokens":"x","b":[1,{"c":"}"}]},"totalTokens":5,"totalTokens":"x"}'),
+      "count-duplicate-first",
+    );
+
+    expect(first.status).toBe(200);
+    expect(JSON.parse(first.text)).toEqual({ input_tokens: 5 });
+
+    const later = await count(raw('{"totalTokens":"x","totalTokens":5}'), "count-duplicate-later");
+    expect(later.status).toBe(502);
+    expect(later.text).toContain("missing numeric totalTokens");
+
+    const fraction = await count(
+      raw('{"totalTokens":1.5,"totalTokens":5}'),
+      "count-duplicate-fraction",
+    );
+
+    expect(fraction.status).toBe(502);
+    expect(fraction.text).toContain("invalid totalTokens");
+  });
+
   it("limits the body by its UTF-8 bytes, not its characters", async () => {
     // 400,000 three-byte characters: 1.2 MB, under a million characters.
     const padding = "€".repeat(400_000);
@@ -1206,6 +1231,105 @@ requests:
     const sent = JSON.parse(h.calls[0]?.body ?? "{}");
     expect(sent.model).toBe("gemini-3-pro-low");
     expect(sent.request.generationConfig.maxOutputTokens).toBe(1234);
+    expect(sent.request.labels.model_enum).toBeUndefined();
+  });
+
+  // Go marks a variant's result under the variant (`SetUpstreamAttemptModel`); Commissary keeps marking the base model
+  // until the pre-pick target check is ported, so an exhausted variant cools every level on the credential (SPI-1421).
+  it("short-cools the variant itself but reports the result against the base model", async () => {
+    resetMemoryAntigravityState();
+
+    const cooled = credential(
+      "antigravity",
+      `antigravity-groups-cool-${crypto.randomUUID()}.json`,
+      {
+        kind: "oauth",
+        metadata: { refresh_token: "1//r", access_token: "ya29.token", project_id: "proj-1" },
+      },
+    );
+
+    await seed(cooled);
+
+    const h = harness(
+      (request) =>
+        JSON.parse(request.body ?? "{}").model === "gemini-3-pro-low"
+          ? jsonResponse(
+              {
+                error: {
+                  code: 429,
+                  message: "Resource exhausted",
+                  status: "RESOURCE_EXHAUSTED",
+                  details: [
+                    {
+                      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                      reason: "RATE_LIMIT_EXCEEDED",
+                      domain: "x",
+                    },
+                    { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "30.000s" },
+                  ],
+                },
+              },
+              { status: 429 },
+            )
+          : jsonResponse(upstream([{ text: "ok" }])),
+      { credential: cooled },
+    );
+
+    afterAll(h.dispose);
+    const low = postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low" });
+
+    expect((await h.call("/v1/chat/completions", low)).status).toBe(429);
+    // The conductor marks the lease's model: the requested base model, not the variant.
+    expect(h.picks[0]?.model).toBe("gemini-3-pro-high");
+    expect(h.reports[0]).toMatchObject({ success: false, retryAfterMs: 30_000 });
+    expect(h.reports[0]?.model).toBeUndefined();
+
+    // The variant's short cooldown answers the next low request without upstream, and records no usage for the variant.
+    const calls = h.calls.length;
+    const records = h.records.length;
+    const again = await h.call("/v1/chat/completions", low);
+    expect(again.status).toBe(429);
+    expect(await again.text()).toContain("auth in short cooldown");
+    expect(h.calls).toHaveLength(calls);
+    expect(h.records.slice(records).map((record) => record.model)).not.toContain(
+      "gemini-3-pro-low",
+    );
+
+    // The base model itself is not short-cooled by the executor.
+    expect((await h.call("/v1/chat/completions", postJson(chat("gemini-3-pro-high")))).status).toBe(
+      200,
+    );
+  });
+
+  it("ignores a stored catalog over 2 MiB", async () => {
+    resetMemoryAntigravityState();
+
+    const big = credential("antigravity", `antigravity-groups-big-${crypto.randomUUID()}.json`, {
+      kind: "oauth",
+      metadata: { refresh_token: "1//r", access_token: "ya29.token", project_id: "proj-1" },
+    });
+
+    const stored: ModelsRecord = {
+      hints: {
+        webSearchModelIds: ["x".repeat(2 << 20)],
+        modelEnums: { "gemini-3-pro-high": "M_HIGH", "gemini-3-pro-low": "M_LOW" },
+        thinkingGroups: { "gemini-3-pro": { low: 4096, high: 8192 } },
+      },
+      scope: antigravityCatalogScope(big.attributes, big.metadata),
+    };
+
+    await orgKvOf(env, GLOBAL_ORG).put(antigravityModelsName(big.id), JSON.stringify(stored));
+    const h = harness(() => jsonResponse(upstream([{ text: "ok" }])), { credential: big });
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/chat/completions",
+      postJson({ ...chat("gemini-3-pro-high"), reasoning_effort: "low" }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.model).toBe("gemini-3-pro-high");
     expect(sent.request.labels.model_enum).toBeUndefined();
   });
 
