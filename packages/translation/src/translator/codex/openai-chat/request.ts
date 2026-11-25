@@ -303,6 +303,18 @@ const convertOpenAIRequestToResponsesBody = (
   let out: Json = { instructions: "" };
   out = set(out, "stream", stream);
 
+  // Standard Responses carries the client's output limit (01b24f1f); Codex leaves it out (#395).
+  if (!codex) {
+    for (const path of ["max_completion_tokens", "max_tokens", "max_output_tokens"]) {
+      const limit = get(body, path);
+
+      if (typeof limit === "number") {
+        out = set(out, "max_output_tokens", Math.trunc(limit));
+        break;
+      }
+    }
+  }
+
   const effort = get(body, "reasoning_effort");
 
   if (effort !== undefined) out = set(out, "reasoning.effort", effort);

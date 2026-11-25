@@ -21,6 +21,7 @@ describe("convertOpenAIRequestToResponses", () => {
     top_p: 0.9,
     parallel_tool_calls: false,
     store: true,
+    max_tokens: 512,
   };
 
   it("forwards the client's sampling and storage fields and adds no default effort", () => {
@@ -31,6 +32,7 @@ describe("convertOpenAIRequestToResponses", () => {
       top_p: 0.9,
       parallel_tool_calls: false,
       store: true,
+      max_output_tokens: 512,
     });
     expect(body).not.toHaveProperty("reasoning.effort");
     expect(body).not.toHaveProperty("include");
@@ -41,6 +43,8 @@ describe("convertOpenAIRequestToResponses", () => {
 
     expect(body).toMatchObject({ store: false, reasoning: { effort: "medium" } });
     expect(body).not.toHaveProperty("temperature");
+    // #395: Codex leaves the output limit out.
+    expect(body).not.toHaveProperty("max_output_tokens");
   });
 });
 
@@ -57,7 +61,12 @@ describe("convertClaudeRequestToResponses", () => {
   it("forwards sampling, follows the stream flag and sets no Codex defaults", () => {
     const body = convertClaudeRequestToResponses("m", request, false);
 
-    expect(body).toMatchObject({ temperature: 0.5, top_p: 0.8, stream: false });
+    expect(body).toMatchObject({
+      temperature: 0.5,
+      top_p: 0.8,
+      stream: false,
+      max_output_tokens: 64,
+    });
 
     for (const field of ["reasoning", "include", "store", "parallel_tool_calls", "tool_choice"])
       expect(body).not.toHaveProperty(field);
@@ -94,5 +103,6 @@ describe("convertClaudeRequestToResponses", () => {
       tools: [{ name: "lookup", strict: false }],
     });
     expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("max_output_tokens");
   });
 });

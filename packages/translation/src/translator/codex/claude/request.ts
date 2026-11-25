@@ -678,6 +678,14 @@ const convertClaudeRequest = (
   let template: Json = { model: "", instructions: "", input: [] };
   const toolNameMap = buildOriginalToShortMap(request);
   template = set(template, "model", modelName);
+
+  // Standard Responses carries the client's output limit (01b24f1f); Codex leaves it out (#395).
+  if (!codex) {
+    const limit = get(request, "max_tokens") ?? get(request, "max_output_tokens");
+
+    if (typeof limit === "number") template = set(template, "max_output_tokens", Math.trunc(limit));
+  }
+
   const inputItems: Json[] = [];
   const deferredTools = makeDeferredToolState(get(request, "tools"));
   let hasAdditionalTools = false;
