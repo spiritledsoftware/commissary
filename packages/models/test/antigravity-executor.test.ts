@@ -768,7 +768,14 @@ describe("antigravity executor: Responses compaction summary", () => {
 
     const response = await h.call("/v1/responses", postJson(trigger()));
     expect(response.status).toBe(200);
-    const usage = (await response.json()).usage;
+
+    const { usage } = (await response.json()) as {
+      usage: {
+        input_tokens_details: { cached_tokens: number };
+        output_tokens_details: { reasoning_tokens: number };
+      };
+    };
+
     expect(usage.input_tokens_details.cached_tokens).toBe(4);
     expect(usage.output_tokens_details.reasoning_tokens).toBe(2);
   });
