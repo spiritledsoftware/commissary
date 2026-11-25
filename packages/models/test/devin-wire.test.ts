@@ -226,6 +226,46 @@ describe("model UID resolution: swe-2, lightning and fast variants (Go devin_mod
   }
 });
 
+describe("model UID resolution: canonical clamping and suffix overrides (Go devin_models_test.go)", () => {
+  // The cases of upstream commit a516bf3b: ties go to the lower level, and a suffix overrides the body.
+  const cases: ReadonlyArray<readonly [string, string, number, string]> = [
+    ["devin/MODEL_GPT_5_2(0)", "high", 32768, "MODEL_GPT_5_2_NONE"],
+    ["swe-2", "xhigh", 0, "swe-2-high"],
+    ["swe-2(32768)", "max", 0, "swe-2-high"],
+    ["claude-fable-5-1", "", 2048, "claude-fable-5-1-medium"],
+    ["glm-5-3", "medium", 0, "glm-5-3-low"],
+    ["glm-5-3", "adaptive", 0, "glm-5-3-low"],
+  ];
+
+  for (const [model, level, budget, uid] of cases) {
+    it(`${model} level=${level || "-"} budget=${budget} -> ${uid}`, () => {
+      expect(resolveDevinChatModelUid(model, level, budget, devinLevelLookup)).toBe(uid);
+    });
+  }
+
+  // `TestResolveDevinChatModelUID_AutoEffort`: automatic effort is medium, clamped to the catalog.
+  const auto: ReadonlyArray<readonly [string, string]> = [
+    ["gpt-6-sol", "gpt-6-sol-medium"],
+    ["swe-2", "swe-2-medium"],
+    ["swe-2-lightning", "swe-2-medium-lightning"],
+    ["glm-5-3", "glm-5-3-low"],
+    ["deepseek-v4-flash", "deepseek-v4-flash-high"],
+    ["glm-5-2-1m", "glm-5-2-max-1m"],
+    ["MODEL_GPT_5_2", "MODEL_GPT_5_2_MEDIUM"],
+    ["kimi-k2-6", "kimi-k2-6"],
+  ];
+
+  for (const [model, uid] of auto) {
+    for (const suffix of ["(auto)", "(-1)"]) {
+      it(`devin/${model}${suffix} -> ${uid}`, () => {
+        expect(
+          resolveDevinChatModelUid(`devin/${model}${suffix}`, "max", 64000, devinLevelLookup),
+        ).toBe(uid);
+      });
+    }
+  }
+});
+
 describe("system prompt sanitising (parity with SanitizeDevinSystemPrompt)", () => {
   for (const expected of fixtures.systemPrompts) {
     it(expected.name, () => {
