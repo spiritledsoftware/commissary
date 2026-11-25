@@ -457,7 +457,8 @@ const credentialModels = Effect.gen(function* () {
   const registry = yield* ModelRegistry;
   const viewer = yield* currentViewer;
 
-  const snapshot = yield* registry.snapshot.pipe(
+  // Built now, not the isolate's cached snapshot: a credential uploaded a moment ago lists its models.
+  const snapshot = yield* registry.fresh.pipe(
     Effect.mapError(() => replyError(502, "model registry unavailable")),
   );
 

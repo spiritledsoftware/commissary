@@ -333,6 +333,20 @@ describe("management credentials: download, delete, models", () => {
     expect((await list()).files).toEqual([]);
   });
 
+  it("lists the models of a credential uploaded a moment ago", async () => {
+    // The listing reads a registry built now: an earlier read must not hide a credential uploaded after it.
+    expect(await json("/v9/management/credentials/models?name=claude-b.json")).toMatchObject({
+      status: 200,
+      body: { models: [] },
+    });
+    await upload("claude-b.json", claudeFile());
+    const models = await json("/v9/management/credentials/models?name=claude-b.json");
+    // SAFETY: the credential's model listing.
+    const listed = (models.body as { models: Array<{ id: string }> }).models;
+
+    expect(listed.length).toBeGreaterThan(0);
+  });
+
   it("lists the models registered for a credential", async () => {
     await upload("claude-a.json", claudeFile());
     const models = await json("/v9/management/credentials/models?name=claude-a.json");
@@ -380,7 +394,25 @@ describe("management credentials: Copilot and Devin published routes", () => {
     });
   };
 
-  it("lists the models under <provider>/<id>, with the qualified source as every route's upstream", async () => {
+  it("lists each credential's models under <provider>/<id>", async () => {
+    await upload("copilot-42.json", COPILOT);
+    await upload("devin-a.json", DEVIN);
+
+    for (const [name, provider] of [
+      ["copilot-42.json", "copilot"],
+      ["devin-a.json", "devin"],
+    ] as const) {
+      const listing = await json(`/v9/management/credentials/models?name=${name}`);
+      // SAFETY: the credential's model listing.
+      const ids = (listing.body as { models: Array<{ id: string }> }).models.map((m) => m.id);
+
+      expect(ids.length).toBeGreaterThan(0);
+      expect(ids.filter((id) => !id.startsWith(`${provider}/`))).toEqual([]);
+      expect(ids.filter((id) => id.startsWith(`${provider}/${provider}/`))).toEqual([]);
+    }
+  });
+
+  it("shows the qualified source as the upstream of catalog, alias and excluded routes", async () => {
     await upload("copilot-42.json", COPILOT);
     await upload("devin-a.json", DEVIN);
     expect(
@@ -415,22 +447,6 @@ describe("management credentials: Copilot and Devin published routes", () => {
       reason: "devin/grok-*",
     });
     expect(models.some((model) => model.id === "gpt-6-sol" || model.id === "swe-2")).toBe(false);
-
-    // Each credential's own listing names its routes the same way.
-    for (const [name, provider] of [
-      ["copilot-42.json", "copilot"],
-      ["devin-a.json", "devin"],
-    ] as const) {
-      const listing = await json(`/v9/management/credentials/models?name=${name}`);
-      // SAFETY: the credential's model listing.
-      const ids = (listing.body as { models: Array<{ id: string }> }).models.map((m) => m.id);
-
-      expect(ids.length).toBeGreaterThan(0);
-      expect(ids.filter((id) => !id.startsWith(`${provider}/`))).toEqual(
-        provider === "copilot" ? ["sonnet"] : [],
-      );
-      expect(ids.filter((id) => id.startsWith(`${provider}/${provider}/`))).toEqual([]);
-    }
   });
 });
 
