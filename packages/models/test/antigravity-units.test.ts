@@ -670,6 +670,11 @@ describe("Claude 5.5 structured output on Antigravity", () => {
     ["claude-opus-5-5", true],
     ["claude-sonnet-5-5-high", true],
     ["claude-opus-5-5-reasoning", true],
+    // The low, medium and max effort variants (CLIProxyAPI c813f779).
+    ["claude-opus-5-5-low", true],
+    ["claude-sonnet-5-5-medium", true],
+    ["claude-opus-5-5-max-20261001", true],
+    ["claude-opus-5-5-minimal", false],
     ["claude-sonnet-5-5(high)", true],
     ["claude-opus-5-5-20261001", true],
     ["claude-sonnet-5-5[1m]", true],

@@ -13,7 +13,7 @@ import {
   buildClaudeStructuredOutputInstruction,
   normalizeJsonSchemaNumericConstraints,
 } from "@commissary/translation";
-import { isClaude55Model } from "../helps/claude-55-model.ts";
+import { isAntigravityClaude55Model } from "../helps/claude-55-model.ts";
 
 const CONTAINERS = ["request.generationConfig", "request.generation_config"] as const;
 
@@ -39,7 +39,7 @@ const CALLING_KEYS = ["functionCallingConfig", "function_calling_config"] as con
  * so a second call finds none, appends nothing and returns `false`, which would let `VALIDATED` come back.
  */
 export const prepareClaudeStructuredOutput = (model: string, payload: Json): boolean => {
-  if (!isClaude55Model(model)) return false;
+  if (!isAntigravityClaude55Model(model)) return false;
   let schema: Json | undefined;
 
   for (const container of CONTAINERS) {
