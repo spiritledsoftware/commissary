@@ -16,11 +16,12 @@
  * upstream attempts per request (each costs subrequests: pick, fetch, report) and cooldown waits of at most
  * {@link MAX_COOLDOWN_WAIT_MS}; a longer recovery is answered with the last error plus `Retry-After`.
  */
-import { Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
+import { Cause, Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
 import type { Config } from "../config/schema.ts";
 import type { RetryPlan } from "../credentials/selection/retry.ts";
 import {
   ExecutionError,
+  isModelCooldown,
   outboundRefusedError,
   safeRetryAfter,
   withErrorFields,
@@ -278,6 +279,24 @@ export const lifecycleError = (): ExecutionError =>
     message: "client closed request",
   });
 
+/**
+ * What an attempt the client cancelled reports (CLIProxyAPI 3ad507bf, `recordCanceledUpstreamCooldown`): an upstream
+ * error that carries a `Retry-After` keeps the cooldown the upstream asked for, although the client went away
+ * meanwhile (often because of that very error); a request-scoped error is reported as it is (it cools nothing);
+ * anything else, a plain cancellation included, is the client's abort and never a credential failure.
+ */
+export const cancelledAttemptError = (cause: Cause.Cause<unknown>): ExecutionError => {
+  const failure = cause.reasons.find(Cause.isFailReason)?.error;
+
+  if (
+    failure instanceof ExecutionError &&
+    (failure.retryAfterMs !== undefined || failure.requestScoped === true)
+  )
+    return failure;
+
+  return lifecycleError();
+};
+
 const authNotFound = (): ExecutionError =>
   new ExecutionError({ status: 503, code: "auth_not_found", message: "no auth available" });
 
@@ -300,6 +319,32 @@ const withRetryAfter = (
     safeHeaders: {
       ...existing,
       "retry-after": String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
+    },
+  });
+};
+
+/**
+ * `annotatePoolCooldownTerminalError` (CLIProxyAPI 4da9f685): a terminal upstream 429 while every candidate of the
+ * model is blocked, at least one by a timed cooldown, keeps its status, body and upstream headers but becomes a model
+ * cooldown whose trusted `Retry-After` is the pool's earliest recovery, not the last attempt's own hint.
+ */
+export const withPoolCooldown = (
+  error: ExecutionError,
+  poolCooldownMs: number | undefined,
+): ExecutionError => {
+  if (poolCooldownMs === undefined || poolCooldownMs <= 0 || error.status !== 429) return error;
+
+  if (isModelCooldown(error)) return error;
+
+  return withErrorFields(error, {
+    modelCooldown: true,
+    safeHeaders: {
+      ...Object.fromEntries(
+        Object.entries(error.safeHeaders ?? {}).filter(
+          ([name]) => name.toLowerCase() !== "retry-after",
+        ),
+      ),
+      "retry-after": String(Math.max(1, Math.ceil(poolCooldownMs / 1000))),
     },
   });
 };
@@ -661,7 +706,13 @@ export const conduct = <T, R>(
                   return run(attempt);
                 },
                 { retry: attempt.restart },
-              ).pipe(Effect.onInterrupt(() => attempt.finish(lifecycleError()))),
+              ).pipe(
+                Effect.onError((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? attempt.finish(cancelledAttemptError(cause)).pipe(Effect.asVoid)
+                    : Effect.void,
+                ),
+              ),
             );
 
             if (Result.isSuccess(result))
@@ -707,6 +758,9 @@ export const conduct = <T, R>(
         }
       });
 
+    /** The last plan already asked for the pool's cooldown: the terminal error needs no second call. */
+    let poolAsked = false;
+
     const NO_RETRY: RetryPlan = { retry: false };
 
     /** `shouldRetryAfterErrorWithAttempted`: class check here, cooldown knowledge in the ControlPlane. */
@@ -715,27 +769,52 @@ export const conduct = <T, R>(
         const error = outcome.error;
 
         if (outcome.stop || isRequestInvalid(error) || !isRetryRoundError(error)) return NO_RETRY;
-
-        const plan = yield* picker.planRetry({
-          providers: failover.remaining(),
-          model: prepared.routeModel,
-          round,
-          requestRetry: settings.requestRetry,
-          status: error.code === "transient_transport" ? 0 : error.status,
-          attempted: outcome.attempted,
-          ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-          maxWaitMs: settings.maxWaitMs,
-          ...(prepared.pinnedId === undefined ? {} : { pinnedAuthId: prepared.pinnedId }),
-          ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
-          ...(prepared.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
-        });
+        const query = retryQuery(error, round, outcome.attempted);
+        const plan = yield* picker.planRetry(query);
+        // A 429 plan that ends the request already answered for the pool (`poolCooldownMs`, or none).
+        poolAsked = !plan.retry && query.status === 429;
 
         return plan;
+      });
+
+    const retryQuery = (
+      error: ExecutionError,
+      round: number,
+      attempted: ReadonlyArray<string>,
+    ) => ({
+      providers: failover.remaining(),
+      model: prepared.routeModel,
+      round,
+      requestRetry: settings.requestRetry,
+      status: error.code === "transient_transport" ? 0 : error.status,
+      attempted,
+      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
+      maxWaitMs: settings.maxWaitMs,
+      ...(prepared.pinnedId === undefined ? {} : { pinnedAuthId: prepared.pinnedId }),
+      ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
+      ...(prepared.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
+    });
+
+    /**
+     * The pool's cooldown for a terminal 429 that ended without a retry plan (a stop, the attempt cap, the credits
+     * round): Go annotates the terminal error on every exit (`annotatePoolCooldownTerminalError`).
+     */
+    const terminalPoolCooldown = (error: ExecutionError, attempted: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        if (error.status !== 429 || isModelCooldown(error)) return undefined;
+
+        const plan = yield* picker.planRetry({
+          ...retryQuery(error, 0, attempted),
+          poolOnly: true,
+        });
+
+        return plan.retry ? undefined : plan.poolCooldownMs;
       });
 
     let preferredUpstream: ExecutionError | undefined;
     let lastFailure: Extract<RoundOutcome<T>, { ok: false }> | undefined;
     let recoveryHintMs: number | undefined;
+    let poolCooldownMs: number | undefined;
 
     for (let round = 0; ; round += 1) {
       const outcome = yield* runRound(round);
@@ -750,6 +829,7 @@ export const conduct = <T, R>(
 
       if (!plan.retry) {
         recoveryHintMs = plan.retryAfterMs;
+        poolCooldownMs = plan.poolCooldownMs;
         break;
       }
 
@@ -778,13 +858,18 @@ export const conduct = <T, R>(
       shouldAttemptCreditsFallback(error)
     ) {
       const credited = yield* runRound(0, true);
+      // The credits round changed the pool's state since the plan.
+      poolAsked = false;
 
       if (credited.ok) return { ok: true, value: credited.value } satisfies ConductResult<T>;
     }
 
+    if (poolCooldownMs === undefined && !poolAsked)
+      poolCooldownMs = yield* terminalPoolCooldown(error, last.attempted);
+
     return {
       ok: false,
-      error: withRetryAfter(error, recoveryHintMs),
+      error: withRetryAfter(withPoolCooldown(error, poolCooldownMs), recoveryHintMs),
       bootstrap: last.bootstrap,
     } satisfies ConductResult<T>;
   });

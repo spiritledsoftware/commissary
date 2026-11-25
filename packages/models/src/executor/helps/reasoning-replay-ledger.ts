@@ -91,6 +91,16 @@ export interface ReplayLedger {
     sessionKey: string,
     snapshot: LedgerSnapshot,
   ) => Effect.Effect<boolean>;
+  /**
+   * `DeleteAntigravityReasoningReplayItemsIfUnchangedWithSnapshot` (CLIProxyAPI e9dd8bad): the same delete, answering
+   * the snapshot of the tombstone it wrote (`undefined` when another request changed the state first), so the request
+   * that deleted can still commit its own turn.
+   */
+  readonly deleteIfUnchangedWithSnapshot: (
+    modelName: string,
+    sessionKey: string,
+    snapshot: LedgerSnapshot,
+  ) => Effect.Effect<LedgerSnapshot | undefined>;
 }
 
 const numberOf = (value: Json | undefined): number | undefined =>
@@ -315,6 +325,40 @@ export const makeSessionStateReplayLedger = (
     );
   };
 
+  /** A tombstone guarded by `snapshot`; its own snapshot when it was written. */
+  const deleteWithSnapshot = (
+    modelName: string,
+    sessionKey: string,
+    snapshot: LedgerSnapshot,
+  ): Effect.Effect<LedgerSnapshot | undefined> => {
+    const key = cacheKey(modelName, sessionKey);
+
+    if (key === "") return Effect.succeed(undefined);
+
+    return bestEffort(
+      `${storeName} delete`,
+      undefined,
+      Effect.gen(function* () {
+        const state = yield* backend;
+
+        const [result] = yield* state.run(addressOf(storeName, sessionKey), [
+          {
+            op: "put",
+            key,
+            value: TOMBSTONE,
+            ttlMs: REPLAY_TTL_MS,
+            maxEntries: MAX_MODELS_PER_SESSION,
+            ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),
+          },
+        ]);
+
+        return result?.status === "ok"
+          ? ({ loaded: true, generation: result.generation } satisfies LedgerSnapshot)
+          : undefined;
+      }),
+    );
+  };
+
   return {
     get: (modelName, sessionKey) => read(modelName, sessionKey, true),
     peek: (modelName, sessionKey) => read(modelName, sessionKey, false),
@@ -349,32 +393,12 @@ export const makeSessionStateReplayLedger = (
         }),
       );
     },
-    deleteIfUnchanged: (modelName, sessionKey, snapshot) => {
-      const key = cacheKey(modelName, sessionKey);
-
-      if (key === "") return Effect.succeed(false);
-
-      return bestEffort(
-        `${storeName} delete`,
-        false,
-        Effect.gen(function* () {
-          const state = yield* backend;
-
-          const [result] = yield* state.run(addressOf(storeName, sessionKey), [
-            {
-              op: "put",
-              key,
-              value: TOMBSTONE,
-              ttlMs: REPLAY_TTL_MS,
-              maxEntries: MAX_MODELS_PER_SESSION,
-              ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),
-            },
-          ]);
-
-          return result?.status === "ok";
-        }),
-      );
-    },
+    deleteIfUnchanged: (modelName, sessionKey, snapshot) =>
+      deleteWithSnapshot(modelName, sessionKey, snapshot).pipe(
+        Effect.map((written) => written !== undefined),
+      ),
+    deleteIfUnchangedWithSnapshot: (modelName, sessionKey, snapshot) =>
+      deleteWithSnapshot(modelName, sessionKey, snapshot),
   };
 };
 

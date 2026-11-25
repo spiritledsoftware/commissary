@@ -10,6 +10,7 @@ import {
   markResult,
   nextQuotaCooldown,
   quotaCooldownAfterFailure,
+  seedForcedCooldowns,
 } from "../../src/credentials/cooldown/mark-result.ts";
 import {
   isCloudflareChallengeError,
@@ -22,9 +23,10 @@ import {
   shouldSkipCredentialCooldown,
 } from "../../src/credentials/cooldown/classify.ts";
 import { collectQuotaSignals } from "../../src/credentials/cooldown/quota-signals.ts";
+import { resetCooldownState } from "../../src/credentials/cooldown-reset.ts";
 import { recentRequestsSnapshot } from "../../src/credentials/cooldown/recent-requests.ts";
 import type { CredentialState } from "../../src/credentials/model.ts";
-import { emptyState } from "../../src/credentials/model.ts";
+import { emptyQuota, emptyState } from "../../src/credentials/model.ts";
 import { isBlockedForModel } from "../../src/credentials/selection/availability.ts";
 import type { ReportResult } from "../../src/credentials/selection/types.ts";
 import { cred, NOW } from "../support/credentials.ts";
@@ -479,6 +481,121 @@ describe("error table (MarkResult)", () => {
     expect(state.modelStates.m).toMatchObject({ unavailable: true, nextRetryAfter: NOW + MIN });
   });
 
+  it("a live forced cooldown outlasts later failures while cooling is disabled (CLIProxyAPI 9d7d012b)", () => {
+    const forced = fail(429, "stop", {
+      retryAfterMs: HOUR,
+      error: { code: "force_cooldown", message: "stop", retryable: false, httpStatus: 429 },
+    });
+
+    const off = { metadata: { disable_cooling: false } };
+    const cooling = { metadata: { disable_cooling: true } };
+
+    for (const model of ["m", ""]) {
+      let state = mark(emptyState(), model, forced, off);
+
+      const deadline =
+        model === "" ? state.nextRetryAfter : (state.modelStates[model]?.nextRetryAfter ?? 0);
+
+      expect(deadline).toBe(NOW + HOUR);
+
+      // A shorter cooldown replaces the last error, then a failure with cooling disabled writes a zero deadline.
+      state = mark(state, model, fail(503, "x", { retryAfterMs: 5000 }), {
+        ...off,
+        now: NOW + MIN,
+      });
+      expect((model === "" ? state : state.modelStates[model])?.lastError?.code).toBeUndefined();
+      state = mark(state, model, fail(500), { ...cooling, now: NOW + 2 * MIN });
+      state = mark(state, model, fail(429), { ...cooling, now: NOW + 3 * MIN });
+
+      const holder = model === "" ? state : state.modelStates[model];
+      expect(holder, model).toMatchObject({ nextRetryAfter: deadline, unavailable: true });
+      expect(blocked(state, "m", NOW + 30 * MIN), model).toBe(true);
+      expect(holder?.forcedUntil, model).toBe(deadline);
+
+      // Once the forced deadline passed, a zero write clears the cooldown again.
+      state = mark(state, model, fail(500), { ...cooling, now: NOW + HOUR + 1 });
+      expect(blocked(state, "m", NOW + HOUR + 2), model).toBe(false);
+    }
+
+    // An ordinary cooldown is still cleared by a zero write.
+    let plain = mark(emptyState(), "m", fail(500, "x", { retryAfterMs: HOUR }), off);
+    plain = mark(plain, "m", fail(500), { ...cooling, now: NOW + MIN });
+    expect(plain.modelStates.m?.nextRetryAfter).toBe(0);
+  });
+
+  it("a model failure does not shorten a credential-level forced cooldown (effectiveAuthForceUntil)", () => {
+    const forced = fail(429, "stop", {
+      retryAfterMs: HOUR,
+      error: { code: "force_cooldown", message: "stop", retryable: false, httpStatus: 429 },
+    });
+
+    let state = mark(emptyState(), "", forced);
+    expect(state.forcedUntil).toBe(NOW + HOUR);
+
+    // The model's own 60 s cooldown would set the credential's deadline from the model states alone.
+    state = mark(state, "m", fail(500), { now: NOW + MIN });
+    expect(state).toMatchObject({
+      unavailable: true,
+      nextRetryAfter: NOW + HOUR,
+      forcedUntil: NOW + HOUR,
+    });
+    expect(blocked(state, "other", NOW + 30 * MIN)).toBe(true);
+
+    // A model success keeps it as well.
+    state = mark(state, "m", { success: true }, { now: NOW + 2 * MIN });
+    expect(state).toMatchObject({ unavailable: true, nextRetryAfter: NOW + HOUR });
+    expect(blocked(state, "other", NOW + 30 * MIN)).toBe(true);
+  });
+
+  it("seeds the deadline of a forced cooldown stored without one (seedInitialForceCooldownDeadlines)", () => {
+    const forcedError = {
+      code: "force_cooldown",
+      message: "stop",
+      retryable: false,
+      httpStatus: 429,
+    };
+
+    // A state written before `forcedUntil` existed: only the error says the cooldown was forced.
+    const stored: CredentialState = {
+      ...emptyState(),
+      status: "error",
+      unavailable: true,
+      nextRetryAfter: NOW + HOUR,
+      lastError: forcedError,
+      modelStates: {
+        m: {
+          status: "error",
+          unavailable: true,
+          nextRetryAfter: NOW + HOUR,
+          lastError: forcedError,
+          quota: emptyQuota(),
+          updatedAt: NOW,
+        },
+        expired: {
+          status: "error",
+          unavailable: true,
+          nextRetryAfter: NOW - 1,
+          lastError: forcedError,
+          quota: emptyQuota(),
+          updatedAt: NOW,
+        },
+      },
+    };
+
+    const seeded = seedForcedCooldowns(stored, NOW);
+    expect(seeded.forcedUntil).toBe(NOW + HOUR);
+    expect(seeded.modelStates.m?.forcedUntil).toBe(NOW + HOUR);
+    expect(seeded.modelStates.expired?.forcedUntil).toBeUndefined();
+    expect(seedForcedCooldowns(emptyState(), NOW)).toEqual(emptyState());
+
+    // A shorter failure, then a zero write with cooling disabled, leave it in place.
+    const cooling = { metadata: { disable_cooling: true } };
+    let state = mark(seeded, "m", fail(503, "x", { retryAfterMs: 5000 }), { now: NOW + MIN });
+    state = mark(state, "m", fail(500), { ...cooling, now: NOW + 2 * MIN });
+    expect(state.modelStates.m).toMatchObject({ unavailable: true, nextRetryAfter: NOW + HOUR });
+    expect(blocked(state, "m", NOW + 30 * MIN)).toBe(true);
+  });
+
   it("never cools: request-scoped, connection lifecycle and transient transport failures (connection_lifecycle_cooldown_test.go)", () => {
     for (const result of [
       fail(400, "bad request body", { requestScoped: true }),
@@ -532,6 +649,100 @@ describe("terminal unauthorized credentials stay blocked", () => {
     expect(failed.lastError?.httpStatus).toBe(401);
     const ok = mark(terminal, "m", { success: true });
     expect(ok.unavailable).toBe(true);
+  });
+});
+
+describe("disabled credentials stay unavailable (CLIProxyAPI 29de31a8, 35afdf07)", () => {
+  const disabled: CredentialState = {
+    ...emptyState(),
+    status: "disabled",
+    unavailable: true,
+    statusMessage: "disabled",
+    lastError: { message: "refresh failed", retryable: false },
+    modelStates: {
+      m: {
+        status: "error",
+        unavailable: true,
+        nextRetryAfter: NOW + HOUR,
+        quota: { exceeded: false, nextRecoverAt: 0, backoffLevel: 0 },
+        updatedAt: NOW,
+      },
+    },
+  };
+
+  it("a late success, on the cooled model or a sibling, resets nothing", () => {
+    for (const model of ["m", "sibling", ""]) {
+      const next = mark(disabled, model, { success: true });
+      expect(next).toMatchObject({ status: "disabled", unavailable: true, success: 1 });
+      expect(next.modelStates.m).toEqual(disabled.modelStates.m);
+      expect(next.lastError).toEqual(disabled.lastError);
+      expect(blocked(next, model, NOW)).toBe(true);
+    }
+  });
+
+  it("a credential disabled by its file keeps its state through a late success", () => {
+    const cooling = mark(emptyState(), "m", fail(429, "q", { retryAfterMs: HOUR }));
+
+    const next = markResult({
+      credential: { provider: "claude", metadata: {}, disabled: true },
+      state: cooling,
+      now: NOW + 1000,
+      model: "m",
+      result: { success: true },
+      settings: DEFAULT_COOLDOWN_SETTINGS,
+    });
+
+    expect(next.modelStates.m).toEqual(cooling.modelStates.m);
+    expect(next.unavailable).toBe(cooling.unavailable);
+  });
+
+  it("a cooldown reset clears the timers but keeps the credential disabled", () => {
+    const { state } = resetCooldownState(disabled, NOW + 1000);
+    expect(state).toMatchObject({
+      status: "disabled",
+      unavailable: true,
+      nextRetryAfter: 0,
+      modelStates: {},
+      statusMessage: "disabled",
+    });
+    expect(blocked(state, "m", NOW + 1000)).toBe(true);
+
+    const active = resetCooldownState(mark(emptyState(), "m", fail(429)), NOW + 1000).state;
+    expect(active).toMatchObject({ status: "active", unavailable: false });
+  });
+
+  it("a cooldown reset keeps a disabled model disabled and clears only its timers", () => {
+    const cooled = mark(emptyState(), "other", fail(429, "q", { retryAfterMs: HOUR }));
+
+    const withDisabledModel: CredentialState = {
+      ...cooled,
+      modelStates: {
+        ...cooled.modelStates,
+        m: {
+          status: "disabled",
+          statusMessage: "disabled",
+          unavailable: true,
+          nextRetryAfter: NOW + HOUR,
+          forcedUntil: NOW + HOUR,
+          quota: { exceeded: true, reason: "quota", nextRecoverAt: NOW + HOUR, backoffLevel: 2 },
+          updatedAt: NOW,
+        },
+      },
+    };
+
+    const { state, models } = resetCooldownState(withDisabledModel, NOW + 1000);
+    expect(models.toSorted()).toEqual(["m", "other"]);
+    expect(Object.keys(state.modelStates)).toEqual(["m"]);
+    expect(state.modelStates.m).toEqual({
+      status: "disabled",
+      statusMessage: "disabled",
+      unavailable: true,
+      nextRetryAfter: 0,
+      quota: emptyQuota(),
+      updatedAt: NOW + 1000,
+    });
+    expect(blocked(state, "m", NOW + 1000)).toBe(true);
+    expect(blocked(state, "other", NOW + 1000)).toBe(false);
   });
 });
 

@@ -403,6 +403,7 @@ describe("retry planning", () => {
       routing: { ...defaultSettings, knownPrefixes: new Set() },
       reach: reachFor(grants, { member: "alice", teams: [] }),
       coolingDisabled: () => false,
+      strategy: "round-robin",
       now: NOW,
     });
 

@@ -2,8 +2,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import { SessionCache } from "../../src/credentials/selection/affinity.ts";
 import { isBlockedForModel } from "../../src/credentials/selection/availability.ts";
+import { MAX_SMOOTH_STATE_ENTRIES } from "../../src/credentials/selection/credit-retention.ts";
 import {
-  MAX_SMOOTH_STATE_ENTRIES,
   RotationState,
   SmoothWeightedState,
   pickSmoothWeighted,
@@ -276,6 +276,38 @@ describe("weighted round-robin", () => {
 
     expect(stateful.current.size).toBeLessThanOrEqual(MAX_SMOOTH_STATE_ENTRIES);
     expect(stateful.weights.size).toBeLessThanOrEqual(MAX_SMOOTH_STATE_ENTRIES);
+  });
+
+  it("keeps the credits of a large pool's absent credentials while it cools (CLIProxyAPI 9d7d012b)", () => {
+    const stateful = new SmoothWeightedState();
+    const size = MAX_SMOOTH_STATE_ENTRIES + 200;
+    const ids = Array.from({ length: size }, (_, index) => `c-${index}`);
+    stateful.prepare(new Map(ids.map((id) => [id, 1] as const)));
+
+    for (const id of ids) stateful.current.set(id, -1);
+    stateful.prepare(new Map(ids.slice(0, 10).map((id) => [id, 1] as const)));
+    stateful.prepare(new Map(ids.slice(10, 20).map((id) => [id, 1] as const)));
+
+    // Past the old fixed bound every pick dropped the absent credentials' credits, so they came back ahead of the
+    // ones just picked and the rotation collapsed onto a few credentials.
+    expect(stateful.current.size).toBe(size);
+    expect(stateful.current.get(ids[size - 1] ?? "")).toBe(-1);
+  });
+
+  it("forgets the credentials unseen for longest once past the bound", () => {
+    const stateful = new SmoothWeightedState();
+    const one = (index: number) => new Map([[`c-${index}`, 1]]);
+
+    for (let index = 0; index < MAX_SMOOTH_STATE_ENTRIES; index += 1) stateful.prepare(one(index));
+    stateful.prepare(one(0));
+
+    for (let index = 0; index < 10; index += 1)
+      stateful.prepare(one(MAX_SMOOTH_STATE_ENTRIES + index));
+
+    expect(stateful.weights.size).toBe(MAX_SMOOTH_STATE_ENTRIES);
+    // `c-0` was seen more recently than the other old ones, so it outlives them.
+    expect(stateful.weights.has("c-0")).toBe(true);
+    expect(stateful.weights.has("c-1")).toBe(false);
   });
 
   it("reports auth_not_found when every weight is non-positive", () => {

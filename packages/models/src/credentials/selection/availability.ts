@@ -7,7 +7,7 @@
  * Pure: the clock is a parameter and nothing is mutated, so expired cooldowns need no cleanup ("lazy expiry").
  */
 import { accessTokenExpiry } from "../expiry.ts";
-import type { Credential, CredentialState } from "../model.ts";
+import type { Credential, CredentialState, ModelState } from "../model.ts";
 import { canonicalModelLookupKey } from "./model-name.ts";
 
 export type BlockReason = "none" | "disabled" | "cooldown" | "other";
@@ -23,12 +23,14 @@ const FREE: Block = { blocked: false, reason: "none", next: 0 };
 
 /** `availabilityBlock`: a flag with a future deadline blocks until then; a flag with only past deadlines is free. */
 export const availabilityBlock = (
-  unavailable: boolean,
-  quotaExceeded: boolean,
-  nextRetryAfter: number,
-  nextRecoverAt: number,
+  state: Pick<ModelState, "unavailable" | "nextRetryAfter"> & {
+    readonly quota: Pick<ModelState["quota"], "exceeded" | "nextRecoverAt">;
+  },
   now: number,
 ): Block => {
+  const { unavailable, nextRetryAfter } = state;
+  const { exceeded: quotaExceeded, nextRecoverAt } = state.quota;
+
   if (!unavailable && !quotaExceeded) return FREE;
   const hasRecoveryTime = nextRetryAfter !== 0 || nextRecoverAt !== 0;
   let next = 0;
@@ -77,9 +79,9 @@ export const isBlockedForModel = (
 
   const states = Object.entries(state.modelStates);
 
-  if (quota.exceeded && quota.reason === "credential_quota" && quota.nextRecoverAt > now) {
-    // The model's own later deadline (or a disabled model) outranks the credential quota's (cb70eacf).
-    let next = quota.nextRecoverAt;
+  /** A credential-wide block until `until`: the model's own later deadline (or a disabled model) outranks it. */
+  const credentialWide = (until: number): Block => {
+    let next = until;
 
     if (model !== "") {
       const key = canonicalModelLookupKey(model);
@@ -89,30 +91,32 @@ export const isBlockedForModel = (
 
         if (modelState.status === "disabled") return { blocked: true, reason: "disabled", next: 0 };
 
-        const block = availabilityBlock(
-          modelState.unavailable,
-          modelState.quota.exceeded,
-          modelState.nextRetryAfter,
-          modelState.quota.nextRecoverAt,
-          now,
-        );
+        const block = availabilityBlock(modelState, now);
 
         if (block.blocked && block.next > next) next = block.next;
       }
     }
 
     return { blocked: true, reason: "cooldown", next };
-  }
+  };
+
+  const credentialQuota =
+    quota.exceeded && quota.reason === "credential_quota" && quota.nextRecoverAt > now
+      ? quota.nextRecoverAt
+      : 0;
+
+  // A live credential-level forced cooldown blocks every model (Go `effectiveAuthForceUntil`, CLIProxyAPI 9d7d012b).
+  const forcedUntil = state.forcedUntil ?? 0;
+
+  if (forcedUntil > now && state.nextRetryAfter > now)
+    return credentialWide(Math.max(forcedUntil, credentialQuota));
+
+  // The credential quota's deadline extends to a later model one (cb70eacf).
+  if (credentialQuota !== 0) return credentialWide(credentialQuota);
 
   if (model !== "") {
     if (states.length === 0) {
-      return availabilityBlock(
-        state.unavailable,
-        quota.exceeded,
-        state.nextRetryAfter,
-        quota.nextRecoverAt,
-        now,
-      );
+      return availabilityBlock(state, now);
     }
 
     const key = canonicalModelLookupKey(model);
@@ -125,13 +129,7 @@ export const isBlockedForModel = (
 
       if (modelState.status === "disabled") return { blocked: true, reason: "disabled", next: 0 };
 
-      const block = availabilityBlock(
-        modelState.unavailable,
-        modelState.quota.exceeded,
-        modelState.nextRetryAfter,
-        modelState.quota.nextRecoverAt,
-        now,
-      );
+      const block = availabilityBlock(modelState, now);
 
       if (!block.blocked) continue;
 
@@ -156,11 +154,5 @@ export const isBlockedForModel = (
       ? false
       : quota.exceeded;
 
-  return availabilityBlock(
-    state.unavailable,
-    quotaExceeded,
-    state.nextRetryAfter,
-    quota.nextRecoverAt,
-    now,
-  );
+  return availabilityBlock({ ...state, quota: { ...quota, exceeded: quotaExceeded } }, now);
 };

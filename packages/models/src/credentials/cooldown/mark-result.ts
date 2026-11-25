@@ -303,6 +303,7 @@ const resetModelState = (model: DraftModel, now: number): void => {
   model.status = "active";
   delete model.statusMessage;
   model.nextRetryAfter = 0;
+  delete model.forcedUntil;
   delete model.lastError;
   applyCooldownFields(model.quota, { exceeded: false, nextRecoverAt: 0, backoffLevel: 0 });
   model.updatedAt = now;
@@ -320,11 +321,33 @@ const hasModelError = (state: Draft, now: number): boolean =>
 const clearAggregatedAvailability = (state: Draft): void => {
   state.unavailable = false;
   state.nextRetryAfter = 0;
+  delete state.forcedUntil;
   applyCooldownFields(state.quota, { exceeded: false, nextRecoverAt: 0, backoffLevel: 0 });
 };
 
-/** `updateAggregatedAvailability`: derives the credential-level flags from the model states. */
+/**
+ * `updateAggregatedAvailability`: derives the credential-level flags from the model states. A live credential-level
+ * forced cooldown holds whatever the models say (Go `effectiveAuthForceUntil`, CLIProxyAPI 9d7d012b).
+ */
 export const updateAggregatedAvailability = (state: Draft, now: number): void => {
+  const forcedUntil = state.forcedUntil ?? 0;
+  aggregateAvailability(state, now);
+
+  if (forcedUntil > now) {
+    state.forcedUntil = forcedUntil;
+    state.unavailable = true;
+    state.nextRetryAfter = Math.max(state.nextRetryAfter, forcedUntil);
+  }
+};
+
+const aggregateAvailability = (state: Draft, now: number): void => {
+  // A disabled credential stays unavailable whatever its models say (CLIProxyAPI 29de31a8).
+  if (state.status === "disabled") {
+    state.unavailable = true;
+
+    return;
+  }
+
   if (hasUnauthorizedFailure(state)) {
     state.unavailable = true;
 
@@ -408,7 +431,7 @@ export const updateAggregatedAvailability = (state: Draft, now: number): void =>
 };
 
 const clearStateOnSuccess = (state: Draft, now: number): void => {
-  if (hasUnauthorizedFailure(state)) {
+  if (state.status === "disabled" || hasUnauthorizedFailure(state)) {
     state.unavailable = true;
 
     return;
@@ -420,7 +443,68 @@ const clearStateOnSuccess = (state: Draft, now: number): void => {
   applyCooldownFields(state.quota, { exceeded: false, nextRecoverAt: 0, backoffLevel: 0 });
   delete state.lastError;
   state.nextRetryAfter = 0;
+  delete state.forcedUntil;
   state.updatedAt = now;
+};
+
+/** A forced cooldown recorded before `forcedUntil` existed: its error and its live deadline. */
+const seededForcedUntil = (
+  holder: {
+    readonly nextRetryAfter: number;
+    readonly forcedUntil?: number;
+    readonly lastError?: CredentialError;
+  },
+  now: number,
+): number | undefined =>
+  holder.forcedUntil === undefined &&
+  holder.lastError?.code === ErrorCode.forceCooldown &&
+  holder.nextRetryAfter > now
+    ? holder.nextRetryAfter
+    : undefined;
+
+/**
+ * Seeds `forcedUntil` of a stored state (Go `seedInitialForceCooldownDeadlines`, CLIProxyAPI 9d7d012b): a live cooldown
+ * whose last error is `force_cooldown` but that was recorded without the deadline (before it was persisted) is forced
+ * until its `nextRetryAfter`, at credential and model level. Returns the same object when nothing changes.
+ */
+export const seedForcedCooldowns = (state: CredentialState, now: number): CredentialState => {
+  const own = seededForcedUntil(state, now);
+
+  const models = Object.entries(state.modelStates).flatMap(([key, model]) => {
+    const until = seededForcedUntil(model, now);
+
+    return until === undefined ? [] : [[key, { ...model, forcedUntil: until }] as const];
+  });
+
+  if (own === undefined && models.length === 0) return state;
+
+  return {
+    ...state,
+    ...(own === undefined ? {} : { forcedUntil: own }),
+    modelStates: { ...state.modelStates, ...Object.fromEntries(models) },
+  };
+};
+
+/**
+ * The last step of a failure: a forced failure records its deadline (`forcedUntil`), and a live forced deadline holds
+ * against whatever the failure wrote (a shorter cooldown, or none because cooling is disabled) (CLIProxyAPI 9d7d012b).
+ */
+const holdForcedCooldown = (
+  holder: { nextRetryAfter: number; unavailable: boolean; forcedUntil?: number },
+  forced: boolean,
+  now: number,
+): void => {
+  if (forced) holder.forcedUntil = Math.max(holder.forcedUntil ?? 0, holder.nextRetryAfter);
+  const until = holder.forcedUntil ?? 0;
+
+  if (until <= now) {
+    delete holder.forcedUntil;
+
+    return;
+  }
+
+  holder.nextRetryAfter = Math.max(holder.nextRetryAfter, until);
+  holder.unavailable = true;
 };
 
 // --- failure with a credential-level result -------------------------------------------------------------------------
@@ -591,6 +675,8 @@ const applyCredentialFailure = (
     state.unavailable = false;
     state.quota.exceeded = false;
   }
+
+  holdForcedCooldown(state, error?.code === ErrorCode.forceCooldown, now);
 };
 
 // --- MarkResult -----------------------------------------------------------------------------------------------------
@@ -623,7 +709,10 @@ export const credentialCooldownActive = (state: CredentialState, now: number): b
     (state.quota.exceeded && state.quota.nextRecoverAt === 0));
 
 export interface MarkInput {
-  readonly credential: Pick<Credential, "provider" | "metadata">;
+  readonly credential: Pick<Credential, "provider" | "metadata"> & {
+    /** The credential file carries `disabled: true`. */
+    readonly disabled?: boolean;
+  };
   readonly state: CredentialState;
   readonly now: number;
   /** Cooldown state key (`canonicalModelKey`-normalised inside); empty = credential level. */
@@ -721,7 +810,13 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         sequence <= (marks.models.get(canonicalModelLookupKey(modelKey)) ?? 0));
 
   if (result.success) {
-    if (wasTerminalUnauthorized) {
+    if (input.credential.disabled === true || state.status === "disabled") {
+      // A late success of an attempt still in flight on a disabled credential resets no state (CLIProxyAPI 29de31a8).
+      // A `disabled` status (a terminal refresh failure) stays unavailable. A credential disabled only by its file
+      // is blocked by the flag and keeps its state as it was: enabling it again resets nothing, so flagging it
+      // unavailable here would strand it.
+      if (state.status === "disabled") state.unavailable = true;
+    } else if (wasTerminalUnauthorized) {
       if (modelKey !== "") {
         modelState = ensureModelState(state, modelKey);
         resetModelState(modelState, now);
@@ -735,7 +830,7 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
       resetModelState(modelState, now);
       updateAggregatedAvailability(state, now);
 
-      if (!hasModelError(state, now)) {
+      if (!hasModelError(state, now) && !((state.forcedUntil ?? 0) > now)) {
         delete state.lastError;
         delete state.statusMessage;
         state.status = "active";
@@ -883,7 +978,8 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
           model.unavailable = true;
         }
 
-        // A later failure only extends a live cooldown; a deliberate zero write (cooling disabled) still clears it.
+        // A later failure only extends a live cooldown; a deliberate zero write (cooling disabled) still clears it,
+        // except an explicit forced cooldown, which outlasts it.
         if (
           model.nextRetryAfter !== 0 &&
           previousRetryAfter > model.nextRetryAfter &&
@@ -891,6 +987,8 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         ) {
           model.nextRetryAfter = previousRetryAfter;
         }
+
+        holdForcedCooldown(model, forced, now);
 
         state.status = "error";
         updateAggregatedAvailability(state, now);

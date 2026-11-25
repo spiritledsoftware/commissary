@@ -26,6 +26,7 @@ import {
   credentialCooldownActive,
   markResultDetailed,
   modelCooldownActive,
+  seedForcedCooldowns,
 } from "./cooldown/mark-result.ts";
 import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
@@ -181,6 +182,8 @@ export class CredentialPool {
   #dispatchSeq: number;
   readonly #cooldownMarks = new Map<string, MutableCooldownMarks>();
   #view: View | undefined;
+  /** Ids of the last derived view: one that disappears or appears is a removal or a (re-)registration. */
+  #registered = new Set<string>();
 
   constructor(options: PoolOptions) {
     this.#store = options.store;
@@ -192,7 +195,13 @@ export class CredentialPool {
     this.#privateCredentials = options.privateCredentials ?? (() => true);
     this.#privateKeys = options.privateKeys ?? (() => ({ version: 0, configs: [] }));
     this.#spend = options.spend;
-    this.#states = options.store.loadStates();
+    // Forced cooldowns stored before their deadline was persisted keep their protection.
+    this.#states = new Map(
+      [...options.store.loadStates()].map(([id, state]) => [
+        id,
+        seedForcedCooldowns(state, this.#now()),
+      ]),
+    );
     this.#dispatchSeq = this.#now() * 1000;
   }
 
@@ -245,6 +254,13 @@ export class CredentialPool {
         this.#invalidateBindings(id);
       }
     }
+
+    // A credential removed or added again (config keys come and go with the config) starts its weighted credit at zero;
+    // a refresh or a re-login keeps it (CLIProxyAPI 9d7d012b, `RegistrationEpoch`).
+    for (const id of this.#registered) if (!credentials.has(id)) this.#rotation.forget(id);
+
+    for (const id of credentials.keys()) if (!this.#registered.has(id)) this.#rotation.forget(id);
+    this.#registered = new Set(credentials.keys());
 
     const oauthModelAlias: Record<string, ReturnType<typeof sanitizeAliases>> = {};
 
@@ -573,6 +589,7 @@ export class CredentialPool {
       routing: { ...view.settings, knownPrefixes: knownPrefixes(entries) },
       reach: this.#reach(query.memberId),
       coolingDisabled: (credential) => coolingDisabledFor(credential, view.cooldown),
+      strategy: view.settings.strategy,
       now,
       // The shared scopes of the pick's spender: the member's. (A key limit refuses at the pick and keeps no credential
       // away, so a retry needs none.)
@@ -651,6 +668,7 @@ export class CredentialPool {
       this.#states.delete(id);
       this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
+      this.#rotation.forget(id);
       this.#invalidate();
     }
 
@@ -670,6 +688,7 @@ export class CredentialPool {
       this.#states.delete(id);
       this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
+      this.#rotation.forget(id);
     }
 
     if (removed.length > 0) this.#invalidate();

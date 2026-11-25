@@ -482,6 +482,80 @@ describe("accumulator -> ledger -> request restore", () => {
     ).toMatch(/pending functionResponse/);
   });
 
+  it("a request that invalidated a replay for breaking the pairing still commits its own turn (Go e9dd8bad)", async () => {
+    const ledger = makeInMemoryReplayLedger(() => 5_000_000);
+    const args = { file_path: "/tmp/a" };
+
+    const payload = antigravityRequest([
+      modelCall("Read", args, {}, "skip_thought_signature_validator"),
+      toolResult("Read"),
+    ]);
+
+    const claudeOptions = options({
+      headers: new Headers({ "Session-Id": "pairing-break" }),
+      sourceFormat: "claude",
+      originalRequest: {
+        tools: [
+          {
+            name: "Read",
+            input_schema: { type: "object", properties: { file_path: { type: "string" } } },
+          },
+        ],
+      },
+    });
+
+    expect(validateFunctionCallPairing(payload)).toBeUndefined();
+
+    const first = await run(
+      prepareReplayPayload(ledger, MODEL, execRequest(payload), claudeOptions, payload),
+    );
+
+    const { sessionKey } = first.scope;
+    expect(sessionKey).not.toBe("");
+
+    // A cached call id the client's response does not carry: the replay breaks the call/response pairing.
+    await run(
+      ledger.replaceIfUnchanged(MODEL, sessionKey, UNLOADED_SNAPSHOT, [
+        {
+          type: "function_call_part",
+          contentIndex: 0,
+          partIndex: 0,
+          targetOccurrence: 0,
+          call_id: "call_native_1",
+          name: "Read",
+          args,
+          thoughtSignature: SIG,
+        },
+      ]),
+    );
+
+    const degraded = await run(
+      prepareReplayPayload(ledger, MODEL, execRequest(payload), claudeOptions, payload),
+    );
+
+    expect(degraded.payload).toEqual(payload);
+    expect((await run(ledger.peek(MODEL, sessionKey))).items).toBeUndefined();
+
+    // The snapshot is the tombstone's, so this turn's commit passes the guard.
+    expect(
+      await run(
+        ledger.replaceIfUnchanged(MODEL, sessionKey, degraded.scope.snapshot, [
+          { type: "thought_signature", thoughtSignature: SIG2 },
+        ]),
+      ),
+    ).toBe(true);
+    expect((await run(ledger.peek(MODEL, sessionKey))).items).toHaveLength(1);
+
+    // A concurrent writer after the invalidation still wins over a stale snapshot.
+    expect(
+      await run(
+        ledger.replaceIfUnchanged(MODEL, sessionKey, degraded.scope.snapshot, [
+          { type: "thought_signature", thoughtSignature: SIG },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
   it("only touches Gemini-family models and clears the entry after an upstream signature error", async () => {
     const ledger = makeInMemoryReplayLedger(() => 5_000_000);
     const claude = antigravityRequest([user("x")]);

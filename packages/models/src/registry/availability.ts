@@ -5,6 +5,10 @@
  * (`cooldownReason`). The Go registry stores the projection the conductor pushes after every result; on Workers the
  * projection is derived on demand from the credential state the ControlPlane keeps.
  */
+import {
+  availabilityBlock,
+  hasUnauthorizedFailure,
+} from "../credentials/selection/availability.ts";
 import { canonicalModelKey, findModelState } from "../credentials/selection/model-name.ts";
 import type { ModelInfo } from "./model-info.ts";
 import type { ModelSource } from "./source.ts";
@@ -32,7 +36,7 @@ type Quota = ModelSource["state"]["quota"];
 /** `cooldownReason`. */
 export const cooldownReason = (
   statusMessage: string | undefined,
-  quota: Quota,
+  quota: Pick<Quota, "reason">,
   lastError: ModelSource["state"]["lastError"],
 ): string => {
   const reason = (quota.reason ?? "").trim();
@@ -51,6 +55,10 @@ export const cooldownReason = (
 /**
  * Projection of one registered model of `source` at `now` (epoch ms). The state is looked up under the model id and,
  * for aliased/prefixed models, under the upstream id the selection layer keys cooldowns by.
+ *
+ * The cooldown checks are the selector's (`availabilityBlock`, CLIProxyAPI 69ed202a): a model whose bounded cooldown
+ * has passed is listed again although no result has cleared its flags yet; a flag without any deadline, a disabled
+ * credential or model and a terminal 401 stay suspended until something changes them.
  */
 export const projectModel = (
   source: ModelSource,
@@ -67,25 +75,28 @@ export const projectModel = (
     .map((key) => findModelState(state.modelStates, key))
     .find((candidate) => candidate !== undefined);
 
-  let suspended = source.disabled || state.status === "disabled";
+  const credentialDisabled = source.disabled || state.status === "disabled";
+  const modelDisabled = modelState?.status === "disabled";
+  const terminalUnauthorized = hasUnauthorizedFailure(state);
 
+  let suspended = credentialDisabled || modelDisabled || terminalUnauthorized;
+
+  // A credential-wide quota without a recovery time blocks until it is cleared.
   if (
     state.quota.exceeded &&
     state.quota.reason === "credential_quota" &&
-    state.quota.nextRecoverAt > now
+    (state.quota.nextRecoverAt === 0 || state.quota.nextRecoverAt > now)
   )
     suspended = true;
+  let modelSuspended = false;
   let quotaExceeded = false;
-  let suspendReason = "";
   let quotaSince: number | undefined;
 
   if (modelState !== undefined) {
-    if (
-      modelState.status === "disabled" ||
-      modelState.unavailable ||
-      modelState.nextRetryAfter > now
-    )
+    if (!modelDisabled && availabilityBlock(modelState, now).blocked) {
       suspended = true;
+      modelSuspended = true;
+    }
 
     if (
       modelState.quota.exceeded &&
@@ -95,24 +106,28 @@ export const projectModel = (
       quotaSince =
         modelState.quota.observedAt ?? (modelState.updatedAt > 0 ? modelState.updatedAt : now);
     }
+  }
 
-    if (suspended)
+  // Without model states, scheduling falls back to the credential-wide cooldown, and the projection agrees with it.
+  if (Object.keys(state.modelStates).length === 0 && availabilityBlock(state, now).blocked)
+    suspended = true;
+
+  let suspendReason = "";
+
+  if (suspended) {
+    if (credentialDisabled || modelDisabled) suspendReason = "disabled";
+    else if (terminalUnauthorized)
+      suspendReason = cooldownReason(state.statusMessage, {}, state.lastError) || "unauthorized";
+    else if (modelSuspended && modelState !== undefined)
       suspendReason = cooldownReason(
         modelState.statusMessage,
         modelState.quota,
         modelState.lastError,
       );
+
+    if (suspendReason === "")
+      suspendReason = cooldownReason(state.statusMessage, state.quota, state.lastError);
   }
-
-  if (
-    Object.keys(state.modelStates).length === 0 &&
-    state.unavailable &&
-    state.nextRetryAfter > now
-  )
-    suspended = true;
-
-  if (suspended && suspendReason === "")
-    suspendReason = cooldownReason(state.statusMessage, state.quota, state.lastError);
 
   return {
     suspended,

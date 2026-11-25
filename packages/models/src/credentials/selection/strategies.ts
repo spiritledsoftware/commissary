@@ -5,6 +5,7 @@
  * `WeightedRoundRobinSelector.Pick`, `smoothWeightedState`, `pickSmoothWeightedAuth`). Docs: credentials.md §6.4.
  * State lives in memory only (losing it merely perturbs fairness), keyed by `<providers>:<canonical model>`.
  */
+import { CreditRetention } from "./credit-retention.ts";
 
 export interface Weighted {
   readonly id: string;
@@ -12,8 +13,6 @@ export interface Weighted {
 }
 
 const DEFAULT_MAX_KEYS = 4096;
-
-export const MAX_SMOOTH_STATE_ENTRIES = 1024;
 
 const MAX = Number.MAX_SAFE_INTEGER;
 
@@ -44,14 +43,18 @@ const saturatingAdd = (value: number, delta: number): number => {
   return value + delta;
 };
 
-/** Accumulated credits of smooth weighted round-robin for one key. */
+/**
+ * Accumulated credits of smooth weighted round-robin for one key, shared by every subset of its candidates (retry
+ * exclusions, cooldowns, affinity); {@link CreditRetention} bounds what it keeps.
+ */
 export class SmoothWeightedState {
   current = new Map<string, number>();
   weights = new Map<string, number>();
+  readonly #retention = new CreditRetention();
 
   /**
-   * Syncs configured weights without discarding credits. Credits reset only when a credential's configured weight
-   * changes, never when the candidate set shrinks (retry exclusions, cooldowns, affinity).
+   * Syncs configured weights without discarding credits: all credits reset when a credential's configured weight
+   * changes, never when the candidate set shrinks.
    */
   prepare(weights: ReadonlyMap<string, number>): void {
     if (this.weights.size > 0) {
@@ -67,14 +70,14 @@ export class SmoothWeightedState {
 
     for (const [id, weight] of weights) this.weights.set(id, weight);
 
-    if (
-      this.current.size > MAX_SMOOTH_STATE_ENTRIES ||
-      this.weights.size > MAX_SMOOTH_STATE_ENTRIES
-    ) {
-      for (const id of this.current.keys()) if (!weights.has(id)) this.current.delete(id);
+    for (const id of this.#retention.observe(weights, this.weights.size)) this.forget(id);
+  }
 
-      for (const id of this.weights.keys()) if (!weights.has(id)) this.weights.delete(id);
-    }
+  /** Drops everything kept about one credential (it was removed: a credential added again starts at zero). */
+  forget(id: string): void {
+    this.current.delete(id);
+    this.weights.delete(id);
+    this.#retention.forget(id);
   }
 }
 
@@ -155,6 +158,11 @@ export class RotationState {
     state.prepare(weights);
 
     return pickSmoothWeighted(candidates, state.current);
+  }
+
+  /** A credential was removed: every key forgets its credit, so one added again under the same id starts at zero. */
+  forget(id: string): void {
+    for (const state of this.#weighted.values()) state.forget(id);
   }
 
   /** Test hook: number of tracked cursor keys. */

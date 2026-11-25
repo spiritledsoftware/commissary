@@ -13,7 +13,7 @@ import { statusText } from "../../../http/status.ts";
 import { openAIErrorBody } from "../../../http/errors.ts";
 import { canonicalName } from "../../../credentials/cooldown/quota-signals.ts";
 import { isRequestInvalid } from "../../../executor/classify.ts";
-import { ExecutionError } from "../../../executor/errors.ts";
+import { ExecutionError, isModelCooldown } from "../../../executor/errors.ts";
 import { isReplayRequired } from "../../../executor/websocket/session.ts";
 import {
   asInt,
@@ -106,9 +106,9 @@ const QUOTA_PATHS = [
 
 /** `isResponsesWebsocketQuotaOrCooldownError`: a quota (`usage_limit_reached`) or model cooldown (`model_cooldown`) failure. */
 export const isQuotaOrCooldownError = (
-  error: Pick<ExecutionError, "message" | "code">,
+  error: Pick<ExecutionError, "message" | "code" | "modelCooldown">,
 ): boolean => {
-  if (error.code?.trim().toLowerCase() === "model_cooldown") return true;
+  if (isModelCooldown(error)) return true;
   const body = tryParseJson(error.message.trim());
 
   return (

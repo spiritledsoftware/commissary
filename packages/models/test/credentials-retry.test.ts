@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 import type { CredentialPool } from "../src/credentials/pool.ts";
+import { emptyState } from "../src/credentials/model.ts";
 import { makePool, MemoryPoolStore, TestNow } from "./support/pool.ts";
 
 const group = (name: string, extra = "", model = "{ name: m }") => `
@@ -252,10 +253,12 @@ describe("planRetry (shouldRetryAfterErrorWithAttempted steps 3-5)", () => {
     expect(pool.planRetry({ ...query, maxWaitMs: 0 })).toEqual({
       retry: false,
       retryAfterMs: 120_000,
+      poolCooldownMs: 120_000,
     });
     expect(pool.planRetry({ ...query, maxWaitMs: 30_000 })).toEqual({
       retry: false,
       retryAfterMs: 120_000,
+      poolCooldownMs: 120_000,
     });
     expect(pool.planRetry({ ...query, maxWaitMs: 120_000 })).toEqual({
       retry: true,
@@ -293,6 +296,110 @@ describe("planRetry (shouldRetryAfterErrorWithAttempted steps 3-5)", () => {
       retry: true,
       waitMs: 0,
     });
+  });
+});
+
+describe("the pool's cooldown on a terminal 429 (CLIProxyAPI 4da9f685)", () => {
+  const query = (extra: Record<string, unknown> = {}) => ({
+    providers: providers(["a", "b"]),
+    model: "m",
+    round: 0,
+    requestRetry: 0,
+    status: 429,
+    maxWaitMs: 0,
+    ...extra,
+  });
+
+  const fail = (pool: CredentialPool, name: string, httpStatus: number, retryAfterMs: number) => {
+    const picked = ok(
+      pool.pick({
+        providers: providers([name]),
+        model: "m",
+      }),
+    );
+
+    pool.report(picked.lease, {
+      success: false,
+      httpStatus,
+      error: { message: "x", retryable: true, httpStatus },
+      retryAfterMs,
+    });
+
+    return picked.credential.id;
+  };
+
+  it("reports the earliest recovery of every blocked candidate, not the last attempt's", async () => {
+    const { pool } = await makePool(config(group("a") + group("b")));
+    const a = fail(pool, "a", 429, 95 * 60_000);
+    const b = fail(pool, "b", 429, 3 * 3_600_000);
+    const plan = pool.planRetry(query({ attempted: [a, b] }));
+    expect(plan).toMatchObject({ retry: false, poolCooldownMs: 95 * 60_000 });
+
+    // The retry budget limits this request's rounds, not when the pool recovers.
+    expect(pool.planRetry(query({ attempted: [a, b], round: 3 }))).toEqual({
+      retry: false,
+      poolCooldownMs: 95 * 60_000,
+    });
+  });
+
+  it("counts a short non-quota block toward the earliest recovery", async () => {
+    const { pool } = await makePool(config(group("a") + group("b")));
+    fail(pool, "a", 429, 3 * 3_600_000);
+    fail(pool, "b", 503, 45_000);
+    expect(pool.planRetry(query({ round: 3 }))).toEqual({ retry: false, poolCooldownMs: 45_000 });
+  });
+
+  it("has none while a candidate is available, for another status, or without a timed cooldown", async () => {
+    const { pool } = await makePool(config(group("a") + group("b")));
+    fail(pool, "a", 429, 3_600_000);
+    expect(pool.planRetry(query({ round: 3 }))).toEqual({ retry: false });
+
+    fail(pool, "b", 429, 3_600_000);
+    expect(pool.planRetry(query({ round: 3, status: 503 }))).toEqual({ retry: false });
+
+    const { pool: other } = await makePool(config(group("a")));
+    fail(other, "a", 503, 45_000);
+    expect(other.planRetry(query({ round: 3 }))).toEqual({ retry: false });
+  });
+});
+
+describe("the pool's cooldown with a zero-weight candidate (IgnoresZeroWeightCandidateUnderWeightedSelector)", () => {
+  const zeroB = `
+    - name: b
+      base-url: https://b.example/v1
+      models: [{ name: m }]
+      keys: [{ api-key: key-b, weight: 0 }]`;
+
+  const cooled = async (strategy: string) => {
+    const { pool } = await makePool(
+      config(group("a") + zeroB, `routing:\n  strategy: ${strategy}\n`),
+    );
+
+    const picked = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+    pool.report(picked.lease, {
+      success: false,
+      httpStatus: 429,
+      error: { message: "q", retryable: true, httpStatus: 429 },
+      retryAfterMs: 600_000,
+    });
+
+    return pool.planRetry({
+      providers: providers(["a", "b"]),
+      model: "m",
+      round: 0,
+      requestRetry: 0,
+      status: 429,
+      maxWaitMs: 0,
+      poolOnly: true,
+    });
+  };
+
+  it("ignores the zero-weight candidate under the weighted selector", async () => {
+    expect(await cooled("weighted-round-robin")).toEqual({ retry: false, poolCooldownMs: 600_000 });
+  });
+
+  it("counts it as available under round-robin, which picks it", async () => {
+    expect(await cooled("round-robin")).toEqual({ retry: false });
   });
 });
 
@@ -539,5 +646,66 @@ describe("in-flight successes do not clear a newer cooldown (CLIProxyAPI 35af74f
     const restored = ok(restarted.pool.pick({ ...request, ignoreCooldown: true }));
     restarted.pool.report(restored.lease, { success: true });
     expect(restarted.pool.pick(request).ok).toBe(true);
+  });
+});
+
+describe("weighted credits across the credential lifecycle (CLIProxyAPI 9d7d012b)", () => {
+  const file = (token: string, weight: number) => ({
+    type: "claude",
+    email: "x@example.com",
+    access_token: token,
+    weight,
+  });
+
+  // Weights 3:1 pick a, a, b, a. After two picks the credits are a = -2, b = 2: a kept credit picks b next, a reset one
+  // (b = 0) picks a.
+  const third = async (between: (pool: CredentialPool) => void) => {
+    const { pool } = await makePool("routing:\n  strategy: weighted-round-robin\n");
+    pool.upsert("claude-a.json", file("ta", 3), { mergeExisting: false });
+    pool.upsert("claude-b.json", file("tb", 1), { mergeExisting: false });
+
+    const pick = () =>
+      ok(pool.pick({ providers: ["claude"], model: "claude-sonnet-4-5" })).credential.id;
+
+    expect([pick(), pick()]).toEqual(["claude-a.json", "claude-a.json"]);
+    between(pool);
+
+    return pick();
+  };
+
+  it("a token refresh keeps the credential's credit", async () => {
+    const id = await third((pool) => {
+      pool.commitRefresh("claude-b.json", { metadata: file("tb-2", 1) });
+    });
+
+    expect(id).toBe("claude-b.json");
+  });
+
+  it("a remove-then-add starts the credential's credit at zero", async () => {
+    const id = await third((pool) => {
+      pool.remove("claude-b.json");
+      pool.upsert("claude-b.json", file("tb", 1), { mergeExisting: false });
+    });
+
+    expect(id).toBe("claude-a.json");
+  });
+});
+
+describe("forced cooldowns stored without their deadline", () => {
+  it("are seeded when the pool loads its states", async () => {
+    const store = new MemoryPoolStore();
+    const clock = new TestNow();
+    store.upsert("claude-a.json", "claude", { type: "claude", access_token: "t" });
+
+    store.states.set("claude-a.json", {
+      ...emptyState(),
+      status: "error",
+      unavailable: true,
+      nextRetryAfter: clock.value + 3_600_000,
+      lastError: { code: "force_cooldown", message: "stop", retryable: false, httpStatus: 429 },
+    });
+
+    const { pool } = await makePool("", { store, clock });
+    expect(pool.entry("claude-a.json")?.state.forcedUntil).toBe(clock.value + 3_600_000);
   });
 });

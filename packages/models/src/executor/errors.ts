@@ -49,6 +49,11 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>()("Execut
   streamHeaders: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Safe headers for the client regardless of passthrough (e.g. `Retry-After` of cooldown errors). */
   safeHeaders: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * A terminal upstream 429 while the whole pool cools (Go `poolCooldownTerminalError.IsModelCooldown`): the body is
+   * the upstream's, and the client is told when the pool recovers as for a `model_cooldown`.
+   */
+  modelCooldown: Schema.optional(Schema.Boolean),
   /** `upstream_websocket_lost` only: the other operations of the downstream socket that lose their outcome with it. */
   abandoned: Schema.optional(Schema.Array(AbandonedOperation)),
   cause: Schema.optional(Schema.Defect()),
@@ -84,6 +89,16 @@ export const notImplemented = (message: string): ExecutionError =>
 export const headersRecord = (headers: Headers): Record<string, string> =>
   Object.fromEntries(headers.entries());
 
+/**
+ * A model cooldown: the selection's own `model_cooldown` failure, or a terminal upstream 429 the conductor marked with
+ * the pool's reset (`modelCooldown`).
+ */
+export const isModelCooldown = (error: {
+  readonly code?: string | undefined;
+  readonly modelCooldown?: boolean | undefined;
+}): boolean =>
+  error.modelCooldown === true || error.code?.trim().toLowerCase() === "model_cooldown";
+
 /** Copy of `error` with some fields replaced (an `Error` subclass does not survive object spread). */
 export const withErrorFields = (
   error: ExecutionError,
@@ -99,6 +114,7 @@ export const withErrorFields = (
     headers: Record<string, string>;
     streamHeaders: Record<string, string>;
     safeHeaders: Record<string, string>;
+    modelCooldown: boolean;
     abandoned: ReadonlyArray<AbandonedOperation>;
     cause: unknown;
   }>,
@@ -115,6 +131,7 @@ export const withErrorFields = (
     ...(error.headers === undefined ? {} : { headers: error.headers }),
     ...(error.streamHeaders === undefined ? {} : { streamHeaders: error.streamHeaders }),
     ...(error.safeHeaders === undefined ? {} : { safeHeaders: error.safeHeaders }),
+    ...(error.modelCooldown === undefined ? {} : { modelCooldown: error.modelCooldown }),
     ...(error.abandoned === undefined ? {} : { abandoned: error.abandoned }),
     ...(error.cause === undefined ? {} : { cause: error.cause }),
     ...fields,

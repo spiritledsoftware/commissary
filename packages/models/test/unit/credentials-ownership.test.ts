@@ -67,6 +67,7 @@ describe("retry planning with private credentials", () => {
       routing: { ...defaultSettings, knownPrefixes: new Set() },
       reach: ALLOW_ALL,
       coolingDisabled: () => false,
+      strategy: "round-robin",
       now: NOW,
     });
 
