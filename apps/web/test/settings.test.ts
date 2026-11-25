@@ -236,7 +236,12 @@ describe("inputs and checks", () => {
     );
     expect(parseInput(words, " Claude Code =>  Claude \n\nsecret =>\nproxy")).toEqual({
       ok: true,
-      value: { "Claude Code": " Claude ", secret: "", proxy: "" },
+      value: { "Claude Code": "Claude", secret: "", proxy: "" },
+    });
+    // The first `=>` splits the rule, whatever the spacing.
+    expect(parseInput(words, "foo=>bar\nx => y => z")).toEqual({
+      ok: true,
+      value: { foo: "bar", x: "y => z" },
     });
     expect(parseInput(words, "a => 1\na => 2").ok).toBe(false);
     expect(parseInput(words, " => x").ok).toBe(false);
@@ -245,24 +250,28 @@ describe("inputs and checks", () => {
 
     const stored = [
       { pattern: "(?m)^RFC 2119[^\\n]*\\n?" },
-      { pattern: "a(\\d)=>b", replacement: "$1" },
+      { pattern: "a(\\d)=\\x3Eb", replacement: "$1" },
     ];
 
-    expect(inputOf(patterns, stored)).toBe("(?m)^RFC 2119[^\\n]*\\n? =>\na(\\d)=>b => $1");
+    expect(inputOf(patterns, stored)).toBe("(?m)^RFC 2119[^\\n]*\\n? =>\na(\\d)=\\x3Eb => $1");
     expect(parseInput(patterns, inputOf(patterns, stored))).toEqual({
       ok: true,
       value: [
         { pattern: "(?m)^RFC 2119[^\\n]*\\n?", replacement: "" },
-        { pattern: "a(\\d)=>b", replacement: "$1" },
+        { pattern: "a(\\d)=\\x3Eb", replacement: "$1" },
       ],
     });
     // A rule without a replacement deletes, like an empty one: shown again, it is no change.
     expect(
       sameValue(patterns, stored, [
         { pattern: "(?m)^RFC 2119[^\\n]*\\n?", replacement: "" },
-        { pattern: "a(\\d)=>b", replacement: "$1" },
+        { pattern: "a(\\d)=\\x3Eb", replacement: "$1" },
       ]),
     ).toBe(true);
+    expect(parseInput(patterns, "foo=>bar")).toEqual({
+      ok: true,
+      value: [{ pattern: "foo", replacement: "bar" }],
+    });
     expect(sameValue(words, { a: "1", b: "2" }, { b: "2", a: "1" })).toBe(true);
     expect(sameValue(words, { a: "1" }, { a: "2" })).toBe(false);
   });

@@ -51,7 +51,7 @@ export type SectionId =
  * How a value is edited: `bool` a checkbox; `tristate` a checkbox over an unset Go pointer; `int` whole numbers ≥ 0;
  * `duration` a Go duration > 0; `bootstrap` a duration, whole seconds or 0 for unlimited; `text` trimmed text;
  * `model` a `gpt-` model or empty; `timezone` an IANA zone, `Local` or empty; `words` one entry
- * per line; `replacements` and `patterns` one `target => replacement` rule per line; `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
+ * per line; `replacements` and `patterns` one `target => replacement` rule per line (split at the first `=>`); `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
  */
 export type FieldKind =
   | "bool"
@@ -281,15 +281,18 @@ export const valueAt = (values: SettingsValues, path: string): SettingValue | un
     node = node[key];
   }
 
-  if (Array.isArray(node)) {
-    const rules = node.filter(isPatternRule);
-
-    return rules.length > 0
-      ? rules
-      : node.filter((entry): entry is string => typeof entry === "string");
+  // The structured leaves decode by the kind of their field.
+  switch (fieldSpec(path)?.kind) {
+    case "patterns":
+      return Array.isArray(node) ? node.filter(isPatternRule) : undefined;
+    case "replacements":
+      return isStringMap(node) ? node : undefined;
+    default:
+      break;
   }
 
-  if (isStringMap(node)) return node;
+  if (Array.isArray(node))
+    return node.filter((entry): entry is string => typeof entry === "string");
 
   return typeof node === "string" ||
     typeof node === "number" ||
@@ -325,20 +328,22 @@ const patternRules = (value: SettingValue | undefined): ReadonlyArray<PatternRul
   Array.isArray(value) ? value.filter(isPatternRule) : [];
 
 /** Between a rule's target and its replacement. */
-const ARROW = " =>";
+const ARROW = "=>";
 
 /** A rule as a line: `target => replacement`, or `target =>` when the replacement deletes the match. */
 const ruleLine = (target: string, replacement: string): string =>
-  replacement === "" ? `${target}${ARROW}` : `${target}${ARROW} ${replacement}`;
+  replacement === "" ? `${target} ${ARROW}` : `${target} ${ARROW} ${replacement}`;
 
-/** A rule line's target (trimmed) and replacement (as written after `=> `); a line without `=>` deletes. */
+/**
+ * A rule line split at its first `=>`, both sides trimmed: so a target or pattern cannot hold `=>`, and a replacement
+ * keeps no surrounding space. A line without `=>` deletes what it names.
+ */
 const splitRule = (line: string): readonly [target: string, replacement: string] => {
   const arrow = line.indexOf(ARROW);
 
   if (arrow < 0) return [line.trim(), ""];
-  const rest = line.slice(arrow + ARROW.length);
 
-  return [line.slice(0, arrow).trim(), rest.startsWith(" ") ? rest.slice(1) : rest];
+  return [line.slice(0, arrow).trim(), line.slice(arrow + ARROW.length).trim()];
 };
 
 const ruleLines = (text: string): ReadonlyArray<readonly [string, string]> =>

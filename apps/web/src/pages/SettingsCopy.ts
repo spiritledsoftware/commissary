@@ -284,11 +284,11 @@ const COPY = {
   },
   "oauth.providers.antigravity.sensitive-words-replace": {
     label: "Word replacements",
-    hint: "One per line: word => replacement, matched in any case, longest first. Nothing after => deletes the word. In the system instruction only.",
+    hint: "One per line: word => replacement, matched in any case, longest first; a word cannot contain =>. Nothing after => deletes the word. In the system instruction only; spaces around either side are dropped.",
   },
   "oauth.providers.antigravity.sensitive-patterns-replace": {
     label: "Pattern replacements",
-    hint: "One per line, in order: RE2 pattern => replacement ($1 for a group). Nothing after => deletes the match, which Antigravity takes better than obfuscation. Applied before the words.",
+    hint: "One per line, in order: RE2 pattern => replacement ($1 for a group); a pattern cannot contain => (write =\\x3E). Nothing after => deletes the match, which Antigravity takes better than obfuscation. Applied before the words; a replacement holds no line break.",
   },
   "oauth.providers.antigravity.antigravity-credits": flag(
     "Use credits once the free Claude quota runs out",
@@ -306,11 +306,11 @@ const COPY = {
   },
   "oauth.providers.devin.sensitive-words-replace": {
     label: "Word replacements",
-    hint: "One per line: word => replacement, matched in any case, longest first. Nothing after => deletes the word. In the system prompt only.",
+    hint: "One per line: word => replacement, matched in any case, longest first; a word cannot contain =>. Nothing after => deletes the word. In the system prompt only; spaces around either side are dropped.",
   },
   "oauth.providers.devin.sensitive-patterns-replace": {
     label: "Pattern replacements",
-    hint: "One per line, in order: RE2 pattern => replacement ($1 for a group). Nothing after => deletes the match. Applied before the words.",
+    hint: "One per line, in order: RE2 pattern => replacement ($1 for a group); a pattern cannot contain => (write =\\x3E). Nothing after => deletes the match. Applied before the words; a replacement holds no line break.",
   },
 
   "models.catalog": { label: "Models", options: CATALOG_OPTIONS, inline: true },
