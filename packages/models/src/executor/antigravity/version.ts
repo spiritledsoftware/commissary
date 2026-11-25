@@ -4,7 +4,8 @@
  * Go source: internal/misc/antigravity_version.go. Cloud Code rejects newer models for clients older than 2.23.0, so the
  * fallback must stay >= 2.23.0. The latest version comes from the Hub updater manifest: the cron task
  * (`models/scheduled-tasks.ts`) writes it to KV `CACHE` (`antigravity:version`), executors read it through a short
- * per-isolate cache and fall back to `2.29.0` when the entry is missing or older than the 6 h TTL.
+ * per-isolate cache and fall back to `2.35.1` when the entry is missing or older than the 6 h TTL. A release without a
+ * known changelist is pinned to the highest mapped release (CLIProxyAPI f2b00303, 093c7efa, 2d50f315).
  */
 import { Effect } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -13,18 +14,25 @@ import { type DeploymentKv, deploymentKey } from "@commissary/core";
 import { ModelsEnv } from "../../env.ts";
 import { deploymentKvOf } from "../../kv.ts";
 
-export const ANTIGRAVITY_FALLBACK_VERSION = "2.29.0";
+export const ANTIGRAVITY_FALLBACK_VERSION = "2.35.1";
 
 export const ANTIGRAVITY_HUB_METADATA = "os_type=darwin; arch=arm64";
 
 /**
  * `antigravityHubChangelists`: changelists belong to specific Hub releases. Update the fallback version and its entry
- * together; unknown releases keep their online version without claiming another build's changelist.
+ * together; an unmapped release is pinned to the highest mapped one, so a user agent never omits `cl=` or pairs a
+ * newer version with an older build's changelist.
  */
 export const ANTIGRAVITY_HUB_CHANGELISTS: ReadonlyMap<string, string> = new Map([
   ["2.23.0", "998057262"],
   ["2.24.0", "1000335682"],
   ["2.29.0", "1013060670"],
+  ["2.32.1", "1021296516"],
+  ["2.32.2", "1022991777"],
+  ["2.33.0", "1023160026"],
+  ["2.34.0", "1026637980"],
+  ["2.35.0", "1028447422"],
+  ["2.35.1", "1029194470"],
 ]);
 
 export const ANTIGRAVITY_VERSION_TTL_MS = 6 * 60 * 60 * 1000;
@@ -61,9 +69,55 @@ export const parseManifestVersion = (manifest: string): string | undefined => {
   return undefined;
 };
 
-export const antigravityUserAgent = (version: string): string => {
-  const changelist = ANTIGRAVITY_HUB_CHANGELISTS.get(version);
-  const metadata = `aidev_client; ${ANTIGRAVITY_HUB_METADATA}${changelist === undefined ? "" : `; cl=${changelist}`}`;
+const semver = (version: string): readonly [number, number, number] | undefined => {
+  if (!isValidAntigravityVersion(version)) return undefined;
+  const [major = 0, minor = 0, patch = 0] = version.split(".").map(Number);
+
+  return [major, minor, patch];
+};
+
+const compareSemver = (
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number => (a[0] - b[0] !== 0 ? a[0] - b[0] : a[1] - b[1] !== 0 ? a[1] - b[1] : a[2] - b[2]);
+
+/** A Hub release and the changelist its user agent carries. */
+export interface HubRelease {
+  readonly version: string;
+  readonly changelist: string;
+}
+
+/**
+ * `resolveAntigravityHubVersionAndChangelist`: a mapped release keeps its own changelist; any other is pinned to the
+ * highest mapped release and its changelist.
+ */
+export const resolveAntigravityHubVersion = (version: string): HubRelease => {
+  const own = ANTIGRAVITY_HUB_CHANGELISTS.get(version);
+
+  if (own !== undefined && own !== "") return { version, changelist: own };
+
+  let best: (HubRelease & { readonly parsed: readonly [number, number, number] }) | undefined;
+
+  for (const [candidate, changelist] of ANTIGRAVITY_HUB_CHANGELISTS) {
+    const parsed = semver(candidate);
+
+    if (changelist === "" || parsed === undefined) continue;
+
+    if (best === undefined || compareSemver(parsed, best.parsed) > 0)
+      best = { version: candidate, changelist, parsed };
+  }
+
+  return best === undefined
+    ? {
+        version: ANTIGRAVITY_FALLBACK_VERSION,
+        changelist: ANTIGRAVITY_HUB_CHANGELISTS.get(ANTIGRAVITY_FALLBACK_VERSION) ?? "",
+      }
+    : { version: best.version, changelist: best.changelist };
+};
+
+export const antigravityUserAgent = (latest: string): string => {
+  const { version, changelist } = resolveAntigravityHubVersion(latest);
+  const metadata = `aidev_client; ${ANTIGRAVITY_HUB_METADATA}${changelist === "" ? "" : `; cl=${changelist}`}`;
 
   return `antigravity/hub/${version} (${metadata})`;
 };
@@ -91,20 +145,21 @@ export const antigravityRequestUserAgent = (configured: string, version: string)
   return ua;
 };
 
-/** `AntigravityVersionFromUserAgent`. */
+/** `AntigravityVersionFromUserAgent`: without a version of its own, the effective (pinned) Hub release. */
 export const antigravityVersionFromUserAgent = (configured: string, version: string): string => {
   const base = antigravityRequestUserAgent(configured, version);
   const lower = base.toLowerCase();
+  const effective = resolveAntigravityHubVersion(version).version;
 
   for (const prefix of ["antigravity/hub/", "antigravity/"]) {
     if (lower.startsWith(prefix)) {
       const rest = base.slice(prefix.length).split(/\s/)[0]?.trim() ?? "";
 
-      return rest === "" ? version : rest;
+      return rest === "" ? effective : rest;
     }
   }
 
-  return version;
+  return effective;
 };
 
 interface StoredVersion {
@@ -141,7 +196,7 @@ export const resetAntigravityVersionCache = (): void => {
   readCache = undefined;
 };
 
-/** The version executors put into user agents (KV read-through, fallback `2.29.0`). */
+/** The version executors put into user agents (KV read-through, fallback {@link ANTIGRAVITY_FALLBACK_VERSION}). */
 export const currentAntigravityVersion = (
   kv: DeploymentKv | undefined,
   now: number,

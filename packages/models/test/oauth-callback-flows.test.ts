@@ -687,7 +687,7 @@ describe("antigravity login", () => {
       expect(h.requests[1]?.headers.authorization).toBe("Bearer ya29.at");
       expect(h.requests[2]?.json()).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
       expect(h.requests[2]?.headers["user-agent"]).toBe(
-        "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
+        "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)",
       );
       expect(h.requests[2]?.headers.accept).toBeUndefined();
       const { name, file } = onlyFile(h);
@@ -763,7 +763,7 @@ describe("antigravity login", () => {
         const onboard = h.requests.find((request) => request.url.includes("onboardUser"));
         expect(onboard?.json()).toEqual({
           tier_id: "standard-tier",
-          metadata: { ide_type: "ANTIGRAVITY", ide_version: "2.29.0", ide_name: "antigravity" },
+          metadata: { ide_type: "ANTIGRAVITY", ide_version: "2.35.1", ide_name: "antigravity" },
         });
         expect(onboard?.headers["x-goog-api-client"]).toBe("gl-node/22.21.1");
         expect(onlyFile(h).file.project_id).toBe("proj-2");

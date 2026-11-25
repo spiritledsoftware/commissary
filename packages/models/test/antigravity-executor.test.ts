@@ -137,7 +137,7 @@ describe("antigravity executor: non-stream", () => {
     expect(call?.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent");
     expect(call?.headers["authorization"]).toBe("Bearer ya29.token");
     expect(call?.headers["user-agent"]).toBe(
-      "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
+      "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)",
     );
     expect(call?.headers["x-extra"]).toBe("yes");
     expect(call?.headers["accept"]).toBeUndefined();

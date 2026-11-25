@@ -67,6 +67,7 @@ import {
   ANTIGRAVITY_VERSION_KEY,
   antigravityRequestUserAgent,
   antigravityVersionFromUserAgent,
+  resolveAntigravityHubVersion,
   parseManifestVersion,
   refreshAntigravityVersion,
   resetAntigravityVersionCache,
@@ -1172,10 +1173,22 @@ describe("version", () => {
     expect(antigravityRequestUserAgent("", "2.29.0")).toBe(
       "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
     );
-    // Unknown releases keep their online version without claiming another build's changelist.
-    expect(antigravityRequestUserAgent("", "2.30.0")).toBe(
-      "antigravity/hub/2.30.0 (aidev_client; os_type=darwin; arch=arm64)",
+
+    // An unmapped release is pinned to the highest mapped release and its changelist (CLIProxyAPI f2b00303).
+    for (const unmapped of ["2.30.0", "2.36.0", "2.9.1"]) {
+      expect(antigravityRequestUserAgent("", unmapped)).toBe(
+        "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)",
+      );
+    }
+
+    expect(antigravityRequestUserAgent("", "2.35.0")).toBe(
+      "antigravity/hub/2.35.0 (aidev_client; os_type=darwin; arch=arm64; cl=1028447422)",
     );
+    expect(resolveAntigravityHubVersion("2.34.0")).toEqual({
+      version: "2.34.0",
+      changelist: "1026637980",
+    });
+    expect(ANTIGRAVITY_FALLBACK_VERSION).toBe("2.35.1");
     expect(
       antigravityRequestUserAgent(
         "antigravity/hub/2.1.0 linux/x64 google-api-nodejs-client/10.3.0",
@@ -1186,7 +1199,9 @@ describe("version", () => {
     expect(antigravityVersionFromUserAgent("antigravity/2.4.6 darwin/arm64", "2.9.1")).toBe(
       "2.4.6",
     );
-    expect(antigravityVersionFromUserAgent("custom/1", "2.9.1")).toBe("2.9.1");
+    // Without a version of its own, the effective (pinned) release.
+    expect(antigravityVersionFromUserAgent("custom/1", "2.9.1")).toBe("2.35.1");
+    expect(antigravityVersionFromUserAgent("custom/1", "2.33.0")).toBe("2.33.0");
   });
 
   it("stores the fetched version in KV and keeps the old value when the fetch fails", async () => {
