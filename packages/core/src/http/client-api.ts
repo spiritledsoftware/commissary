@@ -25,12 +25,13 @@ export const TOOLKIT_OAUTH_CLIENT_PATH = "/oauth/toolkits/client.json";
 /**
  * The client API's path prefixes. `/v1` also covers `/v1beta*` and `/v1internal`; `/chat/completions`, `/completions`
  * and `/responses` are the unprefixed aliases of the `/v1` routes (not in Go, see Models' handlers/openai/routes.ts);
- * `/mcp` is the MCP endpoint ({@link MCP_PATH}); the toolkits' CIMD document is {@link TOOLKIT_OAUTH_CLIENT_PATH}.
+ * `/muse-code` is the Muse Code CLI's relay (Models' handlers/meta/muse-code.ts); `/mcp` is the MCP endpoint ({@link MCP_PATH}); the toolkits' CIMD document is {@link TOOLKIT_OAUTH_CLIENT_PATH}.
  */
 export const CLIENT_API_PREFIXES = [
   "/v1",
   "/openai/v1",
   "/backend-api/codex",
+  "/muse-code",
   "/chat/completions",
   "/completions",
   "/responses",

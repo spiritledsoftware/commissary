@@ -2022,6 +2022,17 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   event fails the stream with a `stream_truncated` 502. OpenCode shares the SSE code but keeps neither (no Go counterpart).
 - **Meta `prompt_cache_retention`** (Go f77a3c10): a client's explicit non-empty string passes through, trimmed; none is
   injected (a `default` payload rule with `protocol: meta` opts into one), and other values are dropped.
+- **Muse Code relay** (`handlers/meta/muse-code.ts`; Go 7fd90c7a, `internal/client/musecode/relay.go`): the client API
+  relays `GET /muse-code/config`, `POST /muse-code/search` and `POST /muse-code/browser_open` (other paths and methods
+  are 404s) to the origin of a Meta credential's base URL, with the query minus `key`/`auth_token`, the allowlisted
+  request headers (`Accept`, `Content-Type`, `Traceparent`, `If-None-Match`, `X-Tbh-*`, `X-Meta-Ai-*`), the Muse identity
+  (the client's `X-Tbh-*` session when it sent one) and the credential's bearer token; the answer keeps only
+  `Content-Type`, `Cache-Control`, `ETag`, `Last-Modified` and `Retry-After`. A credential is picked through the usual
+  selection for any Meta model (sorted, as Go's `metaCandidateModels`), refreshed on a 401, and its result recorded
+  without a model, so a 401/402/403/429 or 5xx cools the whole credential down; other 4xx are answered as they come
+  (request-scoped rules still apply). Not ported: the `/muse-code/models` catalog (`models.go`) and Go's
+  `credentialRetryAfter` refinement of the cooldown. Relayed calls carry no model, so they don't count against
+  Commissary Cloud's free usage.
 - **Meta deviations from Go**: the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the

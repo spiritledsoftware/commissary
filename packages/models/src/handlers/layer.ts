@@ -25,6 +25,7 @@ import { ClaudeRoutes } from "./claude/routes.ts";
 import { GeminiRoutes } from "./gemini/routes.ts";
 import { ModelProviders } from "./model-providers.ts";
 import { AlphaSearchRoutes } from "./codex/alpha-search.ts";
+import { MuseCodeRoutes } from "./meta/muse-code.ts";
 import { ImagesRoutes } from "./openai/images.ts";
 import { SpeechRoutes } from "./openai/speech.ts";
 import { VideoRoutes } from "./openai/videos.ts";
@@ -62,6 +63,7 @@ export const ClientApiRoutes = Layer.mergeAll(
   ResponsesRoutes,
   ImagesRoutes,
   AlphaSearchRoutes,
+  MuseCodeRoutes,
   ClaudeRoutes,
   GeminiRoutes,
   VideoRoutes,
