@@ -56,6 +56,11 @@ import {
 } from "@commissary/translation/signature";
 import { makeKvSignatureStore, orgSignatureCache } from "../../signature/store.ts";
 import {
+  antigravitySignatureScope,
+  scopedSignatureCache,
+  scopedSignatureText,
+} from "./signature-scope.ts";
+import {
   thinkingTextsNeedingCachedSignatures,
   builtinTranslators,
   withModelInfoLookup,
@@ -208,6 +213,8 @@ interface Attempt {
   /** The deployment-wide KV entries (the client version). */
   readonly deploymentKv: DeploymentKv | undefined;
   readonly signatures: MemorySignatureCache;
+  /** The credential's scope within the org's signature cache (`signature-scope.ts`); `""` recovers nothing. */
+  readonly signatureScope: string;
   /** The request's org: the state, signatures and credential belong to it. */
   readonly org: OrgId;
   readonly waitUntil: ((promise: Promise<unknown>) => void) | undefined;
@@ -293,6 +300,11 @@ export const makeAntigravityExecutor = (
       kv: orgKvIfBound(env, org),
       deploymentKv: deploymentKvIfBound(env),
       signatures: orgSignatureCache(org),
+      signatureScope: antigravitySignatureScope(
+        context.credential.id,
+        context.credential.metadata,
+        project,
+      ),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
       accessToken,
@@ -307,9 +319,28 @@ export const makeAntigravityExecutor = (
   /** Runs one synchronous translator call with the attempt's signature cache, settings and model lookup. */
   const translating = <T>(attempt: Attempt, run: () => T): T =>
     withSignatureContext(
-      { cache: attempt.signatures, settings: signatureSettings(attempt.context.config) },
+      {
+        cache: scopedSignatureCache(attempt.signatures, attempt.signatureScope),
+        settings: signatureSettings(attempt.context.config),
+      },
       () => withModelInfoLookup(attempt.request.modelLookup, run),
     );
+
+  /** Loads the credential's signatures for `texts` from KV; an attempt without a scope loads none. */
+  const prefetchScopedSignatures = (
+    attempt: Attempt,
+    kv: OrgKv,
+    modelName: string,
+    texts: ReadonlyArray<string>,
+  ): Promise<void> =>
+    attempt.signatureScope === ""
+      ? Promise.resolve()
+      : prefetchSignatures(
+          attempt.signatures,
+          makeKvSignatureStore(kv),
+          modelName,
+          texts.map((text) => scopedSignatureText(attempt.signatureScope, text)),
+        );
 
   const persistSignatures = (attempt: Attempt): Effect.Effect<void> => {
     const store = attempt.kv === undefined ? undefined : makeKvSignatureStore(attempt.kv);
@@ -438,9 +469,7 @@ export const makeAntigravityExecutor = (
     const { kv } = attempt;
 
     if (texts.length > 0 && kv !== undefined) {
-      yield* Effect.promise(() =>
-        prefetchSignatures(attempt.signatures, makeKvSignatureStore(kv), baseModel, texts),
-      );
+      yield* Effect.promise(() => prefetchScopedSignatures(attempt, kv, baseModel, texts));
     }
 
     const translateWith = (body: Json, streamFlag: boolean) =>
@@ -1105,9 +1134,7 @@ export const makeAntigravityExecutor = (
     const { kv } = attempt;
 
     if (texts.length > 0 && kv !== undefined) {
-      yield* Effect.promise(() =>
-        prefetchSignatures(attempt.signatures, makeKvSignatureStore(kv), baseModel, texts),
-      );
+      yield* Effect.promise(() => prefetchScopedSignatures(attempt, kv, baseModel, texts));
     }
 
     const translated = translating(attempt, () =>

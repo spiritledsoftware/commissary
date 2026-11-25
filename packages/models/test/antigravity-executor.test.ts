@@ -3,6 +3,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Config } from "../src/config/schema.ts";
 import { resetMemoryAntigravityState } from "../src/executor/antigravity/state.ts";
+import {
+  antigravitySignatureScope,
+  scopedSignatureText,
+} from "../src/executor/antigravity/signature-scope.ts";
+import { orgSignatureCache } from "../src/signature/store.ts";
+import { GLOBAL_ORG } from "@commissary/core";
 import type { Json, JsonObject } from "@commissary/json";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import {
@@ -950,5 +956,53 @@ describe("antigravity executor: Vertex bare-Tink thought signatures", () => {
 
     expect(parts[0]?.["thoughtSignature"]).toBe(native);
     expect(parts[1]?.["thoughtSignature"]).toBe(native);
+  });
+});
+
+// CLIProxyAPI 85225381, 06225fcf: a thinking signature belongs to the credential whose upstream issued it.
+describe("antigravity executor: signature cache per credential", () => {
+  it("records a returned signature under the credential's scope, never the org-wide key", async () => {
+    resetMemoryAntigravityState();
+    const signature = `sig-${"a".repeat(60)}`;
+    const thinking = `plan-${crypto.randomUUID()}`;
+    const owner = unique("signature-owner");
+
+    const h = harness(
+      () =>
+        sse([
+          upstream([{ text: thinking, thought: true, thoughtSignature: signature }]),
+          upstream([{ text: "done" }]),
+        ]),
+      { credential: owner },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/messages",
+      postJson({
+        model: "claude-sonnet-4-5",
+        max_tokens: 100,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const cache = orgSignatureCache(GLOBAL_ORG);
+
+    const scope = (id: string) =>
+      antigravitySignatureScope(id, { access_token: "ya29.token" }, "proj-1");
+
+    expect(cache.has("claude-sonnet-4-5", scopedSignatureText(scope(owner.id), thinking))).toBe(
+      true,
+    );
+
+    expect(cache.has("claude-sonnet-4-5", thinking)).toBe(false);
+    expect(
+      cache.has("claude-sonnet-4-5", scopedSignatureText(scope("another-credential"), thinking)),
+    ).toBe(false);
   });
 });
