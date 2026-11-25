@@ -26,7 +26,8 @@ import {
 } from "@commissary/state";
 import type { CredentialSnapshot } from "../picker.ts";
 
-const STORE_NAME = "claude-advisor-owner";
+/** The SessionState store of advisor owners (the org suites write and wipe it). */
+export const ADVISOR_OWNER_STORE = "claude-advisor-owner";
 
 /** `ClaudeAdvisorOwnerTTL`, sliding. */
 const OWNER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -55,7 +56,7 @@ export interface AdvisorOwnerStore {
 }
 
 const addressOf = (scope: AdvisorOwnerScope): SessionAddress => ({
-  store: STORE_NAME,
+  store: ADVISOR_OWNER_STORE,
   scope: scope.callerScope,
   session: scope.provider,
 });
