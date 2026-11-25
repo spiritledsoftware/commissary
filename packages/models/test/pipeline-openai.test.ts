@@ -257,15 +257,15 @@ describe("POST /v1/chat/completions (non-stream)", () => {
       },
     });
 
-    const gzip = await p.call(
+    const brotli = await p.call(
       "/v1/chat/completions",
-      postJson("\u0001\u0002", { "content-encoding": "gzip" }),
+      postJson("\u0001\u0002", { "content-encoding": "br" }),
     );
 
-    expect(gzip.status).toBe(400);
-    expect(await gzip.json()).toEqual({
+    expect(brotli.status).toBe(400);
+    expect(await brotli.json()).toEqual({
       error: {
-        message: "Invalid request: unsupported request content encoding: gzip",
+        message: "Invalid request: unsupported request content encoding: br",
         type: "invalid_request_error",
       },
     });
