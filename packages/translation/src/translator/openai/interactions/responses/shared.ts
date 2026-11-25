@@ -17,6 +17,7 @@ import {
   unwrapResponsesCustomToolInput,
 } from "../../../common/responses-tools.ts";
 import { isDevinOpenAIReasoningSignature } from "../../../../signature/gpt.ts";
+import { DevinSignatureType } from "../../../../signature/devin-signature-type.ts";
 import { isRecognizedReasoningSignature } from "../../../../signature/grok.ts";
 import { firstNonEmpty, jsonStringValue } from "../chat-completions/shared.ts";
 
@@ -292,7 +293,7 @@ export const interactionsTypedThoughtSignature = (step: Json | undefined): strin
 
   if (
     typeof raw === "string" &&
-    getStr(step, "signature_type") === "openai" &&
+    getStr(step, "signature_type") === DevinSignatureType.openai &&
     isDevinOpenAIReasoningSignature(raw)
   ) {
     return raw;

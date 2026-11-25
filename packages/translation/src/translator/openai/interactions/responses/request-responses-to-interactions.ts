@@ -36,6 +36,7 @@ import {
 } from "../../../common/responses-tools.ts";
 import { UserTurnDrops } from "../../../common/parts.ts";
 import type { TranslateRequestOptions } from "../../../registry.ts";
+import { DevinSignatureType } from "../../../../signature/devin-signature-type.ts";
 import { isGeminiVertexBareTinkSignature } from "../../../../signature/gemini.ts";
 import { isDevinOpenAIReasoningSignature } from "../../../../signature/gpt.ts";
 import {
@@ -196,9 +197,9 @@ const reasoningToInteractions = (item: Json, replayDevin: boolean): JsonObject |
 
   if (openAI) {
     signature = raw;
-    step["signature_type"] = "openai";
+    step["signature_type"] = DevinSignatureType.openai;
   } else if (gemini) {
-    step["signature_type"] = "gemini";
+    step["signature_type"] = DevinSignatureType.gemini;
   }
 
   step["signature"] = signature;

@@ -39,6 +39,8 @@ export {
   isValidGptReasoningSignature,
 } from "./gpt.ts";
 
+export { DevinSignatureType } from "./devin-signature-type.ts";
+
 export { inspectGrokEncryptedContent, isValidGrokEncryptedContent } from "./grok.ts";
 
 export { inspectMetaReasoningSignature, isValidMetaReasoningSignature } from "./meta.ts";
