@@ -4,7 +4,7 @@
  * (Go's key order and HTML escaping are not part of the contract); SSE framing and non-JSON text stay exact.
  */
 import { expect, it } from "vite-plus/test";
-import { isJsonObject, type Json } from "@commissary/json";
+import { isJsonObject, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
 import { expandEmbeddedJson } from "./structural.ts";
@@ -112,6 +112,81 @@ const itemIdPrefixes = (chunks: ReadonlyArray<string>): Set<string> =>
     chunks.flatMap((chunk) => [...chunk.matchAll(ITEM_ID_PREFIX)].map((match) => match[1] ?? "")),
   );
 
+/** The Responses events that close one output item, each carrying the item's `output_index`. */
+const ITEM_DONE_EVENTS = new Set([
+  "response.custom_tool_call_input.done",
+  "response.function_call_arguments.done",
+  "response.output_item.done",
+]);
+
+/**
+ * Cases whose final item-closing events Go emits in map iteration order (Responses -> Claude closes its open tool calls
+ * by ranging over a map), so two regenerations at the same commit can order them differently (docs/DEVELOPMENT.md,
+ * "Porting from a pinned commit"). Keyed by `from>to:name`.
+ */
+const UNORDERED_ITEM_DONE_CASES = new Set([
+  "openai-response>claude:stream: interleaved patch and function calls",
+]);
+
+/** The SSE event of a chunk as `event: <type>` plus its parsed `data:` object, if it has exactly that shape. */
+const parseSseEvent = (chunk: string): { type: string; data: JsonObject } | undefined => {
+  const match = /^event: ([^\n]+)\ndata: ([^\n]*)\n\n$/u.exec(chunk);
+
+  if (match === null) return undefined;
+  const data = tryParseJson(match[2] ?? "");
+
+  return isJsonObject(data) ? { type: match[1] ?? "", data } : undefined;
+};
+
+/**
+ * Puts each run of consecutive item-closing events in `output_index` order (stable within an item) and renumbers
+ * their `sequence_number`s in that order, so outputs that differ only in Go's map order compare equal. Chunks outside
+ * such runs are returned unchanged.
+ */
+const canonicalItemDoneOrder = (chunks: ReadonlyArray<string>): string[] => {
+  const out: string[] = [];
+  let run: { chunk: string; event: { type: string; data: JsonObject } }[] = [];
+
+  const flush = (): void => {
+    if (run.length > 1) {
+      const sequenceNumbers = run.map(({ event }) => event.data["sequence_number"]);
+
+      const sorted = run
+        .map((entry, position) => ({ ...entry, position }))
+        .sort(
+          (a, b) =>
+            Number(a.event.data["output_index"]) - Number(b.event.data["output_index"]) ||
+            a.position - b.position,
+        );
+
+      for (const [index, { event }] of sorted.entries()) {
+        const data = { ...event.data, sequence_number: sequenceNumbers[index] ?? null };
+        out.push(`event: ${event.type}\ndata: ${JSON.stringify(data)}\n\n`);
+      }
+    } else {
+      out.push(...run.map(({ chunk }) => chunk));
+    }
+
+    run = [];
+  };
+
+  for (const chunk of chunks) {
+    const event = parseSseEvent(chunk);
+
+    if (event !== undefined && ITEM_DONE_EVENTS.has(event.type)) {
+      run.push({ chunk, event });
+      continue;
+    }
+
+    flush();
+    out.push(chunk);
+  }
+
+  flush();
+
+  return out;
+};
+
 /**
  * Request differences from Go that Commissary keeps on purpose (docs/ARCHITECTURE.md), applied to the golden request:
  * - Codex-bound requests from Chat, Responses, Claude and Gemini do not forward `max_output_tokens` (Go `01b24f1f` does;
@@ -186,12 +261,16 @@ const checkTranslatorFixture = (
       expect(itemIdPrefixes(raw.flat()).size).toBe(golden.size);
     }
 
+    const order = UNORDERED_ITEM_DONE_CASES.has(`${c.from}>${c.to}:${c.name}`)
+      ? canonicalItemDoneOrder
+      : (chunks: ReadonlyArray<string>): ReadonlyArray<string> => chunks;
+
     const outputs = raw.map((chunks) =>
-      chunks.map((chunk) => normalizeChunk(maskItemIdPrefix(chunk))),
+      order(chunks).map((chunk) => normalizeChunk(maskItemIdPrefix(chunk))),
     );
 
     const expectedOutputs = (c.streamOutputs ?? []).map((chunks) =>
-      chunks.map((chunk) => normalizeChunk(maskItemIdPrefix(chunk))),
+      order(chunks).map((chunk) => normalizeChunk(maskItemIdPrefix(chunk))),
     );
 
     expect(outputs).toEqual(expectedOutputs);

@@ -207,13 +207,27 @@ const stepStart = (root: Json, st: State): string[] => {
       st.toolNames.set(index, str(get(step, "name")));
       st.toolIds.set(index, toolId(step));
       st.toolSignatures.set(index, stepSignature(step));
+      out = appendToolBlockStart(out, index, st);
 
-      return appendToolBlockStart(out, index, st);
+      return appendInlineArguments(out, firstExistingPath(step, ["arguments", "args"]), st);
     case "thought":
       return appendContentBlockStart(out, "thinking", st);
     default:
       return appendContentBlockStart(out, "text", st);
   }
+};
+
+/**
+ * Arguments given inline on a function_call step.start become the tool block's first `input_json_delta`; empty ones
+ * (blank, or `{}`) are skipped so later `arguments_delta` fragments still form valid JSON.
+ */
+const appendInlineArguments = (out: string[], args: Json | undefined, st: State): string[] => {
+  if (args === undefined) return out;
+  const arguments_ = typeof args === "string" ? args : JSON.stringify(args);
+
+  if (arguments_.trim() === "" || (isObj(args) && Object.keys(args).length === 0)) return out;
+
+  return appendContentDelta(out, "input_json_delta", "partial_json", arguments_, st);
 };
 
 const stepDelta = (root: Json, st: State): string[] => {

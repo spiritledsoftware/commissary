@@ -148,6 +148,14 @@ export const collectClaudeInputSegments = (body: JsonObject): string[] => {
     }
   }
 
+  // `collectClaudeOutputConfigTokenSegments`: a native structured-output schema counts as input.
+  const format = get(body.output_config, "format");
+
+  if (isObj(body.output_config) && isObj(format)) {
+    addString(segments, str(get(format, "type")));
+    addJson(segments, get(format, "schema"));
+  }
+
   return segments;
 };
 

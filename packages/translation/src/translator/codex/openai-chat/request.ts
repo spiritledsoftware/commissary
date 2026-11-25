@@ -445,10 +445,11 @@ export const convertOpenAIRequestToCodex = (
               const format = asString(get(it, "input_audio.format"));
 
               if (data !== "") {
-                const part: JsonObject = { type: "input_audio", data };
+                // The Responses shape nests the audio (Go e3d19b24); an omitted format stays omitted.
+                const audio: JsonObject = { data };
 
-                if (format !== "") part["format"] = format;
-                contentItems.push(part);
+                if (format !== "") audio["format"] = format;
+                contentItems.push({ type: "input_audio", input_audio: audio });
                 turnSendable++;
               } else {
                 drops.drop(t);

@@ -779,6 +779,19 @@ const appendDeferredStreamEvents = (
 };
 
 /** `ConvertCodexResponseToClaude`. */
+/** Message content parts relayed as text: output text and, since ca459712, refusals. */
+const isTextPartType = (type: string): boolean => type === "output_text" || type === "refusal";
+
+/** The text of a message content part: a refusal's `refusal`, else its `text`; "" for other parts. */
+const messagePartText = (part: Json): string => {
+  const type = asString(get(part, "type"));
+
+  if (!isTextPartType(type)) return "";
+  const refusal = type === "refusal" ? asString(get(part, "refusal")) : "";
+
+  return refusal !== "" ? refusal : asString(get(part, "text"));
+};
+
 export const convertCodexResponseToClaude = (
   context: ResponseContext,
   line: string,
@@ -842,7 +855,7 @@ export const convertCodexResponseToClaude = (
       // Intentionally does not close the thinking block (see above).
       break;
     case "response.content_part.added":
-      if (asString(get(root, "part.type")) === "output_text") {
+      if (isTextPartType(asString(get(root, "part.type")))) {
         if (p.commentaryMessageOpen) out += startThinkingBlock(p);
         else out += finalizeThinkingBlock(p) + startTextBlock(p);
       } else {
@@ -851,11 +864,14 @@ export const convertCodexResponseToClaude = (
 
       break;
     case "response.output_text.delta":
-      p.hasTextDelta = true;
+    case "response.refusal.delta": {
+      const deltaText = asString(get(root, "delta"));
+
+      if (deltaText !== "") p.hasTextDelta = true;
 
       if (p.commentaryMessageOpen) {
         out += startThinkingBlock(p);
-        out += appendThinkingDelta(p, asString(get(root, "delta")));
+        out += appendThinkingDelta(p, deltaText);
         break;
       }
 
@@ -864,11 +880,13 @@ export const convertCodexResponseToClaude = (
       out += event("content_block_delta", {
         type: "content_block_delta",
         index: p.blockIndex,
-        delta: { type: "text_delta", text: asString(get(root, "delta")) },
+        delta: { type: "text_delta", text: deltaText },
       });
       break;
+    }
+
     case "response.content_part.done":
-      if (asString(get(root, "part.type")) === "output_text")
+      if (isTextPartType(asString(get(root, "part.type"))))
         out += p.commentaryMessageOpen ? finalizeCommentaryBlock(p) : stopTextBlock(p);
       break;
     case "response.web_search_call.searching":
@@ -975,12 +993,7 @@ export const convertCodexResponseToClaude = (
             if (!isJsonArray(content)) return [out];
             let text = "";
 
-            for (const part of content) {
-              if (asString(get(part, "type")) !== "output_text") continue;
-              const partText = asString(get(part, "text"));
-
-              if (partText !== "") text += partText;
-            }
+            for (const part of content) text += messagePartText(part);
 
             if (text === "") return [out];
 
@@ -1194,8 +1207,7 @@ export const convertCodexResponseToClaudeNonStream = (
 
           if (isJsonArray(content)) {
             for (const part of content) {
-              if (asString(get(part, "type")) !== "output_text") continue;
-              const text = asString(get(part, "text"));
+              const text = messagePartText(part);
 
               if (text !== "") blocks.push(textBlock(text));
             }

@@ -341,12 +341,14 @@ describe("OpenAI sources", () => {
             expect(sent.tool_choice).toEqual(AUTO);
             expect((sent.tools as JsonObject[])[0]?.name).toBe("lookup_weather");
             expect(sent.thinking).toEqual({ type: "adaptive" });
-            expect(sent.output_config).toEqual({ effort: "high" });
-
-            // The schema stays a prompt, not a native output format.
-            const system = JSON.stringify(sent.system ?? null);
-            expect(system.includes("issue7000_title")).toBe(withSchema);
-            expect((sent.output_config as JsonObject).format).toBeUndefined();
+            // The schema reaches Claude unchanged as a native output format, not as a system prompt instruction
+            // (CLIProxyAPI 43806c86).
+            expect(sent.output_config).toEqual(
+              withSchema
+                ? { effort: "high", format: { type: "json_schema", schema: SCHEMA } }
+                : { effort: "high" },
+            );
+            expect(JSON.stringify(sent.system ?? null)).not.toContain("issue7000_title");
           } finally {
             await p.dispose();
           }

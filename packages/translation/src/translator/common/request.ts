@@ -1,7 +1,15 @@
 /**
- * Go source: internal/translator/common/request.go (RequestModelName, GenerateClaudeToolCallID).
+ * Go source: internal/translator/common/request.go (RequestModelName, GenerateClaudeToolCallID, ClaudeMaxTokensRaw,
+ * ClaudeStopSequences, ClaudeOutputJSONSchema).
  */
-import { asString, get, type Json } from "@commissary/json";
+import {
+  asString,
+  get,
+  isJsonArray,
+  isJsonObject,
+  type Json,
+  type JsonObject,
+} from "@commissary/json";
 
 const requestModelName = (root: Json | undefined): string => {
   if (root === undefined) return "";
@@ -56,3 +64,25 @@ export const generateClaudeToolCallId = (): string => {
 
 /** Convenience: `gjson.Get(...).String()`. */
 export const stringAt = (root: Json | undefined, path: string): string => asString(get(root, path));
+
+/** `ClaudeMaxTokensRaw`: a Claude `max_tokens` forwarded as given when it is a number (0 included), else undefined. */
+export const claudeMaxTokens = (value: Json | undefined): number | undefined =>
+  typeof value === "number" ? value : undefined;
+
+/** `ClaudeStopSequences`: the non-empty string entries of a Claude `stop_sequences` array; undefined if none. */
+export const claudeStopSequences = (value: Json | undefined): string[] | undefined => {
+  if (!isJsonArray(value)) return undefined;
+  const sequences = value.filter((item): item is string => typeof item === "string" && item !== "");
+
+  return sequences.length > 0 ? sequences : undefined;
+};
+
+/** `ClaudeOutputJSONSchema`: the schema of an `output_config.format` of type json_schema, if it is an object. */
+export const claudeOutputJsonSchema = (format: Json | undefined): JsonObject | undefined => {
+  if (!isJsonObject(format)) return undefined;
+
+  if (asString(get(format, "type")).trim().toLowerCase() !== "json_schema") return undefined;
+  const schema = get(format, "schema");
+
+  return isJsonObject(schema) ? schema : undefined;
+};

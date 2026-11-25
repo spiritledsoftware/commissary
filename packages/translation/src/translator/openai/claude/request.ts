@@ -35,6 +35,10 @@ import {
   SCHEMA_VALUE_KEYWORDS,
 } from "../../common/schema.ts";
 import { compatibleSignatureForProvider } from "../../../signature/provider.ts";
+import {
+  claudeDocumentTextBlock,
+  expandClaudeContentDocument,
+} from "../../common/claude-documents.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
 import { inlineToolAdditionDefinitions } from "../../common/claude-tool-addition.ts";
 
@@ -44,6 +48,50 @@ const TOOL_RESULT_IMAGE_PLACEHOLDER =
 
 /** `toolResultImageRelayNotice`: labels the user message that carries relayed tool images. */
 const TOOL_RESULT_IMAGE_RELAY_NOTICE = "Images returned by the preceding tool call(s):";
+
+/** `toolResultDocumentPlaceholder`: keeps the tool message non-empty for document-only tool results. */
+const TOOL_RESULT_DOCUMENT_PLACEHOLDER =
+  "[Tool returned document content; the documents follow in the next user message.]";
+
+/** `toolResultDocumentRelayNotice`: labels the user message that carries relayed tool documents. */
+const TOOL_RESULT_DOCUMENT_RELAY_NOTICE = "Documents returned by the preceding tool call(s):";
+
+/** `toolResultMediaPlaceholder`: keeps the tool message non-empty for mixed image and document tool results. */
+const TOOL_RESULT_MEDIA_PLACEHOLDER =
+  "[Tool returned media content; the attachments follow in the next user message.]";
+
+/** `toolResultMediaRelayNotice`: labels the user message that carries mixed relayed tool media. */
+const TOOL_RESULT_MEDIA_RELAY_NOTICE = "Media returned by the preceding tool call(s):";
+
+/** `toolResultUnsupportedDocumentPlaceholder`: stands in for a document no OpenAI file part can carry. */
+const TOOL_RESULT_UNSUPPORTED_DOCUMENT_PLACEHOLDER = "[Unsupported document content]";
+
+/** `toolResultRelayPlaceholder` / `toolResultRelayNoticeText`: picked by the kinds of relayed media. */
+const relayText = (
+  items: ReadonlyArray<Json>,
+  texts: { image: string; document: string; media: string },
+): string => {
+  const hasFile = items.some((item) => get(item, "type") === "file");
+  const hasImage = items.some((item) => get(item, "type") === "image_url");
+
+  if (hasFile) return hasImage ? texts.media : texts.document;
+
+  return texts.image;
+};
+
+const relayPlaceholder = (items: ReadonlyArray<Json>): string =>
+  relayText(items, {
+    image: TOOL_RESULT_IMAGE_PLACEHOLDER,
+    document: TOOL_RESULT_DOCUMENT_PLACEHOLDER,
+    media: TOOL_RESULT_MEDIA_PLACEHOLDER,
+  });
+
+const relayNotice = (items: ReadonlyArray<Json>): string =>
+  relayText(items, {
+    image: TOOL_RESULT_IMAGE_RELAY_NOTICE,
+    document: TOOL_RESULT_DOCUMENT_RELAY_NOTICE,
+    media: TOOL_RESULT_MEDIA_RELAY_NOTICE,
+  });
 
 /** `normalizeObjectSchemaProperties`; mutates and returns `schema` (callers pass a private copy). */
 export const normalizeObjectSchemaProperties = (schema: Json): Json => {
@@ -200,7 +248,7 @@ const convertClaudeFilePartToOpenAI = (part: Json): JsonObject | undefined => {
   return {
     type: "file",
     file: {
-      filename: getStr(part, "filename"),
+      filename: getStr(part, "filename") || getStr(part, "title"),
       file_data: `data:${mimeType};base64,${btoa(binary)}`,
     },
   };
@@ -210,6 +258,74 @@ interface ToolResultContent {
   text: string;
   images: JsonObject[];
 }
+
+/**
+ * `appendOpenAIToolResultDocument`: a tool_result document as tool text (text and content documents), relayed media
+ * (a convertible file, nested images), or a placeholder.
+ */
+const appendToolResultDocument = (item: Json, parts: string[], relayed: JsonObject[]): void => {
+  const docText = claudeDocumentTextBlock(item);
+
+  if (docText !== undefined) {
+    parts.push(docText);
+
+    return;
+  }
+
+  if (
+    expandClaudeContentDocument(
+      item,
+      (text) => parts.push(text),
+      convertClaudeContentPart,
+      (image) => relayed.push(image),
+    )
+  ) {
+    return;
+  }
+
+  const contentItem = convertClaudeContentPart(item);
+
+  if (contentItem !== undefined) relayed.push(contentItem);
+  else parts.push(TOOL_RESULT_UNSUPPORTED_DOCUMENT_PLACEHOLDER);
+};
+
+/**
+ * `convertClaudeContentParts`: a message or system content part as OpenAI parts. Text and content documents expand
+ * to text (and images); `onDrop` hears of parts that convert to nothing.
+ */
+const convertClaudeContentParts = (
+  part: Json,
+  onDrop?: (partType: string) => void,
+): JsonObject[] => {
+  const partType = getStr(part, "type");
+
+  if (partType === "document") {
+    const docText = claudeDocumentTextBlock(part);
+
+    if (docText !== undefined) return [{ type: "text", text: docText }];
+    const items: JsonObject[] = [];
+
+    if (
+      expandClaudeContentDocument(
+        part,
+        (text) => items.push({ type: "text", text }),
+        convertClaudeContentPart,
+        (image) => items.push(image),
+        onDrop === undefined ? undefined : () => onDrop("image"),
+      )
+    ) {
+      return items;
+    }
+  }
+
+  const contentItem = convertClaudeContentPart(part);
+
+  if (contentItem !== undefined) return [contentItem];
+
+  if (partType !== "text") onDrop?.(partType);
+
+  return [];
+};
 
 /** `convertClaudeToolResultContent`: the text for the tool message plus images to relay in a user message. */
 const convertClaudeToolResultContent = (content: Json | undefined): ToolResultContent => {
@@ -226,6 +342,8 @@ const convertClaudeToolResultContent = (content: Json | undefined): ToolResultCo
         parts.push(item);
       } else if (isObj(item) && item.type === "text") {
         parts.push(str(item.text));
+      } else if (isObj(item) && item.type === "document") {
+        appendToolResultDocument(item, parts, images);
       } else if (isObj(item) && item.type === "image") {
         const contentItem = convertClaudeContentPart(item);
 
@@ -241,7 +359,7 @@ const convertClaudeToolResultContent = (content: Json | undefined): ToolResultCo
     const joined = parts.join("\n\n");
 
     if (joined.trim() === "") {
-      if (images.length > 0) return { text: TOOL_RESULT_IMAGE_PLACEHOLDER, images };
+      if (images.length > 0) return { text: relayPlaceholder(images), images };
 
       return { text: raw(content), images: [] };
     }
@@ -250,11 +368,26 @@ const convertClaudeToolResultContent = (content: Json | undefined): ToolResultCo
   }
 
   if (isObj(content)) {
+    if (content.type === "document") {
+      const parts: string[] = [];
+      const images: JsonObject[] = [];
+      appendToolResultDocument(content, parts, images);
+      const joined = parts.join("\n\n");
+
+      if (joined.trim() === "" && images.length > 0)
+        return { text: relayPlaceholder(images), images };
+
+      return { text: joined, images };
+    }
+
     if (content.type === "image") {
       const contentItem = convertClaudeContentPart(content);
 
-      if (contentItem !== undefined)
-        return { text: TOOL_RESULT_IMAGE_PLACEHOLDER, images: [contentItem] };
+      if (contentItem !== undefined) {
+        const images = [contentItem];
+
+        return { text: relayPlaceholder(images), images };
+      }
     }
 
     if (typeof content.text === "string") return { text: content.text, images: [] };
@@ -382,11 +515,7 @@ const convertClaudeRequestToOpenAIImpl = (
     }
 
     if (isArr(content)) {
-      for (const item of content) {
-        const contentItem = convertClaudeContentPart(item);
-
-        if (contentItem !== undefined) systemContentItems.push(contentItem);
-      }
+      for (const item of content) systemContentItems.push(...convertClaudeContentParts(item));
     }
   };
 
@@ -456,10 +585,14 @@ const convertClaudeRequestToOpenAIImpl = (
             case "image":
             case "document":
             case "container_upload": {
-              const contentItem = convertClaudeContentPart(part);
-
-              if (contentItem !== undefined) contentItems.push(contentItem);
-              else if (role === "user" && partType !== "text") drops.drop(partType);
+              contentItems.push(
+                ...convertClaudeContentParts(
+                  part,
+                  role === "user" && partType !== "text"
+                    ? (dropped) => drops.drop(dropped)
+                    : undefined,
+                ),
+              );
               break;
             }
 
@@ -519,7 +652,7 @@ const convertClaudeRequestToOpenAIImpl = (
 
         if (relayedToolImages.length > 0) {
           const relayItems: Json[] = [
-            { type: "text", text: TOOL_RESULT_IMAGE_RELAY_NOTICE },
+            { type: "text", text: relayNotice(relayedToolImages) },
             ...relayedToolImages,
           ];
 

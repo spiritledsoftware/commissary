@@ -354,6 +354,9 @@ const buildCitedTextBlocks = (
           },
         ],
       });
+    } else if (citedText !== "") {
+      // A support without a resolvable citation URL keeps its text, uncited (Go 1b730a1d).
+      blocks.push({ text: citedText, citations: [] });
     }
 
     if (support.endIndex > lastEnd) lastEnd = support.endIndex;

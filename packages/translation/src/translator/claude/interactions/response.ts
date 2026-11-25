@@ -15,6 +15,7 @@ interface State {
   statusUpdated: boolean;
   completed: boolean;
   done: boolean;
+  stopReason: string;
   usageRaw: JsonObject | undefined;
   stepIndex: number;
   activeStepIndex: number;
@@ -33,6 +34,7 @@ const newState = (model: string): State => ({
   statusUpdated: false,
   completed: false,
   done: false,
+  stopReason: "",
   usageRaw: undefined,
   stepIndex: 0,
   activeStepIndex: 0,
@@ -92,6 +94,7 @@ const convertMessage = (modelName: string, root: Json | undefined): JsonObject =
   const out = interactionTemplate();
   out.id = firstNonEmpty(str(get(root, "id")), newInteractionId());
   out.model = firstNonEmpty(str(get(root, "model")), modelName);
+  out.status = interactionsStatus(str(get(root, "stop_reason")));
   const steps: JsonObject[] = [];
   const content = get(root, "content");
   const blocks = Array.isArray(content) ? content : isObj(content) ? [content] : [];
@@ -152,9 +155,12 @@ const convertSSENonStream = (modelName: string, body: string): JsonObject => {
 
       case "message_delta":
         mergeUsage(st, get(root, "usage"));
+        st.stopReason = firstNonEmpty(str(get(root, "delta.stop_reason")), st.stopReason);
         break;
     }
   }
+
+  out.status = interactionsStatus(st.stopReason);
 
   if (steps.length > 0) out.steps = steps;
   setUsage(out, "usage", mergedUsage(st));
@@ -202,6 +208,9 @@ const convertEvent = (modelName: string, line: string, st: State): string[] => {
 
     case "message_delta": {
       mergeUsage(st, get(root, "usage"));
+
+      // A usage-only delta keeps the step open until the stop reason arrives.
+      if (str(get(root, "delta.stop_reason")) === "") return [];
       const out = appendStepStop([], st);
 
       return appendCompleted(out, st, modelName, root);
@@ -581,10 +590,15 @@ const appendCompleted = (
   if (st.completed) return out;
   out = appendCreated(out, st, modelName);
   const now = new Date().toISOString().replace(/\.\d+Z$/u, "Z");
+  st.stopReason = firstNonEmpty(
+    str(get(root, "delta.stop_reason")),
+    str(get(root, "stop_reason")),
+    st.stopReason,
+  );
 
   const interaction: JsonObject = {
     id: st.id,
-    status: "completed",
+    status: interactionsStatus(st.stopReason),
     usage: {},
     created: now,
     updated: now,
@@ -619,6 +633,19 @@ const blockStepType = (blockType: string): string => {
   if (blockType === "tool_use") return "function_call";
 
   return "model_output";
+};
+
+/** `claudeInteractionsStatus`: the Interactions terminal status of a Claude stop reason. */
+const interactionsStatus = (stopReason: string): string => {
+  switch (stopReason) {
+    case "tool_use":
+      return "requires_action";
+    case "max_tokens":
+    case "model_context_window_exceeded":
+      return "incomplete";
+    default:
+      return "completed";
+  }
 };
 
 const deltaStepType = (deltaType: string): string => {

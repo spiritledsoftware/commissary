@@ -10,6 +10,8 @@ import {
   asFloat,
   asInt,
   get,
+  isJsonArray,
+  isJsonObject,
   type Json,
   type JsonObject,
   isValidJson,
@@ -21,7 +23,7 @@ import {
   applyPatchInputDelta,
   applyPatchInputDone,
 } from "../../../common/apply-patch.ts";
-import { getStr, isArr, str } from "../../common/read.ts";
+import { getStr, isArr, isStr, str } from "../../common/read.ts";
 import { requestModelNameOf } from "../../../common/request.ts";
 import { responsesToolInputFailure, shellCallItem, shellCallPlaceholder } from "./shell.ts";
 import { buildToolSearchCallItem } from "../../../common/responses-tools.ts";
@@ -30,6 +32,14 @@ import { pickRequestJson, ResponsesToolIndex, unwrapCustomToolInput } from "./to
 interface ReasoningRecord {
   readonly reasoningId: string;
   readonly reasoningData: string;
+  readonly outputIndex: number;
+}
+
+/** `oaiToResponsesStateMessage`: a message item already closed by `response.output_item.done` (c3a6c741). */
+interface MessageRecord {
+  readonly messageId: string;
+  readonly status: string;
+  readonly text: string;
   readonly outputIndex: number;
 }
 
@@ -49,6 +59,11 @@ interface ChatToResponsesState {
   reasoningId: string;
   reasoningIndex: number;
   msgTextBuf: Map<number, string>;
+  /** Id of the open message segment per choice: a choice's text after a reasoning block opens a new item. */
+  msgCurrentId: Map<number, string>;
+  msgSegCount: Map<number, number>;
+  /** Closed message items, each with the status its `output_item.done` carried. */
+  messages: MessageRecord[];
   reasoningBuf: string;
   reasonings: ReasoningRecord[];
   funcArgsBuf: Map<string, string>;
@@ -92,6 +107,9 @@ const newState = (): ChatToResponsesState => ({
   reasoningId: "",
   reasoningIndex: 0,
   msgTextBuf: new Map(),
+  msgCurrentId: new Map(),
+  msgSegCount: new Map(),
+  messages: [],
   reasoningBuf: "",
   reasonings: [],
   funcArgsBuf: new Map(),
@@ -246,14 +264,28 @@ const buildResponsesCompletedEvent = (st: ChatToResponsesState, nextSeq: () => n
     });
   }
 
-  for (const i of st.msgItemAdded.keys()) {
-    const msgStatus =
-      incompleteByFinishReason(st.finishReason) !== undefined ? "incomplete" : "completed";
+  const msgStatus =
+    incompleteByFinishReason(st.finishReason) !== undefined ? "incomplete" : "completed";
 
+  // A closed message keeps the status its output_item.done carried (c3a6c741).
+  for (const m of st.messages) {
+    outputItems.push({
+      index: m.outputIndex,
+      item: {
+        id: m.messageId,
+        type: "message",
+        status: m.status === "" ? msgStatus : m.status,
+        content: [{ type: "output_text", annotations: [], logprobs: [], text: m.text }],
+        role: "assistant",
+      },
+    });
+  }
+
+  for (const i of st.msgItemAdded.keys()) {
     outputItems.push({
       index: st.msgOutputIx.get(i) ?? 0,
       item: {
-        id: `msg_${st.responseId}_${i}`,
+        id: st.msgCurrentId.get(i) || `msg_${st.responseId}_${i}`,
         type: "message",
         status: msgStatus,
         content: [
@@ -341,11 +373,15 @@ const buildResponsesCompletedEvent = (st: ChatToResponsesState, nextSeq: () => n
   return emit(eventType, completed);
 };
 
+/** `canFinalizeResponse`: a reasoning-only stream with an explicit finish_reason can finalize too (c3a6c741). */
 const canFinalizeResponse = (st: ChatToResponsesState): boolean => {
   if (
     st.toolInputError !== undefined ||
     st.finishReason === "" ||
-    (st.msgItemAdded.size === 0 && st.funcItemAdded.size === 0)
+    (st.messages.length === 0 &&
+      st.msgItemAdded.size === 0 &&
+      st.funcItemAdded.size === 0 &&
+      st.reasonings.length === 0)
   ) {
     return false;
   }
@@ -653,7 +689,11 @@ const processChunk = (
     st.created = asInt(get(root, "created"));
     // Reset aggregation state for a new streaming response.
     st.msgTextBuf = new Map();
+    st.msgCurrentId = new Map();
+    st.msgSegCount = new Map();
+    st.messages = [];
     st.reasoningBuf = "";
+    st.reasonings = [];
     st.reasoningId = "";
     st.reasoningIndex = 0;
     st.applyPatchCalls = new Map();
@@ -775,7 +815,7 @@ const processChunk = (
     if (st.msgItemAdded.get(idx) !== true || st.msgItemDone.get(idx) === true) return;
     const msgOutputIndex = st.msgOutputIx.get(idx) ?? 0;
     const fullText = st.msgTextBuf.get(idx) ?? "";
-    const itemId = `msg_${st.responseId}_${idx}`;
+    const itemId = st.msgCurrentId.get(idx) || `msg_${st.responseId}_${idx}`;
     out.push(
       emit("response.output_text.done", {
         type: "response.output_text.done",
@@ -815,7 +855,20 @@ const processChunk = (
         },
       }),
     );
-    st.msgItemDone.set(idx, true);
+
+    // Record the closed item and free the choice's slot, so later text opens a new segment (c3a6c741).
+    st.messages.push({
+      messageId: itemId,
+      status: msgStatus,
+      text: fullText,
+      outputIndex: msgOutputIndex,
+    });
+    st.msgItemAdded.delete(idx);
+    st.msgContentAdded.delete(idx);
+    st.msgItemDone.delete(idx);
+    st.msgOutputIx.delete(idx);
+    st.msgTextBuf.delete(idx);
+    st.msgCurrentId.delete(idx);
   };
 
   const finalizeOpenItems = (): void => {
@@ -1019,7 +1072,15 @@ const processChunk = (
 
     for (const key of st.funcItemAdded.keys()) if (st.funcItemDone.get(key) !== true) return out;
 
-    if (st.msgItemAdded.size === 0 && st.funcItemAdded.size === 0) return out;
+    if (
+      st.messages.length === 0 &&
+      st.msgItemAdded.size === 0 &&
+      st.funcItemAdded.size === 0 &&
+      (st.reasonings.length === 0 || st.finishReason === "")
+    ) {
+      return out;
+    }
+
     st.completedEmitted = true;
     out.push(buildResponsesCompletedEvent(st, nextSeq));
 
@@ -1029,116 +1090,136 @@ const processChunk = (
   const choices = get(root, "choices");
 
   if (isArr(choices)) {
+    // A reasoning segment: closes the choice's open message first so interleaved message -> reasoning -> message
+    // segments stay sequential (c3a6c741).
+    const emitReasoningDelta = (idx: number, reasoningText: string): void => {
+      if (reasoningText === "") return;
+      emitMessageItemDone(idx);
+
+      if (st.reasoningId === "") {
+        st.reasoningId =
+          st.reasonings.length === 0
+            ? `rs_${st.responseId}_${idx}`
+            : `rs_${st.responseId}_${idx}_${st.reasonings.length}`;
+        st.reasoningIndex = allocOutputIndex();
+        out.push(
+          emit("response.output_item.added", {
+            type: "response.output_item.added",
+            sequence_number: nextSeq(),
+            output_index: st.reasoningIndex,
+            item: { id: st.reasoningId, type: "reasoning", status: "in_progress", summary: [] },
+          }),
+        );
+        out.push(
+          emit("response.reasoning_summary_part.added", {
+            type: "response.reasoning_summary_part.added",
+            sequence_number: nextSeq(),
+            item_id: st.reasoningId,
+            output_index: st.reasoningIndex,
+            summary_index: 0,
+            part: { type: "summary_text", text: "" },
+          }),
+        );
+      }
+
+      st.reasoningBuf += reasoningText;
+      out.push(
+        emit("response.reasoning_summary_text.delta", {
+          type: "response.reasoning_summary_text.delta",
+          sequence_number: nextSeq(),
+          item_id: st.reasoningId,
+          output_index: st.reasoningIndex,
+          summary_index: 0,
+          delta: reasoningText,
+        }),
+      );
+    };
+
+    // A visible text segment: a choice's text after a closed message opens a new segment `msg_<id>_<idx>_<n>`.
+    const emitTextDelta = (idx: number, text: string): void => {
+      if (text === "") return;
+
+      // Announce the message item and its first content part before any text deltas.
+      if (st.reasoningId !== "") {
+        stopReasoning(st.reasoningBuf);
+        st.reasoningBuf = "";
+      }
+
+      let msgOutputIndex = st.msgOutputIx.get(idx);
+
+      if (msgOutputIndex === undefined) {
+        msgOutputIndex = allocOutputIndex();
+        st.msgOutputIx.set(idx, msgOutputIndex);
+        const seg = st.msgSegCount.get(idx) ?? 0;
+        st.msgSegCount.set(idx, seg + 1);
+        st.msgCurrentId.set(
+          idx,
+          seg === 0 ? `msg_${st.responseId}_${idx}` : `msg_${st.responseId}_${idx}_${seg}`,
+        );
+      }
+
+      const itemId = st.msgCurrentId.get(idx) ?? "";
+
+      if (st.msgItemAdded.get(idx) !== true) {
+        out.push(
+          emit("response.output_item.added", {
+            type: "response.output_item.added",
+            sequence_number: nextSeq(),
+            output_index: msgOutputIndex,
+            item: {
+              id: itemId,
+              type: "message",
+              status: "in_progress",
+              content: [],
+              role: "assistant",
+            },
+          }),
+        );
+        st.msgItemAdded.set(idx, true);
+      }
+
+      if (st.msgContentAdded.get(idx) !== true) {
+        out.push(
+          emit("response.content_part.added", {
+            type: "response.content_part.added",
+            sequence_number: nextSeq(),
+            item_id: itemId,
+            output_index: msgOutputIndex,
+            content_index: 0,
+            part: { type: "output_text", annotations: [], logprobs: [], text: "" },
+          }),
+        );
+        st.msgContentAdded.set(idx, true);
+      }
+
+      out.push(
+        emit("response.output_text.delta", {
+          type: "response.output_text.delta",
+          sequence_number: nextSeq(),
+          item_id: itemId,
+          output_index: msgOutputIndex,
+          content_index: 0,
+          delta: text,
+          logprobs: [],
+        }),
+      );
+      st.msgTextBuf.set(idx, (st.msgTextBuf.get(idx) ?? "") + text);
+    };
+
     for (const choice of choices) {
       const idx = asInt(get(choice, "index"));
       const delta = get(choice, "delta");
 
       if (delta !== undefined) {
-        let rc = get(delta, "reasoning_content");
+        // reasoning_content / reasoning / reasoning_details
+        for (const reasoningText of collectOpenAIObjectReasoningTexts(delta))
+          emitReasoningDelta(idx, reasoningText);
 
-        if (rc === undefined || str(rc) === "") rc = get(delta, "reasoning");
-
-        if (rc !== undefined && str(rc) !== "") {
-          const rcText = str(rc);
-
-          if (st.reasoningId === "") {
-            st.reasoningId = `rs_${st.responseId}_${idx}`;
-            st.reasoningIndex = allocOutputIndex();
-            out.push(
-              emit("response.output_item.added", {
-                type: "response.output_item.added",
-                sequence_number: nextSeq(),
-                output_index: st.reasoningIndex,
-                item: { id: st.reasoningId, type: "reasoning", status: "in_progress", summary: [] },
-              }),
-            );
-            out.push(
-              emit("response.reasoning_summary_part.added", {
-                type: "response.reasoning_summary_part.added",
-                sequence_number: nextSeq(),
-                item_id: st.reasoningId,
-                output_index: st.reasoningIndex,
-                summary_index: 0,
-                part: { type: "summary_text", text: "" },
-              }),
-            );
-          }
-
-          st.reasoningBuf += rcText;
-          out.push(
-            emit("response.reasoning_summary_text.delta", {
-              type: "response.reasoning_summary_text.delta",
-              sequence_number: nextSeq(),
-              item_id: st.reasoningId,
-              output_index: st.reasoningIndex,
-              summary_index: 0,
-              delta: rcText,
-            }),
-          );
-        }
-
-        const c = get(delta, "content");
-
-        if (c !== undefined && str(c) !== "") {
-          const text = str(c);
-
-          // Announce the message item and its first content part before any text deltas.
-          if (st.reasoningId !== "") {
-            stopReasoning(st.reasoningBuf);
-            st.reasoningBuf = "";
-          }
-
-          if (!st.msgOutputIx.has(idx)) st.msgOutputIx.set(idx, allocOutputIndex());
-          // SAFETY: the line above sets msgOutputIx[idx] when it is missing.
-          const msgOutputIndex = st.msgOutputIx.get(idx) as number;
-          const itemId = `msg_${st.responseId}_${idx}`;
-
-          if (st.msgItemAdded.get(idx) !== true) {
-            out.push(
-              emit("response.output_item.added", {
-                type: "response.output_item.added",
-                sequence_number: nextSeq(),
-                output_index: msgOutputIndex,
-                item: {
-                  id: itemId,
-                  type: "message",
-                  status: "in_progress",
-                  content: [],
-                  role: "assistant",
-                },
-              }),
-            );
-            st.msgItemAdded.set(idx, true);
-          }
-
-          if (st.msgContentAdded.get(idx) !== true) {
-            out.push(
-              emit("response.content_part.added", {
-                type: "response.content_part.added",
-                sequence_number: nextSeq(),
-                item_id: itemId,
-                output_index: msgOutputIndex,
-                content_index: 0,
-                part: { type: "output_text", annotations: [], logprobs: [], text: "" },
-              }),
-            );
-            st.msgContentAdded.set(idx, true);
-          }
-
-          out.push(
-            emit("response.output_text.delta", {
-              type: "response.output_text.delta",
-              sequence_number: nextSeq(),
-              item_id: itemId,
-              output_index: msgOutputIndex,
-              content_index: 0,
-              delta: text,
-              logprobs: [],
-            }),
-          );
-          st.msgTextBuf.set(idx, (st.msgTextBuf.get(idx) ?? "") + text);
-        }
-
+        // A string, or an array of typed parts mixing thinking and visible text (c3a6c741).
+        forEachOpenAIContentSegment(get(delta, "content"), (isReasoning, segText) => {
+          if (isReasoning) emitReasoningDelta(idx, segText);
+          else emitTextDelta(idx, segText);
+        });
         const tcs = get(delta, "tool_calls");
 
         if (isArr(tcs) && tcs.length > 0) {
@@ -1273,20 +1354,35 @@ export const convertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream = (
   }
 
   const outputItems: Json[] = [];
-  let rc = get(root, "choices.0.message.reasoning_content");
+  const choices = get(root, "choices");
+  const choiceArr = isArr(choices) ? choices : [];
 
-  if (rc === undefined || str(rc) === "") rc = get(root, "choices.0.message.reasoning");
-  const rcText = str(rc);
+  // Typed message.content arrays split into thinking (a reasoning fallback) and visible text (c3a6c741).
+  const parsedContents = choiceArr.map((choice) => {
+    const msg = get(choice, "message");
+
+    return msg === undefined
+      ? emptyMessageContent
+      : extractOpenAIMessageContent(get(msg, "content"));
+  });
+
+  let rid = id;
+
+  if (rid.startsWith("resp_")) rid = rid.slice("resp_".length);
+
+  // Reasoning from reasoning_content / reasoning / reasoning_details, falling back to typed message.content.
+  const firstMsg =
+    choiceArr.length > 0 ? get(choiceArr[0], "message") : get(root, "choices.0.message");
+
+  let rcText = collectOpenAIObjectReasoningTexts(firstMsg).join("");
+
+  if (rcText === "" && parsedContents.length > 0) rcText = parsedContents[0]?.reasoning ?? "";
   let includeReasoning = rcText !== "";
 
   if (!includeReasoning && req !== undefined)
     includeReasoning = get(req, "reasoning") !== undefined;
 
   if (includeReasoning) {
-    let rid = id;
-
-    if (rid.startsWith("resp_")) rid = rid.slice("resp_".length);
-
     const reasoningItem: JsonObject = {
       id: `rs_${rid}`,
       type: "reasoning",
@@ -1298,104 +1394,118 @@ export const convertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream = (
     outputItems.push(reasoningItem);
   }
 
-  const choices = get(root, "choices");
+  for (const [i, choice] of choiceArr.entries()) {
+    const msg = get(choice, "message");
 
-  if (isArr(choices)) {
-    for (const choice of choices) {
-      const msg = get(choice, "message");
+    if (msg !== undefined) {
+      const choiceIdx = asInt(get(choice, "index"));
 
-      if (msg !== undefined) {
-        const c = get(msg, "content");
+      // Later choices carry their own reasoning item (c3a6c741).
+      if (i > 0) {
+        let extraRC = collectOpenAIObjectReasoningTexts(msg).join("");
 
-        if (c !== undefined && str(c) !== "") {
+        if (extraRC === "") extraRC = parsedContents[i]?.reasoning ?? "";
+
+        if (extraRC !== "") {
           outputItems.push({
-            id: `msg_${id}_${asInt(get(choice, "index"))}`,
-            type: "message",
-            status: isIncomplete ? "incomplete" : "completed",
-            content: [{ type: "output_text", annotations: [], logprobs: [], text: str(c) }],
-            role: "assistant",
+            id: `rs_${rid}_${choiceIdx}`,
+            type: "reasoning",
+            encrypted_content: "",
+            summary: [{ type: "summary_text", text: extraRC }],
           });
         }
+      }
 
-        const tcs = get(msg, "tool_calls");
+      const textContent = parsedContents[i]?.text ?? "";
 
-        if (isArr(tcs)) {
-          for (const [tcIndex, tc] of tcs.entries()) {
-            let callId = getStr(tc, "id");
+      if (textContent !== "") {
+        outputItems.push({
+          id: `msg_${id}_${choiceIdx}`,
+          type: "message",
+          status: isIncomplete ? "incomplete" : "completed",
+          content: [{ type: "output_text", annotations: [], logprobs: [], text: textContent }],
+          role: "assistant",
+        });
+      }
 
-            if (callId === "") {
-              // Providers may omit tool_call ids; synthesize one so the item stays usable for Codex round-trips.
-              callId = `call_${id}_${asInt(get(choice, "index"))}_${tcIndex}`;
+      const tcs = get(msg, "tool_calls");
+
+      if (isArr(tcs)) {
+        for (const [tcIndex, tc] of tcs.entries()) {
+          let callId = getStr(tc, "id");
+
+          if (callId === "") {
+            // Providers may omit tool_call ids; synthesize one so the item stays usable for Codex round-trips.
+            callId = `call_${id}_${asInt(get(choice, "index"))}_${tcIndex}`;
+          }
+
+          const name = toolIndex.canonicalName(getStr(tc, "function.name"));
+          const args = getStr(tc, "function.arguments");
+          const toolStatus = isIncomplete ? "incomplete" : "completed";
+
+          if (toolIndex.isShell(name)) {
+            const shell = shellCallItem(callId, args, toolStatus);
+
+            if ("error" in shell) {
+              st.toolInputError = shell.error;
+              break;
             }
 
-            const name = toolIndex.canonicalName(getStr(tc, "function.name"));
-            const args = getStr(tc, "function.arguments");
-            const toolStatus = isIncomplete ? "incomplete" : "completed";
+            outputItems.push(shell.item);
+            continue;
+          }
 
-            if (toolIndex.isShell(name)) {
-              const shell = shellCallItem(callId, args, toolStatus);
+          if (toolIndex.isToolSearch(name)) {
+            outputItems.push(buildToolSearchCallItem(callId, toolStatus, args));
+            continue;
+          }
 
-              if ("error" in shell) {
-                st.toolInputError = shell.error;
+          if (toolIndex.custom.has(name)) {
+            let input: string;
+
+            if (toolIndex.isApplyPatch(name)) {
+              const finished = new ApplyPatchCallState("", "", "", "", 0).finishArguments(args);
+
+              if ("error" in finished) {
+                st.toolInputError = finished.error;
                 break;
               }
 
-              outputItems.push(shell.item);
-              continue;
-            }
-
-            if (toolIndex.isToolSearch(name)) {
-              outputItems.push(buildToolSearchCallItem(callId, toolStatus, args));
-              continue;
-            }
-
-            if (toolIndex.custom.has(name)) {
-              let input: string;
-
-              if (toolIndex.isApplyPatch(name)) {
-                const finished = new ApplyPatchCallState("", "", "", "", 0).finishArguments(args);
-
-                if ("error" in finished) {
-                  st.toolInputError = finished.error;
-                  break;
-                }
-
-                input = finished.input;
-              } else {
-                input = unwrapCustomToolInput(args);
-              }
-
-              const item: JsonObject = {
-                id: `ctc_${callId}`,
-                type: "custom_tool_call",
-                status: toolStatus,
-                input,
-                call_id: callId,
-                name: "",
-              };
-
-              toolIndex.applyIdentity(item, name, "");
-              outputItems.push(item);
-              continue;
+              input = finished.input;
+            } else {
+              input = unwrapCustomToolInput(args);
             }
 
             const item: JsonObject = {
-              id: `fc_${callId}`,
-              type: "function_call",
+              id: `ctc_${callId}`,
+              type: "custom_tool_call",
               status: toolStatus,
-              arguments: args,
+              input,
               call_id: callId,
               name: "",
             };
 
             toolIndex.applyIdentity(item, name, "");
             outputItems.push(item);
+            continue;
           }
+
+          const item: JsonObject = {
+            id: `fc_${callId}`,
+            type: "function_call",
+            status: toolStatus,
+            arguments: args,
+            call_id: callId,
+            name: "",
+          };
+
+          toolIndex.applyIdentity(item, name, "");
+          outputItems.push(item);
         }
       }
-
-      if (st.toolInputError !== undefined) break;
     }
+
+    if (st.toolInputError !== undefined) break;
   }
 
   if (st.toolInputError !== undefined) {
@@ -1430,6 +1540,110 @@ export const convertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream = (
   }
 
   return JSON.stringify(resp);
+};
+
+/** `collectOpenAIObjectReasoningTexts`: the first non-empty of reasoning_content, reasoning, reasoning_details. */
+const collectOpenAIObjectReasoningTexts = (obj: Json | undefined): string[] => {
+  if (obj === undefined) return [];
+
+  for (const path of ["reasoning_content", "reasoning", "reasoning_details"]) {
+    const texts = collectOpenAIReasoningTexts(get(obj, path));
+
+    if (texts.length > 0) return texts;
+  }
+
+  return [];
+};
+
+/** `extractOpenAIContentPartThinkingText`. */
+const extractOpenAIContentPartThinkingText = (part: Json): string => {
+  for (const field of ["thinking", "reasoning", "reasoning_content", "text"]) {
+    const texts = collectOpenAIReasoningTexts(get(part, field));
+
+    if (texts.length > 0) return texts.join("");
+  }
+
+  return "";
+};
+
+/** `collectOpenAIReasoningTexts`: non-empty strings and objects' `text`, flattening arrays. */
+const collectOpenAIReasoningTexts = (node: Json | undefined): string[] => {
+  if (isJsonArray(node)) return node.flatMap((value) => collectOpenAIReasoningTexts(value));
+
+  if (isStr(node)) return node === "" ? [] : [node];
+
+  if (isJsonObject(node) && Object.hasOwn(node, "text")) {
+    const text = str(node.text);
+
+    return text === "" ? [] : [text];
+  }
+
+  return [];
+};
+
+/** `forEachOpenAIContentSegment`: a string content, or each typed part of an array as thinking or visible text. */
+const forEachOpenAIContentSegment = (
+  content: Json | undefined,
+  emitSegment: (isReasoning: boolean, text: string) => void,
+): void => {
+  if (isStr(content)) {
+    emitSegment(false, content);
+
+    return;
+  }
+
+  if (!isJsonArray(content)) return;
+
+  for (const part of content) {
+    if (isStr(part)) {
+      emitSegment(false, part);
+      continue;
+    }
+
+    switch (getStr(part, "type")) {
+      case "thinking":
+      case "reasoning":
+      case "thought":
+      case "reasoning.text":
+      case "reasoning_text":
+        emitSegment(true, extractOpenAIContentPartThinkingText(part));
+        break;
+      case "text":
+      case "output_text":
+        emitSegment(false, getStr(part, "text"));
+        break;
+      case "refusal": {
+        const refusal = getStr(part, "refusal");
+
+        emitSegment(false, refusal === "" ? getStr(part, "text") : refusal);
+        break;
+      }
+
+      default:
+        emitSegment(false, str(part));
+    }
+  }
+};
+
+/** The thinking and visible text of a message's content (`extractOpenAIMessageContent`'s two results). */
+interface MessageContent {
+  readonly reasoning: string;
+  readonly text: string;
+}
+
+const emptyMessageContent: MessageContent = { reasoning: "", text: "" };
+
+/** `extractOpenAIMessageContent`. */
+const extractOpenAIMessageContent = (content: Json | undefined): MessageContent => {
+  let reasoning = "";
+  let text = "";
+
+  forEachOpenAIContentSegment(content, (isReasoning, segText) => {
+    if (isReasoning) reasoning += segText;
+    else text += segText;
+  });
+
+  return { reasoning, text };
 };
 
 export const openAIToOpenAIResponsesResponse: ResponseTransform = {
