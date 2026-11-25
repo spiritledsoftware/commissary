@@ -447,6 +447,44 @@ const clearStateOnSuccess = (state: Draft, now: number): void => {
   state.updatedAt = now;
 };
 
+/** A forced cooldown recorded before `forcedUntil` existed: its error and its live deadline. */
+const seededForcedUntil = (
+  holder: {
+    readonly nextRetryAfter: number;
+    readonly forcedUntil?: number;
+    readonly lastError?: CredentialError;
+  },
+  now: number,
+): number | undefined =>
+  holder.forcedUntil === undefined &&
+  holder.lastError?.code === ErrorCode.forceCooldown &&
+  holder.nextRetryAfter > now
+    ? holder.nextRetryAfter
+    : undefined;
+
+/**
+ * Seeds `forcedUntil` of a stored state (Go `seedInitialForceCooldownDeadlines`, CLIProxyAPI 9d7d012b): a live cooldown
+ * whose last error is `force_cooldown` but that was recorded without the deadline (before it was persisted) is forced
+ * until its `nextRetryAfter`, at credential and model level. Returns the same object when nothing changes.
+ */
+export const seedForcedCooldowns = (state: CredentialState, now: number): CredentialState => {
+  const own = seededForcedUntil(state, now);
+
+  const models = Object.entries(state.modelStates).flatMap(([key, model]) => {
+    const until = seededForcedUntil(model, now);
+
+    return until === undefined ? [] : [[key, { ...model, forcedUntil: until }] as const];
+  });
+
+  if (own === undefined && models.length === 0) return state;
+
+  return {
+    ...state,
+    ...(own === undefined ? {} : { forcedUntil: own }),
+    modelStates: { ...state.modelStates, ...Object.fromEntries(models) },
+  };
+};
+
 /**
  * The last step of a failure: a forced failure records its deadline (`forcedUntil`), and a live forced deadline holds
  * against whatever the failure wrote (a shorter cooldown, or none because cooling is disabled) (CLIProxyAPI 9d7d012b).

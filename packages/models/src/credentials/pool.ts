@@ -26,6 +26,7 @@ import {
   credentialCooldownActive,
   markResultDetailed,
   modelCooldownActive,
+  seedForcedCooldowns,
 } from "./cooldown/mark-result.ts";
 import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
@@ -194,7 +195,13 @@ export class CredentialPool {
     this.#privateCredentials = options.privateCredentials ?? (() => true);
     this.#privateKeys = options.privateKeys ?? (() => ({ version: 0, configs: [] }));
     this.#spend = options.spend;
-    this.#states = options.store.loadStates();
+    // Forced cooldowns stored before their deadline was persisted keep their protection.
+    this.#states = new Map(
+      [...options.store.loadStates()].map(([id, state]) => [
+        id,
+        seedForcedCooldowns(state, this.#now()),
+      ]),
+    );
     this.#dispatchSeq = this.#now() * 1000;
   }
 

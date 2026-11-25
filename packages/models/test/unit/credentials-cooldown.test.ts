@@ -10,6 +10,7 @@ import {
   markResult,
   nextQuotaCooldown,
   quotaCooldownAfterFailure,
+  seedForcedCooldowns,
 } from "../../src/credentials/cooldown/mark-result.ts";
 import {
   isCloudflareChallengeError,
@@ -544,6 +545,55 @@ describe("error table (MarkResult)", () => {
     state = mark(state, "m", { success: true }, { now: NOW + 2 * MIN });
     expect(state).toMatchObject({ unavailable: true, nextRetryAfter: NOW + HOUR });
     expect(blocked(state, "other", NOW + 30 * MIN)).toBe(true);
+  });
+
+  it("seeds the deadline of a forced cooldown stored without one (seedInitialForceCooldownDeadlines)", () => {
+    const forcedError = {
+      code: "force_cooldown",
+      message: "stop",
+      retryable: false,
+      httpStatus: 429,
+    };
+
+    // A state written before `forcedUntil` existed: only the error says the cooldown was forced.
+    const stored: CredentialState = {
+      ...emptyState(),
+      status: "error",
+      unavailable: true,
+      nextRetryAfter: NOW + HOUR,
+      lastError: forcedError,
+      modelStates: {
+        m: {
+          status: "error",
+          unavailable: true,
+          nextRetryAfter: NOW + HOUR,
+          lastError: forcedError,
+          quota: emptyQuota(),
+          updatedAt: NOW,
+        },
+        expired: {
+          status: "error",
+          unavailable: true,
+          nextRetryAfter: NOW - 1,
+          lastError: forcedError,
+          quota: emptyQuota(),
+          updatedAt: NOW,
+        },
+      },
+    };
+
+    const seeded = seedForcedCooldowns(stored, NOW);
+    expect(seeded.forcedUntil).toBe(NOW + HOUR);
+    expect(seeded.modelStates.m?.forcedUntil).toBe(NOW + HOUR);
+    expect(seeded.modelStates.expired?.forcedUntil).toBeUndefined();
+    expect(seedForcedCooldowns(emptyState(), NOW)).toEqual(emptyState());
+
+    // A shorter failure, then a zero write with cooling disabled, leave it in place.
+    const cooling = { metadata: { disable_cooling: true } };
+    let state = mark(seeded, "m", fail(503, "x", { retryAfterMs: 5000 }), { now: NOW + MIN });
+    state = mark(state, "m", fail(500), { ...cooling, now: NOW + 2 * MIN });
+    expect(state.modelStates.m).toMatchObject({ unavailable: true, nextRetryAfter: NOW + HOUR });
+    expect(blocked(state, "m", NOW + 30 * MIN)).toBe(true);
   });
 
   it("never cools: request-scoped, connection lifecycle and transient transport failures (connection_lifecycle_cooldown_test.go)", () => {

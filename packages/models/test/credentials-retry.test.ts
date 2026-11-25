@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { PickResult } from "../src/credentials/selection/types.ts";
 import type { CredentialPool } from "../src/credentials/pool.ts";
+import { emptyState } from "../src/credentials/model.ts";
 import { makePool, MemoryPoolStore, TestNow } from "./support/pool.ts";
 
 const group = (name: string, extra = "", model = "{ name: m }") => `
@@ -687,5 +688,24 @@ describe("weighted credits across the credential lifecycle (CLIProxyAPI 9d7d012b
     });
 
     expect(id).toBe("claude-a.json");
+  });
+});
+
+describe("forced cooldowns stored without their deadline", () => {
+  it("are seeded when the pool loads its states", async () => {
+    const store = new MemoryPoolStore();
+    const clock = new TestNow();
+    store.upsert("claude-a.json", "claude", { type: "claude", access_token: "t" });
+
+    store.states.set("claude-a.json", {
+      ...emptyState(),
+      status: "error",
+      unavailable: true,
+      nextRetryAfter: clock.value + 3_600_000,
+      lastError: { code: "force_cooldown", message: "stop", retryable: false, httpStatus: 429 },
+    });
+
+    const { pool } = await makePool("", { store, clock });
+    expect(pool.entry("claude-a.json")?.state.forcedUntil).toBe(clock.value + 3_600_000);
   });
 });
