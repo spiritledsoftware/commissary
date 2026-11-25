@@ -49,6 +49,11 @@ export interface PayloadRequest {
   readonly model: string;
   /** Model string the client sent (may carry a `(thinking)` suffix); lets rules target aliases. */
   readonly requestedModel?: string;
+  /**
+   * The published route's provider-qualified source (`copilot/gpt-6-sol`), which rules may also name. Go:
+   * internal/runtime/executor/helps/payload_helpers.go (`ApplyPayloadConfigWithRequestDoc`, f89d408e).
+   */
+  readonly sourceModel?: string;
   /** Target (provider) protocol of the payload, e.g. `openai`, `claude`, `gemini`, `codex`, `antigravity`. */
   readonly protocol: string;
   /** Source (client) protocol, e.g. `openai`, `responses`, `claude`, `gemini`. */
@@ -225,14 +230,16 @@ export const applyPayloadRules = (
   const model = request.model.trim();
   const requestedModel = (request.requestedModel ?? "").trim();
 
-  if (!hasPayloadRules || (model === "" && requestedModel === "")) return { payload: out, touched };
+  const candidates = payloadModelCandidates(model, requestedModel, request.sourceModel);
+
+  if (!hasPayloadRules || candidates.length === 0) return { payload: out, touched };
 
   const context: PayloadMatchContext = {
     protocol: request.protocol,
     fromProtocol: request.fromProtocol ?? "",
     headers: request.headers,
     root,
-    candidates: payloadModelCandidates(model, requestedModel),
+    candidates,
   };
 
   const matches = (rule: PayloadRule | { readonly models?: PayloadRule["models"] }): boolean =>

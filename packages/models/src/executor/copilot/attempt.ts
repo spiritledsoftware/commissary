@@ -54,6 +54,7 @@ import {
   type SeedInput,
 } from "./request.ts";
 import {
+  COPILOT_MODEL_PREFIX,
   COPILOT_PROVIDER,
   copilotNativeModel,
   type CopilotRoute,
@@ -237,13 +238,20 @@ export const translateForCopilot = Effect.fnUntraced(function* (
   return { body: yield* asObject(applied), original };
 });
 
-/** User payload rules: the final semantic mutation of the business payload (AGENTS.md). */
-export const finalizeForCopilot = (attempt: CopilotAttempt, original: Json, body: Json): Json =>
-  finalizePayload(
+/**
+ * User payload rules: the final semantic mutation of the business payload (AGENTS.md). Rules also match the published
+ * route's source (`copilot/<id>`), so an alias shares its source's rules (f89d408e).
+ */
+export const finalizeForCopilot = (attempt: CopilotAttempt, original: Json, body: Json): Json => {
+  const requested = parseSuffix(attempt.request.model).modelName;
+
+  return finalizePayload(
     attempt.context.config,
     COPILOT_PROVIDER,
     {
       model: attempt.route.model,
+      // The request names a published route only when it carries the namespace.
+      sourceModel: requested.startsWith(COPILOT_MODEL_PREFIX) ? requested : "",
       requestedModel:
         attempt.options.metadata.requestedModel !== ""
           ? attempt.options.metadata.requestedModel
@@ -257,6 +265,7 @@ export const finalizeForCopilot = (attempt: CopilotAttempt, original: Json, body
     body,
     attempt.context.usage,
   );
+};
 
 /** The body after the payload rules must still be in the mode the answer is read in. */
 export const checkStreamMode = (body: Json, stream: boolean): Effect.Effect<void, ExecutionError> =>

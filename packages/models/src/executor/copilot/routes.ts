@@ -17,11 +17,12 @@ import type { ThinkingModelInfo } from "@commissary/translation/thinking";
 import { Formats } from "@commissary/translation/formats";
 import { additionRecord } from "../../registry/catalog-additions.ts";
 import { catalogAdditions } from "../../registry/catalog.ts";
+import { PUBLISHED_PROVIDERS } from "../../registry/published-routes.ts";
 
 export const COPILOT_PROVIDER = "copilot";
 
-/** Go `copilot.ModelPrefix`: a client may name a model `copilot/<id>`; the upstream gets the bare id. */
-export const COPILOT_MODEL_PREFIX = `${COPILOT_PROVIDER}/`;
+/** Go `copilot.ModelPrefix`: Copilot's models publish as `copilot/<id>`; the upstream gets the bare id. */
+export const COPILOT_MODEL_PREFIX = PUBLISHED_PROVIDERS.copilot.prefix;
 
 export const COPILOT_CHAT = "/chat/completions";
 

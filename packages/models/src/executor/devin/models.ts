@@ -17,6 +17,7 @@ import {
   parseSuffix,
 } from "@commissary/translation/thinking";
 import type { ThinkingModelInfo } from "@commissary/translation/thinking";
+import { stripPublishedPrefix } from "../../registry/published-routes.ts";
 
 /** Exact model UID suffixes that mean "already resolved". */
 const KNOWN_SUFFIXES = [
@@ -165,9 +166,7 @@ export const resolveDevinChatModelUid = (
   const model = rawModel.trim();
 
   if (model === "") return "swe-2-high";
-  let clean = model;
-
-  if (clean.toLowerCase().startsWith("devin/")) clean = clean.slice(6);
+  const clean = stripPublishedPrefix("devin", model);
 
   if (hasDevinEffortSuffix(clean)) return clean;
 

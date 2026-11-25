@@ -71,8 +71,16 @@ const parseThinkingSuffix = (model: string): ThinkingSuffix => {
   return suffixed;
 };
 
-/** `[upstream model, base of requested model, requested model with suffix]`, deduplicated case-insensitively. */
-export const payloadModelCandidates = (rawModel: string, rawRequestedModel: string): string[] => {
+/**
+ * `[upstream model, base of requested model, requested model with suffix]`, deduplicated case-insensitively, then the
+ * published route's source, which keeps its canonical spelling: selectors are case-sensitive. Go:
+ * internal/runtime/executor/helps/payload_helpers.go (`payloadModelCandidates`, f89d408e).
+ */
+export const payloadModelCandidates = (
+  rawModel: string,
+  rawRequestedModel: string,
+  rawSourceModel = "",
+): string[] => {
   const model = rawModel.trim();
   const requestedModel = rawRequestedModel.trim();
   const candidates: string[] = [];
@@ -97,6 +105,10 @@ export const payloadModelCandidates = (rawModel: string, rawRequestedModel: stri
 
     if (parsed.hasSuffix) add(requestedModel);
   }
+
+  const source = rawSourceModel.trim();
+
+  if (source !== "" && !candidates.includes(source)) candidates.push(source);
 
   return candidates;
 };

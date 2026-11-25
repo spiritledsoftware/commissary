@@ -333,6 +333,102 @@ oauth:
   });
 });
 
+// Go: service_copilot_test.go, service_devin_routing_test.go, service_oauth_model_alias_test.go (f89d408e).
+describe("assembleCredentialModels: Copilot and Devin published routes", () => {
+  const byId = (models: ReadonlyArray<ModelInfo> | undefined, id: string) =>
+    models?.find((entry) => entry.id === id);
+
+  it.each(["copilot", "devin"])(
+    "publishes every %s catalog model under its provider-qualified source",
+    (provider) => {
+      const models = assembleCredentialModels(source("a", provider), options())?.models ?? [];
+
+      expect(models.length).toBeGreaterThan(0);
+
+      for (const entry of models) {
+        expect(entry.id.startsWith(`${provider}/`)).toBe(true);
+        expect(entry.id.slice(provider.length + 1)).not.toContain(`${provider}/`);
+        expect(entry.sourceModelId).toBe(entry.id);
+      }
+    },
+  );
+
+  it("names Copilot's models as Go does and keeps the bare ids for no one", () => {
+    const models = assembleCredentialModels(source("a", "copilot"), options())?.models;
+
+    expect(byId(models, "copilot/gpt-6-sol")?.displayName).toMatch(/ \(Copilot\)$/);
+    expect(byId(models, "gpt-6-sol")).toBeUndefined();
+    expect(
+      byId(assembleCredentialModels(source("d", "devin"), options())?.models, "devin/swe-2"),
+    ).toBeDefined();
+  });
+
+  it("aliases, excludes and sets the qualified source, and aliases keep it", () => {
+    const yaml = `
+oauth:
+  model-alias:
+    copilot:
+      - { name: copilot/claude-sonnet-5.5, alias: sonnet }
+      - { name: gpt-6-sol, alias: bare-name-maps-nothing }
+    devin:
+      - { name: devin/swe-2, alias: swe, fork: true }
+  settings:
+    copilot:
+      - { name: claude-sonnet-5.5, max-context-length: 111000 }
+    devin:
+      - { name: devin/swe-2, max-context-length: 222000 }
+      - { name: swe-2-flash, max-context-length: 333000 }
+`;
+
+    const copilot = assembleCredentialModels(
+      source("a", "copilot", { excludedModels: ["copilot/grok-*", "gpt-6-luna"] }),
+      options(yaml),
+    )?.models;
+
+    expect(byId(copilot, "sonnet")).toMatchObject({
+      sourceModelId: "copilot/claude-sonnet-5.5",
+      metadataModelId: "copilot/claude-sonnet-5.5",
+      contextLength: 111000,
+    });
+    expect(byId(copilot, "copilot/claude-sonnet-5.5")).toBeUndefined();
+    expect(byId(copilot, "bare-name-maps-nothing")).toBeUndefined();
+    expect(copilot?.some((entry) => entry.id.startsWith("copilot/grok-"))).toBe(false);
+    // A pattern matches the published id or its source, never the native id alone.
+    expect(byId(copilot, "copilot/gpt-6-luna")).toBeDefined();
+
+    const devin = assembleCredentialModels(source("d", "devin"), options(yaml))?.models;
+
+    expect(byId(devin, "swe")).toMatchObject({
+      sourceModelId: "devin/swe-2",
+      contextLength: 222000,
+    });
+    expect(byId(devin, "devin/swe-2")?.contextLength).toBe(222000);
+    // A setting that names Devin's bare id now applies too (it used to match nothing).
+    expect(byId(devin, "devin/swe-2-flash")?.contextLength).toBe(333000);
+  });
+
+  it("keeps an alias that already carries the credential prefix", () => {
+    const models = applyModelPrefixes(
+      [
+        // A plain model listed first would otherwise take the explicit alias's name with its prefixed copy.
+        model("gpt-6-sol"),
+        model("copilot/gpt-6-sol", { sourceModelId: "copilot/gpt-6-sol" }),
+        model("team/gpt-6-sol", {
+          sourceModelId: "copilot/gpt-6-sol",
+          metadataModelId: "copilot/gpt-6-sol",
+        }),
+      ],
+      "team",
+      false,
+    );
+
+    expect(models.filter((entry) => entry.id === "team/gpt-6-sol")).toEqual([
+      expect.objectContaining({ sourceModelId: "copilot/gpt-6-sol" }),
+    ]);
+    expect(ids(models)).toContain("team/copilot/gpt-6-sol");
+  });
+});
+
 describe("assembleCredentialModels: provider keys", () => {
   it("replaces the catalog with the configured models (owner/type per family, static thinking inherited)", () => {
     const assembled = assembleCredentialModels(

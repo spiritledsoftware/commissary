@@ -1338,7 +1338,21 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
 - **Assembly** (`credential-models.ts`): `registerModelsForAuth` per credential: base list (provider catalog, Codex plan
   tier, config `models:`), exclusions, OAuth aliases (`fork`, display names, per-credential first), `oauth.settings`
   context length, prefixes (`force-model-prefix`). OpenAI-compatibility models keep duplicate aliases (model pools) and skip
-  exclusions/aliases like Go.
+  exclusions/aliases like Go. Copilot's and Devin's catalog models are _published routes_ (Go `f89d408e`): each registers as
+  `<provider>/<native id>` (Copilot's display names end in ` (Copilot)`), and that qualified id is its source
+  (`sourceModelId`, Go `SourceModelID`), kept by its aliases and prefixed copies (the providers and their prefixes:
+  `published-routes.ts`). Exclusions and OAuth aliases apply after the namespace, so they name `copilot/gpt-6-sol`, not
+  `gpt-6-sol` (an exclusion matches the published id or the source). Devin's ids were already `devin/<id>`, so its
+  exclusions and aliases behave as before. `oauth.settings` also match the source and its native id, so an alias shares
+  its source's settings; for Devin that is new: a setting that names a bare id (`swe-2`) now applies, where it was
+  ignored before. A prefixed copy never
+  replaces an alias already named `<prefix>/<id>`; and Copilot's payload rules also match the source of the request's
+  route. The management API (`routing/models`, `credentials/models`) shows the qualified ids as clients call them, which is
+  what Go's v8 `model-definitions` answers for these two channels (`2a33e205`; that static catalog route is not ported).
+  Differences from Go: Devin's catalog additions keep their `devin/<id>` records (Go now stores bare ids and qualifies them
+  at publication; the published ids are the same), no cooldown-state migration (Commissary never stored Copilot state under
+  native ids), and nothing for Go's Responses WebSocket matching: a socket's pinned credential is picked through the same
+  routing as every request.
 - **Grants in the registry** (ADR 0023, `grant-filter.ts`): the snapshot knows every model (routing and the pick enforce
   grants themselves); `RegistrySnapshot.visibleTo(memberId)` is the registry as one caller may use it. It builds a snapshot
   of its own from the same sources under the member's `Reach`: `assembleCredentialModels` drops the models of a shared
@@ -2966,9 +2980,10 @@ Port of Go's Copilot executor (`7ae771fc`, `d059cf28`, `5dff8b67`, `b824c052`, `
 Copilot credential (_Provider OAuth logins_) serves the Copilot CLI's preset models:
 
 - **Catalog**: the presets are the `copilot` section of the catalog additions (`catalog/additions.json`, Go `models.json`
-  `copilot`): private ids, additions entirely, like Devin's. Every Copilot credential registers them under their native ids
-  (`claude-sonnet-5.5`, `gpt-6-sol`, ...); `oauth.model-alias.copilot` aliases them and the alias reaches Copilot as the native
-  id. They are in the static lookup after Meta's (`cbfc90ad`).
+  `copilot`): private ids, additions entirely, like Devin's. Every Copilot credential publishes them as `copilot/<id>`
+  (`copilot/claude-sonnet-5.5`, `copilot/gpt-6-sol`, ...; Go `f89d408e`, see _Assembly_ under the model registry);
+  `oauth.model-alias.copilot` aliases that qualified id, and the request reaches Copilot with the native id. They are in the
+  static lookup after Meta's (`cbfc90ad`).
 - **Routes** (`routes.ts`): each preset goes to the endpoint of its CLI profile (Go `compat.json`): Chat Completions
   (`/chat/completions`, Gemini and Kimi models), Messages (`/v1/messages`, Claude models) or Responses (`/responses`, GPT, Grok
   and MAI models), with the CLI's defaults (effort or budget where the request names none, Messages `max_tokens` capped by the

@@ -30,6 +30,11 @@ export interface ModelInfo {
   readonly id: string;
   /** Upstream model id when `id` is an alias or carries a prefix (Go `MetadataModelID`, runtime only). */
   readonly metadataModelId?: string;
+  /**
+   * The provider-qualified model behind a published route (`copilot/gpt-6-sol`, `devin/swe-2`), kept by its aliases and
+   * prefixed copies (Go `SourceModelID`, runtime only): exclusions and OAuth settings also match it.
+   */
+  readonly sourceModelId?: string;
   /** Thinking support was configured explicitly (runtime only). */
   readonly explicitThinking?: boolean;
   readonly explicitInputModalities?: boolean;

@@ -493,6 +493,21 @@ describe("payload rules engine details", () => {
     expect(payloadModelCandidates("", "")).toEqual([]);
   });
 
+  it("payloadModelCandidates adds a published route's source in its canonical spelling (f89d408e)", () => {
+    expect(payloadModelCandidates("gpt-6-sol", "sonnet", "copilot/gpt-6-sol")).toEqual([
+      "gpt-6-sol",
+      "sonnet",
+      "copilot/gpt-6-sol",
+    ]);
+    expect(payloadModelCandidates("gpt-6-sol", "COPILOT/GPT-6-SOL", "copilot/gpt-6-sol")).toEqual([
+      "gpt-6-sol",
+      "COPILOT/GPT-6-SOL",
+      "copilot/gpt-6-sol",
+    ]);
+    expect(payloadModelCandidates("", "", " copilot/gpt-6-sol ")).toEqual(["copilot/gpt-6-sol"]);
+    expect(payloadModelCandidates("gpt-6-sol", "", " ")).toEqual(["gpt-6-sol"]);
+  });
+
   it("resolvePayloadRulePaths expands queries into index paths", () => {
     const body: Json = { items: [{ k: "a" }, { k: "b" }, { k: "a" }] };
     expect(resolvePayloadRulePaths(body, 'items.#(k=="a")#.x')).toEqual(["items.0.x", "items.2.x"]);

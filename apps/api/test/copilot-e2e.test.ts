@@ -23,13 +23,21 @@ const upstreamCalls: Captured[] = [];
 
 const realFetch = globalThis.fetch;
 
-// The alias is the OAuth model alias of the Copilot channel (5dff8b67): clients name `sonnet`, Copilot gets its id.
+// Copilot's models publish as `copilot/<id>` (f89d408e). The alias is the OAuth model alias of the Copilot channel
+// (5dff8b67), named after that source: clients name `sonnet`, Copilot gets the native id. A payload rule that names the
+// source applies to its alias too.
 const YAML = `
 oauth-model-alias:
   copilot:
-    - name: claude-sonnet-5.5
+    - name: copilot/claude-sonnet-5.5
       alias: sonnet
       fork: true
+payload:
+  override:
+    - models:
+        - name: copilot/claude-sonnet-5.5
+      params:
+        top_k: 7
 `;
 
 const CREDENTIAL = {
@@ -336,16 +344,42 @@ describe("Copilot models", () => {
     const ids = listed.data.map((model) => model.id);
 
     expect(ids).toEqual(
-      expect.arrayContaining(["claude-sonnet-5.5", "sonnet", "gpt-6-sol", "gemini-4-argon"]),
+      expect.arrayContaining([
+        "copilot/claude-sonnet-5.5",
+        "sonnet",
+        "copilot/gpt-6-sol",
+        "copilot/gemini-4-argon",
+      ]),
     );
+    // Only the published routes: the native ids are not Copilot's to serve.
+    expect(ids).not.toContain("gpt-6-sol");
+    expect(ids.filter((id) => id.startsWith("copilot/copilot/"))).toEqual([]);
     expect(upstreamCalls).toEqual([]);
+  });
+
+  it("serves no native id, and resolves the published route's thinking suffix", async () => {
+    const bare = await post("/v1/chat/completions", { model: "gpt-6-sol", messages: USER });
+
+    expect(bare.status).not.toBe(200);
+    await bare.text();
+    expect(upstreamCalls).toEqual([]);
+
+    const suffixed = await post("/v1/responses", {
+      model: "copilot/gpt-6-sol(high)",
+      stream: true,
+      input: "Say hello",
+    });
+
+    expect(suffixed.status).toBe(200);
+    await suffixed.text();
+    expect(lastCall().body).toMatchObject({ model: "gpt-6-sol", reasoning: { effort: "high" } });
   });
 });
 
 describe("Copilot Chat Completions route", () => {
   it("streams an OpenAI client's request with the CLI's identity to the trusted origin", async () => {
     const response = await post("/v1/chat/completions", {
-      model: "gemini-4-argon",
+      model: "copilot/gemini-4-argon",
       stream: true,
       messages: [
         ...USER,
@@ -388,7 +422,7 @@ describe("Copilot Chat Completions route", () => {
 
   it("streams back to a Claude client in Claude events", async () => {
     const response = await post("/v1/messages", {
-      model: "gemini-4-argon",
+      model: "copilot/gemini-4-argon",
       max_tokens: 256,
       stream: true,
       messages: USER,
@@ -402,9 +436,12 @@ describe("Copilot Chat Completions route", () => {
   });
 
   it("answers a Gemini client's stream and counts its tokens in Gemini's format", async () => {
-    const streamed = await post("/v1beta/models/gemini-4-argon:streamGenerateContent?alt=sse", {
-      contents: [{ role: "user", parts: [{ text: "Say hello" }] }],
-    });
+    const streamed = await post(
+      "/v1beta/models/copilot/gemini-4-argon:streamGenerateContent?alt=sse",
+      {
+        contents: [{ role: "user", parts: [{ text: "Say hello" }] }],
+      },
+    );
 
     expect(streamed.status).toBe(200);
     expect(geminiText(await streamed.text())).toBe("Hello");
@@ -412,7 +449,7 @@ describe("Copilot Chat Completions route", () => {
 
     upstreamCalls.length = 0;
 
-    const counted = await post("/v1beta/models/gemini-4-argon:countTokens", {
+    const counted = await post("/v1beta/models/copilot/gemini-4-argon:countTokens", {
       contents: [{ role: "user", parts: [{ text: "Say hello" }] }],
     });
 
@@ -446,6 +483,8 @@ describe("Copilot Messages route", () => {
       stream: true,
       thinking: { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } },
       output_config: { effort: "medium" },
+      // f89d408e: the payload rule names the alias's source, `copilot/claude-sonnet-5.5`.
+      top_k: 7,
     });
   });
 
@@ -453,7 +492,7 @@ describe("Copilot Messages route", () => {
     upstream = () => Response.json(MESSAGE);
 
     const response = await post("/v1/messages", {
-      model: "claude-sonnet-5.5",
+      model: "copilot/claude-sonnet-5.5",
       messages: USER,
     });
 
@@ -464,7 +503,7 @@ describe("Copilot Messages route", () => {
 
   it("streams back to an OpenAI client and a Responses client", async () => {
     const chat = await post("/v1/chat/completions", {
-      model: "claude-sonnet-5.5",
+      model: "copilot/claude-sonnet-5.5",
       stream: true,
       messages: USER,
     });
@@ -475,7 +514,7 @@ describe("Copilot Messages route", () => {
     expect(lastCall().body["metadata"]).toBeUndefined();
 
     const responses = await post("/v1/responses", {
-      model: "claude-sonnet-5.5",
+      model: "copilot/claude-sonnet-5.5",
       stream: true,
       input: "Say hello",
     });
@@ -488,7 +527,7 @@ describe("Copilot Messages route", () => {
 describe("Copilot Responses route", () => {
   it("streams a Responses client's request with the CLI's defaults", async () => {
     const response = await post("/v1/responses", {
-      model: "gpt-6-sol",
+      model: "copilot/gpt-6-sol",
       stream: true,
       instructions: "Be brief.",
       input: "Say hello",
@@ -510,7 +549,7 @@ describe("Copilot Responses route", () => {
 
   it("converts OpenAI and Claude clients to standard Responses, with the CLI's default effort", async () => {
     const chat = await post("/v1/chat/completions", {
-      model: "grok-4.7",
+      model: "copilot/grok-4.7",
       stream: true,
       temperature: 0.2,
       top_p: 0.9,
@@ -532,7 +571,7 @@ describe("Copilot Responses route", () => {
     });
 
     const claude = await post("/v1/messages", {
-      model: "grok-4.7",
+      model: "copilot/grok-4.7",
       max_tokens: 256,
       stream: true,
       temperature: 0.5,
@@ -552,7 +591,7 @@ describe("Copilot Responses route", () => {
 
   it("streams back to OpenAI and Claude clients and collects a non-streaming answer", async () => {
     const chat = await post("/v1/chat/completions", {
-      model: "gpt-6-sol",
+      model: "copilot/gpt-6-sol",
       stream: true,
       messages: [{ role: "system", content: "Be brief." }, ...USER],
     });
@@ -565,7 +604,7 @@ describe("Copilot Responses route", () => {
     expect(input[0]?.role).toBe("system");
 
     const claude = await post("/v1/messages", {
-      model: "gpt-6-sol",
+      model: "copilot/gpt-6-sol",
       max_tokens: 256,
       stream: true,
       messages: USER,
@@ -574,7 +613,11 @@ describe("Copilot Responses route", () => {
     expect(claude.status).toBe(200);
     expect(claudeText(await claude.text())).toBe("Hello");
 
-    const collected = await post("/v1/chat/completions", { model: "gpt-6-sol", messages: USER });
+    const collected = await post("/v1/chat/completions", {
+      model: "copilot/gpt-6-sol",
+      messages: USER,
+    });
+
     expect(collected.status).toBe(200);
     expect(await collected.json()).toMatchObject({
       choices: [{ message: { role: "assistant", content: "Hello" } }],
@@ -587,7 +630,7 @@ describe("Copilot Responses route", () => {
 describe("Copilot credentials", () => {
   it("never sends a token to an origin that is not Copilot's", async () => {
     const response = await post("/v1/chat/completions", {
-      model: "untrusted/gemini-4-argon",
+      model: "untrusted/copilot/gemini-4-argon",
       messages: USER,
     });
 
