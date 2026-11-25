@@ -2,7 +2,8 @@
  * Availability filter: is a credential selectable for a model right now?
  *
  * Go source: sdk/cliproxy/auth/selector.go (`isAuthBlockedForModel`, `availabilityBlock`, `collectAvailableByPriority`)
- * and conductor_cooldown.go (`hasUnauthorizedAuthFailure`). Docs: credentials.md §6.2.
+ * and conductor_cooldown.go (`hasUnauthorizedAuthFailure`); a credential quota's deadline extends to a later model one
+ * (cb70eacf). Docs: credentials.md §6.2.
  * Pure: the clock is a parameter and nothing is mutated, so expired cooldowns need no cleanup ("lazy expiry").
  */
 import { accessTokenExpiry } from "../expiry.ts";
@@ -74,11 +75,34 @@ export const isBlockedForModel = (
   if (expiry !== undefined && expiry <= now) return { blocked: true, reason: "other", next: 0 };
   const quota = state.quota;
 
-  if (quota.exceeded && quota.reason === "credential_quota" && quota.nextRecoverAt > now) {
-    return { blocked: true, reason: "cooldown", next: quota.nextRecoverAt };
-  }
-
   const states = Object.entries(state.modelStates);
+
+  if (quota.exceeded && quota.reason === "credential_quota" && quota.nextRecoverAt > now) {
+    // The model's own later deadline (or a disabled model) outranks the credential quota's (cb70eacf).
+    let next = quota.nextRecoverAt;
+
+    if (model !== "") {
+      const key = canonicalModelLookupKey(model);
+
+      for (const [stateModel, modelState] of states) {
+        if (canonicalModelLookupKey(stateModel) !== key) continue;
+
+        if (modelState.status === "disabled") return { blocked: true, reason: "disabled", next: 0 };
+
+        const block = availabilityBlock(
+          modelState.unavailable,
+          modelState.quota.exceeded,
+          modelState.nextRetryAfter,
+          modelState.quota.nextRecoverAt,
+          now,
+        );
+
+        if (block.blocked && block.next > next) next = block.next;
+      }
+    }
+
+    return { blocked: true, reason: "cooldown", next };
+  }
 
   if (model !== "") {
     if (states.length === 0) {

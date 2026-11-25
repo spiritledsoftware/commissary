@@ -95,6 +95,13 @@ export const QuotaState = Schema.Struct({
   backoffLevel: Schema.Int,
   observedAt: optional(Schema.Number),
   signals: optional(StringMap),
+  /**
+   * The rejected Claude unified-quota headers of the response that recorded this cooldown (cb70eacf), kept apart from
+   * the passive `signals` so a later observation cannot overwrite them.
+   */
+  cooldownSignals: optional(StringMap),
+  /** A cooldown was recorded from a response (with or without `cooldownSignals`): `signals` no longer stand in. */
+  cooldownEvaluated: optional(Schema.Boolean),
 });
 
 export type QuotaState = typeof QuotaState.Type;

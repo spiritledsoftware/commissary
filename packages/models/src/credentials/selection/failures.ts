@@ -6,6 +6,7 @@
  */
 import { type Refusal, spendRefusalMessage } from "@commissary/state/spend";
 import { formatDurationSeconds } from "../../http/duration.ts";
+import { claudeUnifiedCooldownHeaders } from "../cooldown/claude-unified.ts";
 import type { PickFailure } from "./types.ts";
 
 export const providerNotFound = (): PickFailure => ({
@@ -58,8 +59,16 @@ export const authUnavailable = (earliest: number, now: number): PickFailure => {
   return { code: "auth_unavailable", message: "no auth available", retryable: false };
 };
 
-/** `modelCooldownError`: HTTP 429 with the Go JSON body. */
-export const modelCooldown = (model: string, provider: string, resetInMs: number): PickFailure => {
+/**
+ * `modelCooldownError`: HTTP 429 with the Go JSON body. A cooldown of Claude unified quotas (`claude`, cb70eacf) also
+ * carries the `Anthropic-Ratelimit-Unified-*` headers, aligned with `Retry-After`.
+ */
+export const modelCooldown = (
+  model: string,
+  provider: string,
+  resetInMs: number,
+  claude?: { readonly signals: Readonly<Record<string, string>> | undefined; readonly now: number },
+): PickFailure => {
   const resetMs = Math.max(0, resetInMs);
   const resetSeconds = Math.ceil(resetMs / 1000);
   const display = resetMs > 0 && resetMs < 1000 ? 1 : Math.round(resetMs / 1000);
@@ -83,6 +92,9 @@ export const modelCooldown = (model: string, provider: string, resetInMs: number
     retryable: true,
     retryAfterSeconds: resetSeconds,
     body: JSON.stringify({ error }),
+    ...(claude === undefined || resetSeconds <= 0
+      ? {}
+      : { headers: claudeUnifiedCooldownHeaders(claude.signals, resetSeconds, claude.now) }),
   };
 };
 

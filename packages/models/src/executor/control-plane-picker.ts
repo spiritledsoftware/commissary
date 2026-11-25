@@ -72,6 +72,7 @@ export const pickFailureError = (failure: PickFailure): ExecutionError => {
     status,
     code: failure.code,
     message: failure.body ?? failure.message,
+    ...(failure.headers === undefined ? {} : { headers: failure.headers }),
     ...(failure.retryAfterSeconds === undefined
       ? {}
       : {
