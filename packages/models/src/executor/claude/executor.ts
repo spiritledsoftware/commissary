@@ -348,6 +348,7 @@ export const makeClaudeExecutor = (
             callerScope,
             prepared.threadAliasKeys(messageId),
             prepared.reverseMap,
+            prepared.threadBetas,
           ),
     ]).pipe(Effect.asVoid);
 

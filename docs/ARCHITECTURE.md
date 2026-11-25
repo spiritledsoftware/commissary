@@ -1588,9 +1588,15 @@ Deviations from Go (all deliberate, documented in code headers):
   expiry, and Messages and `count_tokens` requests drop another credential's advisor blocks, and the turns they leave empty,
   before cloaking. Differences from Go: one `SessionState` instance per org, caller and provider instead of process
   memory plus an optional KV; every lookup slides the expiry; the owner is a hash of the credential id.
-- **Thread beta profiles** (CLIProxyAPI 02ec93d0) are not ported: Go pins a Thread continuation to the credential of its
-  previous message and replays that message's `Anthropic-Beta` snapshot, holding a stream's terminal events until
-  `message_stop`. Commissary builds each Thread turn's betas afresh.
+- **Thread beta profiles** (`thread.ts`, CLIProxyAPI 02ec93d0, narrowed): the `message:<id>` record of an accepted
+  Thread message also keeps the `Anthropic-Beta` header it was sent with and the credential (a hash) that sent it, and a
+  `thread.type = "continue"` turn on that credential sends the snapshot again, plus the betas its own final body needs
+  (fast mode, advisor tool, binding controls, 1 h cache TTL). Left out of Go's version: the policy fingerprint
+  (header-default strip/append, custom beta headers, uncloak) and payload-rule `betas` tracking, and the 409 that Go
+  answers on a conflict or an unknown profile (an unknown or other-credential profile sends the turn's own betas); the
+  credential pin of a continuation (a continuation stays on its credential only through session affinity); Go's
+  per-turn beta gating exemption for caller-declared Threads; and holding a stream's terminal events until
+  `message_stop` before the profile is saved (the next turn can arrive before the save and send its own betas).
 - **Post-payload reconcilers** (`reconcile.ts`: Fable 5.1 / Opus 5.5 fallbacks, `thinking.display`, `# Reporting outcomes`
   block, system-turn placement) are ported and tested against the Go cases but, exactly like in Go, not called by the
   executors: payload rules are the final mutation, nothing may rewrite the body after them. `experimental-cch-signing` is
