@@ -42,6 +42,11 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>()("Execut
   direct: Schema.optional(Schema.Boolean),
   /** Upstream response headers (`Headers()`); exposed to clients only with `passthrough-headers`. */
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * A direct answer that failed a stream before its first payload: the headers the stream opened with (Go `Addon`),
+   * added below the answer's own `headers`, only with `passthrough-headers`.
+   */
+  streamHeaders: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Safe headers for the client regardless of passthrough (e.g. `Retry-After` of cooldown errors). */
   safeHeaders: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** `upstream_websocket_lost` only: the other operations of the downstream socket that lose their outcome with it. */
@@ -92,6 +97,7 @@ export const withErrorFields = (
     terminalAuth: boolean;
     direct: boolean;
     headers: Record<string, string>;
+    streamHeaders: Record<string, string>;
     safeHeaders: Record<string, string>;
     abandoned: ReadonlyArray<AbandonedOperation>;
     cause: unknown;
@@ -107,6 +113,7 @@ export const withErrorFields = (
     ...(error.terminalAuth === undefined ? {} : { terminalAuth: error.terminalAuth }),
     ...(error.direct === undefined ? {} : { direct: error.direct }),
     ...(error.headers === undefined ? {} : { headers: error.headers }),
+    ...(error.streamHeaders === undefined ? {} : { streamHeaders: error.streamHeaders }),
     ...(error.safeHeaders === undefined ? {} : { safeHeaders: error.safeHeaders }),
     ...(error.abandoned === undefined ? {} : { abandoned: error.abandoned }),
     ...(error.cause === undefined ? {} : { cause: error.cause }),

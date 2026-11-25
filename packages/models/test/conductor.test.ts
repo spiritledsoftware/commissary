@@ -1003,7 +1003,7 @@ describe("stream bootstrap (CLIProxyAPI ab971876, d52047a6, df6c8ccb)", () => {
     }),
   );
 
-  it.effect("an error's own headers outrank the stream's", () =>
+  it.effect("the stream's headers replace the error's own, as Go's outer wrapper's do", () =>
     Effect.gen(function* () {
       const run = yield* setup(config(group("a")), () => jsonResponse({}), {
         executors: streamExecutor(() =>
@@ -1017,7 +1017,32 @@ describe("stream bootstrap (CLIProxyAPI ab971876, d52047a6, df6c8ccb)", () => {
       });
 
       const error = yield* failure(collect(run));
+      assert.deepStrictEqual(error.headers, { "x-upstream-trace": "t1" });
+    }),
+  );
+
+  it.effect("a direct answer keeps its own headers and gets the stream's beside them", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() =>
+          opened(
+            Stream.fail(
+              new ExecutionError({
+                status: 400,
+                message: "{}",
+                direct: true,
+                requestScoped: true,
+                headers: { "x-own": "1" },
+              }),
+            ),
+            { "x-upstream-trace": "t1" },
+          ),
+        ),
+      });
+
+      const error = yield* failure(collect(run));
       assert.deepStrictEqual(error.headers, { "x-own": "1" });
+      assert.deepStrictEqual(error.streamHeaders, { "x-upstream-trace": "t1" });
     }),
   );
 
@@ -1348,7 +1373,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
         const seen: string[] = [];
         const counts = { refresh: [] as Array<string | undefined>, ensure: 0 };
 
-        const failure = (terminal: boolean) => (): RefreshResult => ({
+        const refreshFailure = (terminal: boolean) => (): RefreshResult => ({
           ok: false,
           error: { code: "unauthorized", message: "invalid_grant", httpStatus: 400 },
           terminal,
@@ -1357,12 +1382,12 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
         const soft = yield* setup("", () => jsonResponse({}), {
           providers,
           executors: tokenExecutor(seen),
-          refresher: refresherFor(counts, failure(false)),
+          refresher: refresherFor(counts, refreshFailure(false)),
           prepare: (harness) =>
             harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
         });
 
-        const error = yield* failure_(soft.exec(executeNonStream(chatInput("claude-x"))));
+        const error = yield* failure(soft.exec(executeNonStream(chatInput("claude-x"))));
         assert.strictEqual(error.status, 401);
         assert.isUndefined(error.terminalAuth);
         assert.deepStrictEqual(seen, ["old"]);
@@ -1371,12 +1396,12 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
         const hard = yield* setup("", () => jsonResponse({}), {
           providers,
           executors: tokenExecutor([]),
-          refresher: refresherFor(counts, failure(true)),
+          refresher: refresherFor(counts, refreshFailure(true)),
           prepare: (harness) =>
             harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
         });
 
-        const terminal = yield* failure_(hard.exec(executeNonStream(chatInput("claude-x"))));
+        const terminal = yield* failure(hard.exec(executeNonStream(chatInput("claude-x"))));
         assert.strictEqual(terminal.terminalAuth, true);
       }),
   );
@@ -1400,7 +1425,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
           harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
       });
 
-      const error = yield* failure_(same.exec(executeNonStream(chatInput("claude-x"))));
+      const error = yield* failure(same.exec(executeNonStream(chatInput("claude-x"))));
       assert.strictEqual(error.status, 401);
       assert.deepStrictEqual(seen, ["old"]);
       assert.strictEqual(counts.refresh.length, 1);
@@ -1426,7 +1451,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
           harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
       });
 
-      yield* failure_(other.exec(executeNonStream(chatInput("claude-x"))));
+      yield* failure(other.exec(executeNonStream(chatInput("claude-x"))));
       assert.deepStrictEqual(fresh.refresh, []);
     }),
   );
@@ -1504,7 +1529,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
           ),
       });
 
-      const error = yield* failure_(run.exec(executeNonStream(chatInput("claude-x"))));
+      const error = yield* failure(run.exec(executeNonStream(chatInput("claude-x"))));
       assert.strictEqual(error.status, 503);
       assert.deepStrictEqual(seen, []);
       assert.strictEqual(counts.ensure, 1);
@@ -1534,8 +1559,9 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
             ),
         });
 
-        const error = yield* failure_(run.exec(executeNonStream(chatInput("claude-x"))));
-        assert.include(error.message, "no longer registered");
+        const error = yield* failure(run.exec(executeNonStream(chatInput("claude-x"))));
+        assert.strictEqual(error.code, "credential_removed");
+        assert.strictEqual(error.status, 500);
         assert.deepStrictEqual(seen, []);
         assert.strictEqual(counts.ensure, 1);
       }),
@@ -1568,14 +1594,12 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
             ),
         });
 
-        const error = yield* failure_(run.exec(executeNonStream(chatInput("claude-x"))));
+        const error = yield* failure(run.exec(executeNonStream(chatInput("claude-x"))));
         assert.strictEqual(error.status, 429);
         assert.strictEqual(error.retryAfterMs, 120_000);
       }),
   );
 });
-
-const failure_ = <A>(effect: Effect.Effect<A, ExecutionError>) => Effect.flip(effect);
 
 describe("Devin quota exhaustion (CLIProxyAPI b946d54e)", () => {
   const HOUR = 3_600_000;

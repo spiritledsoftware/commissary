@@ -739,9 +739,15 @@ Core contracts every provider slice implements (Go references in each module hea
   Streams are only "successful" after the first payload chunk (bootstrap read inside the request scope); earlier errors, a
   close before any payload (`empty_stream`, also after zero-payload chunks: CLIProxyAPI ab971876) or an HTTP error fail
   over; later errors reach the client and are reported when the stream ends. A failure before the first payload carries
-  the headers its stream opened with unless it has its own (a direct answer gets none), so `passthrough-headers` forwards
-  them (CLIProxyAPI d52047a6, df6c8ccb). `requests.streaming.bootstrap-retries` repeats the whole execution for bootstrap
-  failures, except one that ended the request (a stop rule, a request fault: Go `isTerminalRequestStopError`). A failed
+  the headers its stream opened with in place of its own, as Go's outer `streamBootstrapError`/`streamHeaderError` does,
+  so `passthrough-headers` forwards them (CLIProxyAPI d52047a6, df6c8ccb); a direct answer keeps its own headers and gets
+  the stream's as `streamHeaders` (Go `Addon`). A direct answer's response (`respond.ts`, Go `writeDirectErrorResponse`)
+  adds the safe `Retry-After` unless its own headers have one, then, with `passthrough-headers`, the stream's headers
+  that its own do not name (a trusted `Retry-After` outranks theirs), then its own. `requests.streaming.bootstrap-retries`
+  repeats the whole execution for bootstrap failures, except one that ended the request: a stop rule, a request fault or
+  a `responses/compact` fault. That is wider than Go's `isTerminalRequestStopError` (stop rules and preserved terminal
+  answers) but the same in effect, since Go returns the faults directly too and `bootstrapEligible` already refuses
+  their statuses (400, 422 and the other 4xx it does not list). A failed
   attempt's stream is closed (its scope, which cancels the upstream read) before the next attempt starts, and a client
   that goes away interrupts a stalled stream (CLIProxyAPI 538f9611, 4aca8df3 hold by construction). Go's completion flags
   (`streamPayloadCompletionFlags`, CLIProxyAPI 2c8b32fd, 3a0d3023) are not ported: they only feed inference verification,
@@ -755,7 +761,8 @@ Core contracts every provider slice implements (Go references in each module hea
   refresh failure marks the 401 `terminalAuth`). A preparation failure is an attempt's failure like any other (rules,
   stops, cooldown, with the `Retry-After` the refresh upstream asked for: CLIProxyAPI 2f57a5a6); a credential removed
   before or while it was prepared (`not_found`) fails the attempt rather than run on its stale snapshot (CLIProxyAPI
-  0a34244e). `ensureFresh` runs through the ControlPlane's per-credential refresh flight, so preparation and refresh are
+  0a34244e), with a 500 `credential_removed` (Go's error has no status, so it answers 500 too): a retry-round status,
+  and the request moves on to the next credential. `ensureFresh` runs through the ControlPlane's per-credential refresh flight, so preparation and refresh are
   serialised there. A client that goes away during preparation interrupts the attempt: unlike Go (CLIProxyAPI dfdb3ba4),
   which records nothing, the attempt is reported once as `connection_lifecycle` (no cooldown), and no further credential
   is picked. Executors with their own transport paths (WebSocket) can call

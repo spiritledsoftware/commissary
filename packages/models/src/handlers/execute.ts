@@ -321,16 +321,21 @@ const readBootstrap = (pull: Pull.Pull<ReadonlyArray<string>, ExecutionError>) =
   });
 
 /**
- * A failure before the first payload with the headers its stream opened with (CLIProxyAPI d52047a6, df6c8ccb: Go's
- * `streamHeaderError`/`streamBootstrapError`), so the client's error answer can carry them like any upstream error's
- * (`passthrough-headers`). Headers the error already has are its own and stay, and a direct answer (which is forwarded
- * with its headers whatever `passthrough-headers` says) gets none.
+ * A failure before the first payload with the headers its stream opened with (CLIProxyAPI d52047a6, df6c8ccb). Go wraps
+ * the error in `streamBootstrapError`/`streamHeaderError`, whose `Headers()` is found first, so the stream's headers
+ * replace the error's own; with `passthrough-headers` the client sees them. A direct answer keeps its own headers and
+ * gets the stream's as `streamHeaders` (Go `Addon`), which `errorResponse` adds below its own. A stream without headers
+ * leaves the error as it is.
  */
 const withStreamHeaders = (error: ExecutionError, headers: Headers): ExecutionError => {
-  if (error.headers !== undefined || error.direct === true) return error;
   const record = headersRecord(headers);
 
-  return Object.keys(record).length === 0 ? error : withErrorFields(error, { headers: record });
+  if (Object.keys(record).length === 0) return error;
+
+  return withErrorFields(
+    error,
+    error.direct === true ? { streamHeaders: record } : { headers: record },
+  );
 };
 
 /**

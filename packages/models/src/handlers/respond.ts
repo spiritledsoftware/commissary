@@ -86,11 +86,25 @@ export const errorResponse = (
   const headers: Record<string, string> = {};
 
   if (error.direct === true) {
-    if (error.headers !== undefined) {
-      filterUpstreamHeaders(new Headers(error.headers)).forEach((value, name) => {
-        if (!isCPAReservedResponseHeader(name)) headers[name] = value;
+    // `writeDirectErrorResponse` (CLIProxyAPI df6c8ccb): the safe Retry-After unless the answer has its own, then the
+    // headers of the stream it failed in (passthrough only; a trusted Retry-After outranks theirs), then its own.
+    const own = new Headers(error.headers ?? {});
+    const retryAfter = safeRetryAfter(error);
+
+    if (retryAfter !== undefined && !own.has("retry-after")) headers["retry-after"] = retryAfter;
+
+    if (options.passthroughHeaders && error.streamHeaders !== undefined) {
+      filterUpstreamHeaders(new Headers(error.streamHeaders)).forEach((value, name) => {
+        if (isCPAReservedResponseHeader(name) || own.has(name)) return;
+
+        if (retryAfter !== undefined && name === "retry-after") return;
+        headers[name] = value;
       });
     }
+
+    filterUpstreamHeaders(own).forEach((value, name) => {
+      if (!isCPAReservedResponseHeader(name)) headers[name] = value;
+    });
 
     headers["content-type"] ??= isValidJson(error.message)
       ? "application/json"

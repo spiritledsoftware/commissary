@@ -3,7 +3,8 @@
  *
  * Go source: sdk/cliproxy/auth/conductor_refresh.go (`tryRefreshAfterUnauthorized`, which skips 401s that a configured
  * request-scoped error rule matched), conductor_execution.go
- * (`prepareRequestAuth`, `PrepareRequestAuth`; credentials.md §9.3-9.5). The token work lives in the ControlPlane
+ * (`prepareRequestAuth`, `PrepareRequestAuth`, `prepareRequestAuthInternal`: a credential no longer registered is not
+ * used; credentials.md §9.3-9.5). The token work lives in the ControlPlane
  * (`ensureFresh`, `refreshNow`: serialised per credential, persisted before returning); this module is the Worker side:
  *  - `ensureFresh` first for credentials whose snapshot cannot be used as is (Vertex without a minted token, Meta
  *    without a key, an OAuth token that is missing/expired, Antigravity within 5 minutes of expiry);

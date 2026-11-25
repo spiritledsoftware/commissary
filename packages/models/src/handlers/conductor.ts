@@ -517,8 +517,11 @@ export const conduct = <T, R>(
         });
 
         /**
-         * The request ends at this error: a stop rule or a request fault (Go `isTerminalRequestStopError`, CLIProxyAPI
-         * df6c8ccb). It is answered as it is, so stream bootstrap retries do not replay it either.
+         * The request ends at this error, so stream bootstrap retries do not replay it either (CLIProxyAPI df6c8ccb). Go's
+         * `isTerminalRequestStopError` covers stop rules and preserved terminal answers; this also takes request faults
+         * and `responses/compact` faults. That is wider than Go's predicate but the same in effect: Go returns those
+         * directly too, and `bootstrapEligible` already refuses their statuses (400, 422 and the other 4xx it does not
+         * list).
          */
         const stopped = (error: ExecutionError): RoundOutcome<T> => ({
           ...failed(error, true),
