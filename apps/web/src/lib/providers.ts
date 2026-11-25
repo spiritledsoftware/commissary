@@ -8,6 +8,7 @@ const NAMES = new Map([
   ["antigravity", "Antigravity"],
   ["kimi", "Kimi"],
   ["xai", "xAI"],
+  ["copilot", "GitHub Copilot"],
   ["devin", "Devin"],
   ["meta", "Meta"],
   ["opencode-zen", "OpenCode Zen"],

@@ -70,6 +70,7 @@ describe("connect options", () => {
     ["meta", "through any model aggregator, API gateway, proxy, or similar offering"],
     ["kimi", "Kimi Code subscriptions are for interactive use only"],
     ["kimi-ai", "Kimi Code subscriptions are for interactive use only"],
+    ["copilot", "documents no way for a hosted service to relay a Copilot sign-in"],
     ["file", "terms bar or don't address use through a gateway"],
   ])("warns about %s's terms before connecting, at the org's own risk", (id, quote) => {
     const notices = connectNotices(connectOption(id), false);
@@ -99,6 +100,14 @@ describe("connect options", () => {
       expect(shared.at(-1), option.id).toContain("own risk");
       expect(privately.join(" "), option.id).not.toContain("forbids sharing");
     }
+  });
+
+  it("signs in to GitHub Copilot with a device code entered on github.com", () => {
+    expect(connectOption("copilot")).toMatchObject({
+      name: "GitHub Copilot",
+      method: { kind: "sign-in", provider: "copilot", flow: "code" },
+    });
+    expect(linkHost("https://github.com/login/device")).toBe("github.com");
   });
 
   it("names the host a link goes to", () => {
