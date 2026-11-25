@@ -3486,32 +3486,55 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     `agent/<cascade>/<millis>/<trajectory>/<step>` and `request.labels` (cascade, trajectory, step counters, `used_claude`, ...),
     with one cascade and trajectory per org, credential and session. They live in per-isolate memory (4096 sessions, least
     recently used out), as Go keeps them in process memory; a new isolate starts a new cascade. Go also keys them by the
-    credential's model-catalog scope and writes `labels.model_enum`; Commissary has no per-credential model enums yet, so it
-    never writes one. After the payload rules the body goes out compact and, for an agent request (a rule may change
+    credential's model-catalog scope; Commissary does not, since a credential whose grant changes starts new sessions anyway.
+    `labels.model_enum` is the upstream enum of the model sent, from the credential's catalog ("Thinking groups" below). After
+    the payload rules the body goes out compact and, for an agent request (a rule may change
     `requestType`), in the native client's key order (`payload-order.ts`, Go `SerializeAntigravityPayload`). Commissary
     reorders the parsed object, so a key that is an array index (`"0"`) always comes first, which Go's byte reordering does not
     force. The executor runs the wire normalisation (`normalizeAntigravityRequest`) again after the structured-output prompt,
     so the prompt joins the system instruction's single part.
   - _Signature cache per credential_ (`signature-scope.ts`, Go `85225381`, `06225fcf`): request-time recovery and response-time
-    writes use a view of the org's cache keyed by the credential id, a hash of its grant and the project, so a signature one
-    Google account issued is never sent on another, and the `CACHE` KV keys carry the same scope. An attempt without a token
+    writes use a view of the org's cache keyed by the credential id, a hash of its grant and the stored `project_id` (read from
+    the credential's metadata, as Go reads it), so a signature one Google account issued is never sent on another, and the
+    `CACHE` KV keys carry the same scope. The view wraps the org's cache rather than adding a scope parameter to it, so the
+    translators' cache interface stays as it is. An attempt without a token
     recovers and records nothing. Go hashes the access and refresh tokens and carries that grant identity across refreshes in
     credential metadata; Commissary hashes the refresh token (the access token without one), which a refresh keeps and a new
     login replaces, so the refresh path stays as it is.
   - _Replay keys_ (`replay/scope.ts`, Go `3988a389`): subagents, tasks, threads, conversations and Codex subagents that share a
     session id each get their own replay key, from the request's explicit session (`metadata.sessionId`, Go's canonical session)
-    or the session identities in its body; a fork without an identifiable child session replays nothing. Commissary has no
-    LCP-reconciled canonical id or execution-session metadata, so those branches of Go's priority list never fire.
+    or the session identities in its body; a fork without an identifiable child session replays nothing. A WebSocket turn's
+    execution session (`execution:<id>`) comes before the prompt-cache and derived keys, as in Go. Commissary has no
+    LCP-reconciled canonical id, so that branch of Go's priority list never fires.
   - _Failed responses_ (Go `c813f779`, `f2efe2c4`, `ae3d80f7`, `84b838e1`): an in-band `error` in a 200 body or stream frame is the
     upstream error it names (cooldowns included); a response with no output (no payload, only signatures, or a `MALFORMED`
     finish without content) is a 502 before anything reaches the client (`helps/gemini-zero-output.ts`, with Antigravity's
     `response` wrapper). Retry delays come from the body, else the `Retry-After` header, for 429 and 503. These checks run
-    before the replay commit, which then completes even if the client disconnects.
+    before the replay commit, which then completes even if the client disconnects. A compaction summary whose capsule cannot be
+    sealed is a request-scoped 502 as well.
   - _Token counting_: `countTokens` sends the normalised request with `request.model` as `models/<id>` and no `stream`, skips the
-    credits bypass, and rejects a 200 whose body is over 1 MiB, not a JSON object, or lacks a non-negative integer `totalTokens`.
-  - _Not ported_: thinking-level groups and `RequestedAntigravityThinkingLevel` (Go `2f86992c`, `14a95b19`, the Antigravity half
-    of `ffa55112`) and model enums (`e9a92d25`, `bfed6e89`) need per-credential model catalogs Commissary does not have;
-    connection pools and transports (`bffe6e7e`, `80fb55d8`, `d0c90bb5`) have no counterpart on Workers `fetch`; AI Studio has no
+    credits bypass, and rejects a 200 whose body is over 1 MiB of UTF-8, not a JSON object, or lacks a `totalTokens` written as
+    plain digits within the safe-integer range (`1.0` and `1e3` are rejected, as Go's integer decoding rejects them).
+  - _Output caps_ (`envelope.ts`, Go `CapAntigravityMaxOutputTokensDoc`, `18a03e40`): without a selected variant, a request
+    above the static catalog's `maxCompletionTokens` for the model is capped to it; model families match in any case.
+  - _Thinking groups_ (`model-selection.ts`, Go `2f86992c`, `14a95b19`, `b8e3bc66`, the Antigravity half of `ffa55112`): the
+    per-credential `fetchAvailableModels` probe the cron task stores (`ag:models:<credential>`) keeps each model's enum, the
+    thinking groups with their members' output limits, and the members that support web search. The caller's explicit thinking
+    level (`requestedAntigravityThinkingLevel`, read from the original request before translation: model suffix, OpenAI,
+    Interactions, `extra_body.google.thinking_config`, Gemini camel or snake case) switches the request to the
+    `<group>-<level>` member when it has a positive limit and an enum and the credential's or the channel's
+    `excluded-models` do not exclude it; the attempt then sends that model and enum, caps the output at its limit, applies the
+    level through the thinking pipeline, checks the short cooldown of the target and reports usage against it. Payload rules
+    match the variant, the requested model and the model it was selected for (`PayloadRequest.sourceModels`, Go
+    `NewPayloadFinalizerWithSourceModels`), in generation and in `countTokens`. Go keeps the
+    snapshot in a KV entry of its own bound to the grant, project and endpoint; Commissary stores that binding in the cron
+    record (`scope`), and a record without one (stored before it existed) or from another grant selects nothing and sends no
+    enum. A request without a level keeps its model and sends that model's enum. `bfed6e89` (an unknown catalog revokes no
+    models) already holds: hints without model ids never filter the list. `e9a92d25` restores Go's standalone in-memory snapshot
+    lookup, which has no counterpart: the KV record is the only snapshot.
+  - _Not ported_: Go's conductor-level check that refuses a credential whose selected variant is cooling down before the
+    attempt (`CheckAntigravityTargetModel`); the executor's short-cooldown check on the target answers the same request, after
+    the pick. Connection pools and transports (`bffe6e7e`, `80fb55d8`, `d0c90bb5`) have no counterpart on Workers `fetch`; AI Studio has no
     executor here. Go `dd0d80c8` (canonical session on the credits round) needs no change: the credits round copies the
     request's metadata.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
