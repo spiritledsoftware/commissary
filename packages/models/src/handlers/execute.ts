@@ -14,7 +14,7 @@ import type { HttpServerRequest } from "effect/http";
 import { AccessPrincipal } from "@commissary/auth";
 import { ConfigReader } from "../config/reader.ts";
 import type { Config } from "../config/schema.ts";
-import { ExecutionError, withErrorFields } from "../executor/errors.ts";
+import { ExecutionError, headersRecord, withErrorFields } from "../executor/errors.ts";
 import { isUpstreamTurnError } from "../executor/websocket/session.ts";
 import { CredentialPicker, type CredentialSnapshot } from "../executor/picker.ts";
 import type { ExecutionMetadata, ExecutorOptions, WebsocketExecution } from "../executor/types.ts";
@@ -301,25 +301,37 @@ export const executeNonStream = (input: ExecutionInput) =>
 
 const NO_CHUNKS: ReadonlyArray<string> = [];
 
-/** Reads until the first non-empty chunk (`readStreamBootstrap`). `closed` = the stream ended. */
+/**
+ * Reads until the first payload (`readStreamBootstrap`, CLIProxyAPI ab971876): zero-payload chunks are dropped, so a
+ * stream that ends before any payload is empty (`buffered` is empty and `closed` is set).
+ */
 const readBootstrap = (pull: Pull.Pull<ReadonlyArray<string>, ExecutionError>) =>
   Effect.gen(function* () {
-    const buffered: string[] = [];
-    let received = false;
-
     while (true) {
       const next = yield* pull.pipe(
         Effect.map((chunk) => ({ closed: false, chunk }) as const),
         Pull.catchDone(() => Effect.succeed({ closed: true, chunk: NO_CHUNKS } as const)),
       );
 
-      if (next.closed) return { buffered, closed: true, received };
-      received = true;
-      buffered.push(...next.chunk);
+      if (next.closed) return { buffered: NO_CHUNKS, closed: true };
+      const payload = next.chunk.filter((text) => text !== "");
 
-      if (next.chunk.some((text) => text !== "")) return { buffered, closed: false, received };
+      if (payload.length > 0) return { buffered: payload, closed: false };
     }
   });
+
+/**
+ * A failure before the first payload with the headers its stream opened with (CLIProxyAPI d52047a6, df6c8ccb: Go's
+ * `streamHeaderError`/`streamBootstrapError`), so the client's error answer can carry them like any upstream error's
+ * (`passthrough-headers`). Headers the error already has are its own and stay, and a direct answer (which is forwarded
+ * with its headers whatever `passthrough-headers` says) gets none.
+ */
+const withStreamHeaders = (error: ExecutionError, headers: Headers): ExecutionError => {
+  if (error.headers !== undefined || error.direct === true) return error;
+  const record = headersRecord(headers);
+
+  return Object.keys(record).length === 0 ? error : withErrorFields(error, { headers: record });
+};
 
 /**
  * One streaming attempt: opens the stream and waits for the first payload. Failures before it are failovers; after it
@@ -343,27 +355,33 @@ const runStreamAttempt = (prepared: Prepared, attempt: Attempt) =>
     const abandon = Scope.close(child, Exit.void);
 
     const boot = yield* readBootstrap(pull).pipe(
+      Effect.mapError((error) => withStreamHeaders(error, result.headers)),
       Effect.tapError(() =>
         Effect.sync(() => (attempt.bootstrapFailed = true)).pipe(Effect.andThen(abandon)),
       ),
     );
 
-    if (boot.closed && !boot.received) {
+    if (boot.closed) {
       attempt.bootstrapFailed = true;
       yield* abandon;
 
-      return yield* new ExecutionError({
-        status: 500,
-        code: "empty_stream",
-        message: "upstream stream closed before first payload",
-      });
+      return yield* withStreamHeaders(
+        new ExecutionError({
+          status: 500,
+          code: "empty_stream",
+          message: "upstream stream closed before first payload",
+        }),
+        result.headers,
+      );
     }
 
     const services = yield* Effect.context<ModelsEnv | CurrentOrg>();
     const target = attempt.rewriteTo;
-    const rest = boot.closed ? Stream.empty : Stream.fromPull(Effect.succeed(pull));
 
-    const chunks = Stream.concat(Stream.fromIterable(boot.buffered), rest).pipe(
+    const chunks = Stream.concat(
+      Stream.fromIterable(boot.buffered),
+      Stream.fromPull(Effect.succeed(pull)),
+    ).pipe(
       Stream.map((text) => (target === "" ? text : rewriteStreamChunk(text, target))),
       Stream.onExit((exit) => {
         const failure = Exit.isFailure(exit) ? toExecutionError(exit.cause) : undefined;

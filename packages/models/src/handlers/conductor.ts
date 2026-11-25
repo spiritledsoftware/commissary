@@ -504,13 +504,25 @@ export const conduct = <T, R>(
         let upstreamError: ExecutionError | undefined;
         let bootstrap = false;
 
-        const failed = (error: ExecutionError, stop: boolean): RoundOutcome<T> => ({
+        const failed = (
+          error: ExecutionError,
+          stop: boolean,
+        ): Extract<RoundOutcome<T>, { ok: false }> => ({
           ok: false,
           error,
           stop,
           upstream: upstreamError !== undefined && upstreamError === error,
           bootstrap,
           attempted,
+        });
+
+        /**
+         * The request ends at this error: a stop rule or a request fault (Go `isTerminalRequestStopError`, CLIProxyAPI
+         * df6c8ccb). It is answered as it is, so stream bootstrap retries do not replay it either.
+         */
+        const stopped = (error: ExecutionError): RoundOutcome<T> => ({
+          ...failed(error, true),
+          bootstrap: false,
         });
 
         /** `preferredExecutionAttemptError`: the last error that actually reached an upstream wins. */
@@ -663,10 +675,10 @@ export const conduct = <T, R>(
             // An error that moved the request to another provider says nothing about the next retry round.
             if (!providerSpecific) upstreamError = error;
 
-            if (isStopAction(action)) return failed(error, true);
+            if (isStopAction(action)) return stopped(error);
 
             if (action === undefined && isCompactRequestFault(error, prepared.options.alt)) {
-              return failed(error, true);
+              return stopped(error);
             }
 
             if (providerSpecific) {
@@ -678,7 +690,7 @@ export const conduct = <T, R>(
               break;
             }
 
-            if (action === undefined && isRequestInvalid(error)) return failed(error, true);
+            if (action === undefined && isRequestInvalid(error)) return stopped(error);
 
             credentialError = error;
 

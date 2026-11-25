@@ -16,7 +16,7 @@ import { emptyState } from "../src/credentials/model.ts";
 import { RefreshManager } from "../src/credentials/refresh/index.ts";
 import { FakeAlarm } from "./support/refresh.ts";
 import { ExecutorRegistry, makeExecutorRegistry } from "../src/executor/registry.ts";
-import type { ProviderExecutor } from "../src/executor/types.ts";
+import type { ProviderExecutor, StreamResult } from "../src/executor/types.ts";
 import type { RefreshResult } from "../src/credentials/refresh/index.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import { executeCountTokens, executeNonStream, executeStream } from "../src/handlers/execute.ts";
@@ -935,6 +935,140 @@ describe("streaming", () => {
         assert.isTrue(Exit.isFailure(exit));
         assert.strictEqual(none.calls.length, 1);
       }),
+  );
+});
+
+const unsupportedCall = () =>
+  Effect.fail(new ExecutionError({ status: 501, message: "unsupported" }));
+
+/** An executor whose stream each credential (by label) answers through `open`; non-stream calls are unsupported. */
+const streamExecutor = (
+  open: (label: string) => Effect.Effect<StreamResult, ExecutionError>,
+): Layer.Layer<ExecutorRegistry> => {
+  const executor: ProviderExecutor = {
+    identifier: "openai-compatibility",
+    execute: unsupportedCall,
+    executeStream: (context) => open(context.credential.label ?? context.credential.id),
+    countTokens: unsupportedCall,
+  };
+
+  return Layer.succeed(ExecutorRegistry, ExecutorRegistry.of({ get: () => executor }));
+};
+
+const opened = (chunks: Stream.Stream<string, ExecutionError>, headers: HeadersInit = {}) =>
+  Effect.succeed<StreamResult>({ headers: new Headers(headers), chunks });
+
+describe("stream bootstrap (CLIProxyAPI ab971876, d52047a6, df6c8ccb)", () => {
+  it.effect("a stream of zero-payload chunks that ends is an empty_stream and fails over", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), () => jsonResponse({}), {
+        executors: streamExecutor((label) =>
+          label === "a"
+            ? opened(Stream.make("", ""))
+            : opened(Stream.make(chunk("hi"), "data: [DONE]\n\n")),
+        ),
+      });
+
+      const chunks = yield* collect(run);
+      assert.isTrue(chunks.some((text) => text.includes('"content":"hi"')));
+      assert.deepStrictEqual(
+        run.records.map((record) => record.failed),
+        [true, false],
+      );
+      assert.notStrictEqual(run.records[0]?.authId, run.records[1]?.authId);
+    }),
+  );
+
+  it.effect("a failure before the first payload keeps the headers the stream opened with", () =>
+    Effect.gen(function* () {
+      const headers = { "x-upstream-trace": "t1" };
+
+      const failing = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() =>
+          opened(Stream.fail(new ExecutionError({ status: 502, message: "bad gateway" })), headers),
+        ),
+      });
+
+      const error = yield* failure(collect(failing));
+      assert.strictEqual(error.status, 502);
+      assert.strictEqual(error.headers?.["x-upstream-trace"], "t1");
+
+      const empty = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() => opened(Stream.empty, headers)),
+      });
+
+      const emptyError = yield* failure(collect(empty));
+      assert.strictEqual(emptyError.code, "empty_stream");
+      assert.strictEqual(emptyError.headers?.["x-upstream-trace"], "t1");
+    }),
+  );
+
+  it.effect("an error's own headers outrank the stream's", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() =>
+          opened(
+            Stream.fail(
+              new ExecutionError({ status: 502, message: "bad", headers: { "x-own": "1" } }),
+            ),
+            { "x-upstream-trace": "t1" },
+          ),
+        ),
+      });
+
+      const error = yield* failure(collect(run));
+      assert.deepStrictEqual(error.headers, { "x-own": "1" });
+    }),
+  );
+
+  it.effect("a stop rule ends the request: bootstrap-retries do not replay it", () =>
+    Effect.gen(function* () {
+      const stopRule = `request-scoped-errors:\n        - { status: 429, match: ["slow down"], action: stop }`;
+      let opens = 0;
+
+      const run = yield* setup(
+        config(
+          group("a", `disable-cooling: true\n      ${stopRule}`),
+          "requests:\n  streaming:\n    bootstrap-retries: 2",
+        ),
+        () => jsonResponse({}),
+        {
+          executors: streamExecutor(() => {
+            opens += 1;
+
+            return opened(Stream.fail(new ExecutionError({ status: 429, message: "slow down" })));
+          }),
+        },
+      );
+
+      const error = yield* failure(collect(run));
+      assert.strictEqual(error.status, 429);
+      assert.strictEqual(opens, 1);
+    }),
+  );
+
+  it.effect("without a stop rule the same bootstrap failure is replayed (control)", () =>
+    Effect.gen(function* () {
+      let opens = 0;
+
+      const run = yield* setup(
+        config(
+          group("a", "disable-cooling: true"),
+          "requests:\n  streaming:\n    bootstrap-retries: 2",
+        ),
+        () => jsonResponse({}),
+        {
+          executors: streamExecutor(() => {
+            opens += 1;
+
+            return opened(Stream.fail(new ExecutionError({ status: 429, message: "slow down" })));
+          }),
+        },
+      );
+
+      yield* failure(collect(run));
+      assert.strictEqual(opens, 3);
+    }),
   );
 });
 
