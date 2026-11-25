@@ -736,16 +736,29 @@ Core contracts every provider slice implements (Go references in each module hea
   client disconnect.
   Workers limits (deviation): at most 16 upstream attempts per request and cooldown waits capped at 30 s; a longer recovery
   returns the last error (429/503) with `Retry-After`.
-  Streams are only "successful" after the first payload chunk (bootstrap read inside the request scope); earlier errors, an
-  immediate close (`empty_stream`) or an HTTP error fail over; later errors reach the client and are reported when the
-  stream ends. `requests.streaming.bootstrap-retries` repeats the whole execution for bootstrap failures. Force-mapped
+  Streams are only "successful" after the first payload chunk (bootstrap read inside the request scope); earlier errors, a
+  close before any payload (`empty_stream`, also after zero-payload chunks: CLIProxyAPI ab971876) or an HTTP error fail
+  over; later errors reach the client and are reported when the stream ends. A failure before the first payload carries
+  the headers its stream opened with unless it has its own (a direct answer gets none), so `passthrough-headers` forwards
+  them (CLIProxyAPI d52047a6, df6c8ccb). `requests.streaming.bootstrap-retries` repeats the whole execution for bootstrap
+  failures, except one that ended the request (a stop rule, a request fault: Go `isTerminalRequestStopError`). A failed
+  attempt's stream is closed (its scope, which cancels the upstream read) before the next attempt starts, and a client
+  that goes away interrupts a stalled stream (CLIProxyAPI 538f9611, 4aca8df3 hold by construction). Go's completion flags
+  (`streamPayloadCompletionFlags`, CLIProxyAPI 2c8b32fd, 3a0d3023) are not ported: they only feed inference verification,
+  which Commissary does not have. Force-mapped
   aliases rewrite the `model` fields of responses and chunks (`handlers/model-rewrite.ts`).
   Credential preparation and the 401 loop wrap every attempt (`executor/helps/credential-refresh.ts`, port of
   `prepareRequestAuth` + `tryRefreshAfterUnauthorized`): `ensureFresh` first when the snapshot cannot be used as is (Vertex
   without a minted token, Meta without a key, OAuth token missing/expired, Antigravity within 5 min), and after a 401
   `refreshNow(id, rejectedToken)` plus one repeat with the new token (a rejected attempt keeps its own failed usage record;
   results are reported against the refreshed `credentialVersion`; a token that did not change is not repeated, a terminal
-  refresh failure marks the 401 `terminalAuth`). Executors with their own transport paths (WebSocket) can call
+  refresh failure marks the 401 `terminalAuth`). A preparation failure is an attempt's failure like any other (rules,
+  stops, cooldown, with the `Retry-After` the refresh upstream asked for: CLIProxyAPI 2f57a5a6); a credential removed
+  before or while it was prepared (`not_found`) fails the attempt rather than run on its stale snapshot (CLIProxyAPI
+  0a34244e). `ensureFresh` runs through the ControlPlane's per-credential refresh flight, so preparation and refresh are
+  serialised there. A client that goes away during preparation interrupts the attempt: unlike Go (CLIProxyAPI dfdb3ba4),
+  which records nothing, the attempt is reported once as `connection_lifecycle` (no cooldown), and no further credential
+  is picked. Executors with their own transport paths (WebSocket) can call
   `withCredentialRefresh(context, use)` directly; `CredentialRefresher.none` disables it for API-key-only tests.
 - **Models and thinking**: `ModelProviders.registryLayer` resolves providers from the `ModelRegistry` snapshot
   (`providersForModel`, `firstAvailableModel`); `ModelProviders.configLayer` remains for tests without a registry.
