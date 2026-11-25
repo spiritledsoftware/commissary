@@ -313,6 +313,48 @@ func antigravitySessions() []antigravitySession {
 	return out
 }
 
+type antigravityScopedSession struct {
+	Credential string `json:"credential"`
+	Canonical  string `json:"canonical,omitempty"`
+	Execution  string `json:"execution,omitempty"`
+	Derived    string `json:"derived,omitempty"`
+	Incoming   string `json:"incoming,omitempty"`
+	ID         string `json:"id"`
+}
+
+// antigravityScopedSessions runs AntigravitySessionIDForAuth (canonical, execution, derived identities) and
+// ScopeAntigravitySessionIDForAuth (a client's own request.sessionId) for a few credentials.
+func antigravityScopedSessions() []antigravityScopedSession {
+	var out []antigravityScopedSession
+	for _, credential := range []string{"auth-a", "auth-b", ""} {
+		for _, c := range []antigravityScopedSession{
+			{Canonical: "session:abc", Execution: "ws-1", Derived: "ctx:v1:abc"},
+			{Execution: "ws-1", Derived: "ctx:v1:abc"},
+			{Derived: "ctx:v1:abc"},
+			{Derived: "ctx:v1:abd"},
+			{},
+		} {
+			meta := map[string]any{}
+			if c.Canonical != "" {
+				meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] = c.Canonical
+			}
+			if c.Execution != "" {
+				meta[cliproxyexecutor.ExecutionSessionMetadataKey] = c.Execution
+			}
+			if c.Derived != "" {
+				meta[cliproxyexecutor.DerivedSessionIDMetadataKey] = c.Derived
+			}
+			c.Credential = credential
+			c.ID = helps.AntigravitySessionIDForAuth(credential, meta)
+			out = append(out, c)
+		}
+		for _, incoming := range []string{"-1234567890", " 42 ", ""} {
+			out = append(out, antigravityScopedSession{Credential: credential, Incoming: incoming, ID: helps.ScopeAntigravitySessionIDForAuth(credential, incoming)})
+		}
+	}
+	return out
+}
+
 func openaiBody(messages ...string) string { return msgs(messages...) }
 
 func scenarios() []scenario {
@@ -488,6 +530,7 @@ func main() {
 		"scenarios":           scs,
 		"vertex":              vertexCases(),
 		"antigravitySessions": antigravitySessions(),
+		"antigravityScoped":   antigravityScopedSessions(),
 	}
 	encoded, err := json.MarshalIndent(doc, "", " ")
 	if err != nil {
