@@ -2,13 +2,20 @@
  * Antigravity model catalog probes (`fetchAvailableModels`) stored in KV by the cron task.
  *
  * Go source: sdk/cliproxy/antigravity_models.go (`probeAntigravityModelCapabilityHints`,
- * `parseAntigravityModelCapabilityHints`, `nextAntigravityFailure`). The probe uses the first configured endpoint only
- * (daily by default) and the global user agent; 401/403 are auth errors, everything else transient. A failed probe keeps
- * the last good entitlements; failures back off 2, 4, 8, 16, 30 min (equal jitter). The cron fires every 3 h (like
- * `ModelsRefreshInterval`), so a backoff only matters for manual runs. Registry snapshots read the KV records
- * (`withAntigravityHints`).
+ * `parseAntigravityModelCapabilityHints`, `nextAntigravityFailure`, `nextAntigravityAuthErrorFailure`,
+ * `nextAntigravityForbiddenFailure`, `shouldSkipAntigravityModelProbe`, `resolveAntigravityModelUserAgent`,
+ * `persistedAntigravityHintsExpiresAt`) and sdk/auth/antigravity_models.go (`FetchAntigravityAvailableModels`,
+ * `AntigravityCapabilityRouteFingerprint`). The probe uses the first configured endpoint only (daily by default) and the
+ * credential's own user agent when it has one (CLIProxyAPI 753bfa19), sending `project` only when there is one. A
+ * failed probe keeps the last good entitlements and backs off with equal jitter (CLIProxyAPI f8e297aa): a transient
+ * failure 2, 4, 8, 16, 30 min and a 401 10, 20, 30 min, both for the access token that failed (a refreshed token probes
+ * at once); a 403 10, 20, 40, 60 min for the credential whatever its token. Disabled credentials and those whose token
+ * was rejected for good are not probed (CLIProxyAPI f48975b4). A success records when it was fetched, when it expires
+ * (3 h) and the route it was fetched on (CLIProxyAPI 533edd38); the cron skips a record that is still fresh for longer
+ * than {@link FRESH_SLACK_MS} on the same route. The cron fires every 3 h (like `ModelsRefreshInterval`), so a backoff
+ * mostly matters for manual runs. Registry snapshots read the KV records (`withAntigravityHints`).
  */
-import { Effect, Option } from "effect";
+import { Effect, Match, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import {
   asString,
@@ -20,6 +27,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { CurrentOrg, type OrgKv, sha256Hex } from "@commissary/core";
+import { shortDigest } from "../../credentials/grant-digest.ts";
 import { deploymentKvOf, orgKvOf } from "../../kv.ts";
 import { controlPlaneOf } from "@commissary/state";
 import {
@@ -27,8 +35,13 @@ import {
   normalizeFetchedModelId,
 } from "../../registry/antigravity-hints.ts";
 import type { ModelSource } from "../../registry/source.ts";
-import { antigravityUserAgent, currentAntigravityVersion } from "./version.ts";
-import { ANTIGRAVITY_BASE_URL_DAILY } from "./envelope.ts";
+import {
+  antigravityRequestUserAgent,
+  antigravityUserAgent,
+  currentAntigravityVersion,
+} from "./version.ts";
+import { ANTIGRAVITY_BASE_URL_DAILY, configuredUserAgent } from "./envelope.ts";
+import { hasUnauthorizedFailure } from "../../credentials/selection/availability.ts";
 import { FULL_ACCESS } from "../../credentials/ownership.ts";
 import { ModelsEnv } from "../../env.ts";
 
@@ -38,9 +51,24 @@ const MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 
 const MAX_FAILURES = 5;
 
-const BASE_BACKOFF_MS = 2 * 60_000;
+/** `antigravityCapabilityRetryBase` (the first window is twice the base). */
+const BASE_BACKOFF_MS = 60_000;
 
 const MAX_BACKOFF_MS = 30 * 60_000;
+
+/** `antigravityAuthErrorRetryBase`. */
+const AUTH_ERROR_BACKOFF_MS = 5 * 60_000;
+
+/** `antigravityForbiddenRetryBase`, `antigravityForbiddenRetryMax`. */
+const FORBIDDEN_BACKOFF_MS = 5 * 60_000;
+
+const MAX_FORBIDDEN_BACKOFF_MS = 60 * 60_000;
+
+/** `antigravityCapabilityCacheTTL` (`registry.ModelsRefreshInterval`). */
+export const CATALOG_TTL_MS = 3 * 60 * 60_000;
+
+/** A record fresh for longer than this is not probed again (the cron's own timing jitter stays covered). */
+export const FRESH_SLACK_MS = 15 * 60_000;
 
 /** Failure counters older than 2x the refresh interval start over (`registry.ModelsRefreshInterval` = 3 h). */
 const FAILURE_RESET_MS = 2 * 3 * 60 * 60_000;
@@ -52,6 +80,11 @@ export interface FailureState {
   readonly count: number;
   readonly lastFailureAt: number;
   readonly nextRetryAt: number;
+  /**
+   * Digest of the access token that failed (transient and 401 failures): the backoff holds only while the credential
+   * still has it. Absent on a 403 backoff and on records stored before it existed.
+   */
+  readonly token?: string;
 }
 
 /** The stored record: last good entitlements plus failure bookkeeping. */
@@ -63,12 +96,19 @@ export interface ModelsRecord {
    */
   readonly scope?: string;
   readonly fetchedAt?: number;
+  /** When the probed entitlements expire (`fetchedAt` + 3 h). Absent on records stored before it existed. */
+  readonly expiresAt?: number;
+  /** `AntigravityCapabilityRouteFingerprint` of the user agent the entitlements were probed with. */
+  readonly routeFingerprint?: string;
+  /** The backoff of a transient or 401 failure, for the access token in `token`. */
   readonly failure?: FailureState;
+  /** The backoff of a 403, for the credential whatever its access token. */
+  readonly forbidden?: FailureState;
 }
 
 export type ProbeOutcome =
   | { readonly status: "success"; readonly hints: AntigravityModelHints }
-  | { readonly status: "auth_error" | "transient" };
+  | { readonly status: "auth_error" | "forbidden" | "transient" };
 
 /** `antigravityMaxModelIDBytes`: longer model ids, enums and group members are ignored. */
 export const MAX_MODEL_ID_BYTES = 256;
@@ -198,6 +238,12 @@ export const modelsBaseUrl = (
   return single !== "" ? single.replace(/\/+$/, "") : ANTIGRAVITY_BASE_URL_DAILY;
 };
 
+/** `AntigravityCapabilityRouteFingerprint` without a proxy (Workers has none): `""` without a user agent. */
+export const routeFingerprint = (userAgent: string): string =>
+  userAgent.trim() === ""
+    ? ""
+    : sha256Hex(`${JSON.stringify("")}/${JSON.stringify(userAgent.trim())}`);
+
 /** The probe itself. */
 export const probeAvailableModels = (input: {
   readonly baseUrl: string;
@@ -214,13 +260,17 @@ export const probeAvailableModels = (input: {
         authorization: `Bearer ${input.accessToken}`,
         "user-agent": input.userAgent,
       }),
-      HttpClientRequest.bodyText(JSON.stringify({ project: input.projectId }), "application/json"),
+      HttpClientRequest.bodyText(
+        JSON.stringify(input.projectId.trim() === "" ? {} : { project: input.projectId.trim() }),
+        "application/json",
+      ),
     );
 
     const response = yield* client.execute(request).pipe(Effect.timeout("30 seconds"));
 
-    if (response.status === 401 || response.status === 403)
-      return { status: "auth_error" } as const;
+    if (response.status === 401) return { status: "auth_error" } as const;
+
+    if (response.status === 403) return { status: "forbidden" } as const;
 
     if (response.status < 200 || response.status >= 300) return { status: "transient" } as const;
     const text = yield* response.text;
@@ -233,20 +283,90 @@ export const probeAvailableModels = (input: {
       : ({ status: "success", hints } as const);
   }).pipe(Effect.catchCause(() => Effect.succeed({ status: "transient" } as const)));
 
-/** `nextAntigravityFailure`: window `min(2m * 2^(n-1), 30m)` with equal jitter (`half + rand * half`). */
+/** A backoff policy: the first window is twice `baseMs`, doubling up to `maxMs`. */
+export interface BackoffPolicy {
+  readonly baseMs: number;
+  readonly maxMs: number;
+}
+
+/** `nextAntigravityFailure`: 2, 4, 8, 16, 30 min. */
+export const TRANSIENT_BACKOFF: BackoffPolicy = { baseMs: BASE_BACKOFF_MS, maxMs: MAX_BACKOFF_MS };
+
+/** `nextAntigravityAuthErrorFailure`: 10, 20, 30 min. */
+export const AUTH_ERROR_BACKOFF: BackoffPolicy = {
+  baseMs: AUTH_ERROR_BACKOFF_MS,
+  maxMs: MAX_BACKOFF_MS,
+};
+
+/** `nextAntigravityForbiddenFailure`: 10, 20, 40, 60 min. */
+export const FORBIDDEN_BACKOFF: BackoffPolicy = {
+  baseMs: FORBIDDEN_BACKOFF_MS,
+  maxMs: MAX_FORBIDDEN_BACKOFF_MS,
+};
+
+/**
+ * `nextAntigravityFailureWithPolicy`: the window doubles from `2 * base` up to the policy's cap, with equal jitter
+ * (`half + rand * half`); the failure count (capped at 5) carries over between policies.
+ */
 export const nextFailure = (
   previous: FailureState | undefined,
   now: number,
   random: number,
+  policy: BackoffPolicy = TRANSIENT_BACKOFF,
 ): FailureState => {
   let count =
     previous === undefined || now - previous.lastFailureAt > FAILURE_RESET_MS ? 0 : previous.count;
 
-  count = Math.min(count + 1, MAX_FAILURES);
-  const window = Math.min(BASE_BACKOFF_MS * 2 ** (count - 1), MAX_BACKOFF_MS);
+  count = Math.min(count, MAX_FAILURES - 1) + 1;
+  let window = Math.min(2 * policy.baseMs, policy.maxMs);
+
+  for (let step = 1; step < count && window < policy.maxMs; step++) {
+    window = window > policy.maxMs / 2 ? policy.maxMs : window * 2;
+  }
+
   const half = window / 2;
 
   return { count, lastFailureAt: now, nextRetryAt: now + Math.floor(half + random * half) };
+};
+
+/**
+ * `persistedAntigravityHintsExpiresAt`: when a record's entitlements expire on `fingerprint`'s route, `0` when they
+ * already did, were fetched on another route, or carry no fetch time.
+ */
+export const recordExpiresAt = (
+  record: ModelsRecord | undefined,
+  fingerprint: string,
+  now: number,
+): number => {
+  if (record === undefined || fingerprint === "" || record.routeFingerprint !== fingerprint)
+    return 0;
+
+  const capped =
+    record.expiresAt !== undefined
+      ? Math.min(
+          record.expiresAt,
+          record.fetchedAt === undefined ? record.expiresAt : record.fetchedAt + CATALOG_TTL_MS,
+        )
+      : record.fetchedAt === undefined
+        ? 0
+        : record.fetchedAt + CATALOG_TTL_MS;
+
+  const expiresAt = Math.min(capped, now + CATALOG_TTL_MS);
+
+  return expiresAt > now ? expiresAt : 0;
+};
+
+/** `resolveAntigravityModelUserAgent`: the credential's own user agent, else the Hub client's. */
+export const modelsUserAgent = (
+  attributes: Readonly<Record<string, string>>,
+  metadata: JsonObject,
+  version: string,
+): string => {
+  const configured = configuredUserAgent(attributes, metadata).trim();
+
+  return configured === ""
+    ? antigravityUserAgent(version)
+    : antigravityRequestUserAgent(configured, version);
 };
 
 /**
@@ -334,6 +454,12 @@ export const withAntigravityHints = async (
   });
 };
 
+/** Whether a backoff still holds: a token-scoped one only for the token that failed. */
+const backingOff = (failure: FailureState | undefined, token: string | undefined, now: number) =>
+  failure !== undefined &&
+  failure.nextRetryAt > now &&
+  (token === undefined || failure.token === undefined || failure.token === token);
+
 /**
  * Cron task, per org: probes every enabled Antigravity credential of the org. The token comes from the org's
  * ControlPlane (`ensureFresh` refreshes it when needed), results are written to KV; failures keep the previous
@@ -350,10 +476,21 @@ export const refreshAntigravityModels = Effect.gen(function* () {
   const results: Array<{ readonly id: string; readonly status: string }> = [];
 
   for (const source of sources) {
-    if (source.provider.trim().toLowerCase() !== "antigravity" || source.disabled) continue;
+    if (source.provider.trim().toLowerCase() !== "antigravity") continue;
+
+    // `shouldSkipAntigravityModelProbe`: a disabled credential, or one whose token was rejected for good.
+    if (
+      source.disabled ||
+      source.state.status === "disabled" ||
+      hasUnauthorizedFailure({ ...source.state })
+    ) {
+      results.push({ id: source.id, status: "skipped" });
+      continue;
+    }
+
     const previous = yield* Effect.promise(() => readModelsRecord(kv, source.id));
 
-    if (previous?.failure !== undefined && previous.failure.nextRetryAt > now) {
+    if (backingOff(previous?.forbidden, undefined, now)) {
       results.push({ id: source.id, status: "backoff" });
       continue;
     }
@@ -367,7 +504,7 @@ export const refreshAntigravityModels = Effect.gen(function* () {
 
     const token =
       typeof credential?.metadata["access_token"] === "string"
-        ? credential.metadata["access_token"]
+        ? credential.metadata["access_token"].trim()
         : "";
 
     const project =
@@ -380,25 +517,74 @@ export const refreshAntigravityModels = Effect.gen(function* () {
       continue;
     }
 
-    // The probe always uses the global user agent and ignores a per-credential override.
+    // The key of the token-scoped backoffs.
+    const digest = shortDigest(token);
+
+    if (backingOff(previous?.failure, digest, now)) {
+      results.push({ id: source.id, status: "backoff" });
+      continue;
+    }
+
+    const userAgent = modelsUserAgent(credential.attributes, credential.metadata, version);
+    const fingerprint = routeFingerprint(userAgent);
+    const scope = antigravityCatalogScope(credential.attributes, credential.metadata);
+
+    // Entitlements of the same account and route fetched recently enough are kept as they are (CLIProxyAPI 533edd38).
+    if (
+      previous?.hints !== undefined &&
+      (previous.scope === undefined || previous.scope === scope) &&
+      recordExpiresAt(previous, fingerprint, now) > now + FRESH_SLACK_MS
+    ) {
+      results.push({ id: source.id, status: "fresh" });
+      continue;
+    }
+
     const outcome = yield* probeAvailableModels({
       baseUrl: modelsBaseUrl(credential.attributes, credential.metadata),
       accessToken: token,
       projectId: project,
-      userAgent: antigravityUserAgent(version),
+      userAgent,
     });
 
-    const scope = antigravityCatalogScope(credential.attributes, credential.metadata);
+    const kept: ModelsRecord = {
+      ...(previous?.hints === undefined ? {} : { hints: previous.hints }),
+      ...(previous?.fetchedAt === undefined ? {} : { fetchedAt: previous.fetchedAt }),
+      ...(previous?.expiresAt === undefined ? {} : { expiresAt: previous.expiresAt }),
+      ...(previous?.routeFingerprint === undefined
+        ? {}
+        : { routeFingerprint: previous.routeFingerprint }),
+      ...(previous?.scope === undefined ? {} : { scope: previous.scope }),
+    };
 
-    const record: ModelsRecord =
-      outcome.status === "success"
-        ? { hints: outcome.hints, fetchedAt: now, ...(scope === "" ? {} : { scope }) }
-        : {
-            ...(previous?.hints === undefined ? {} : { hints: previous.hints }),
-            ...(previous?.fetchedAt === undefined ? {} : { fetchedAt: previous.fetchedAt }),
-            ...(previous?.scope === undefined ? {} : { scope: previous.scope }),
-            failure: nextFailure(previous?.failure, now, Math.random()),
-          };
+    // Go keys the 403 backoff by the credential's route and the others by the access token as well.
+    const tokenFailure = previous?.failure?.token === digest ? previous.failure : undefined;
+
+    const record = Match.value(outcome).pipe(
+      Match.when({ status: "success" }, (success): ModelsRecord => ({
+        hints: success.hints,
+        fetchedAt: now,
+        expiresAt: now + CATALOG_TTL_MS,
+        ...(fingerprint === "" ? {} : { routeFingerprint: fingerprint }),
+        ...(scope === "" ? {} : { scope }),
+      })),
+      Match.when({ status: "forbidden" }, (): ModelsRecord => ({
+        ...kept,
+        forbidden: nextFailure(previous?.forbidden, now, Math.random(), FORBIDDEN_BACKOFF),
+      })),
+      Match.orElse((failed): ModelsRecord => ({
+        ...kept,
+        ...(previous?.forbidden === undefined ? {} : { forbidden: previous.forbidden }),
+        failure: {
+          ...nextFailure(
+            tokenFailure,
+            now,
+            Math.random(),
+            failed.status === "auth_error" ? AUTH_ERROR_BACKOFF : TRANSIENT_BACKOFF,
+          ),
+          token: digest,
+        },
+      })),
+    );
 
     yield* Effect.tryPromise(() =>
       kv.put(antigravityModelsName(source.id), JSON.stringify(record)),

@@ -147,7 +147,7 @@ const Text = ({ spec, input, error, disabled, extra, requires, onChange }: Field
   const id = fieldId(spec.path);
   const copy = copyOf(spec.path, spec.label);
   const numeric = spec.kind === "int";
-  const timed = spec.kind === "duration" || spec.kind === "bootstrap";
+  const timed = spec.kind === "duration" || spec.kind === "bootstrap" || spec.kind === "pause";
   const reading = timed ? durationReading(spec, input) : undefined;
 
   return (

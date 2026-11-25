@@ -5,6 +5,7 @@
  * (CodexConfig.StreamBootstrapTimeoutDuration), sdk/api/handlers/openai/openai_videos_handlers.go
  * (videoAuthBindingTTL), internal/runtime/executor/codex_openai_images.go (resolveGPTImage2BaseModel).
  */
+import { isTosPauseOff } from "@commissary/contract/settings";
 import type { Config } from "./schema.ts";
 
 const UNITS = new Map<string, number>([
@@ -75,6 +76,19 @@ export const videoResultAuthCacheTtlMs = (config: Config): number => {
   const parsed = parseGoDuration(config.multimedia["video-result-auth-cache-ttl"]);
 
   return parsed !== undefined && parsed > 0 ? parsed : DEFAULT_VIDEO_AUTH_CACHE_TTL_MS;
+};
+
+/**
+ * `antigravityTOSPauseWindow` (CLIProxyAPI e96d4c48): the pool-wide pause after a TOS_VIOLATION, in ms; `0` (off) when
+ * empty, an off keyword, invalid or not positive.
+ */
+export const antigravityTosPauseWindowMs = (config: Config): number => {
+  const raw = config.oauth.providers.antigravity["tos-pause-window"];
+
+  if (isTosPauseOff(raw)) return 0;
+  const parsed = parseGoDuration(raw.trim());
+
+  return parsed !== undefined && parsed > 0 ? parsed : 0;
 };
 
 /** `multimedia.gpt-image-2-base-model`: must start with `gpt-` (case-insensitive), else `gpt-5.4-mini`. */

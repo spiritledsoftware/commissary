@@ -1062,3 +1062,70 @@ describe("passive quota signals and recent requests", () => {
     ).toBe(true);
   });
 });
+
+describe("credential-scoped lockout (Go credentialRetryAfter, CLIProxyAPI 8860264b)", () => {
+  const scoped = (httpStatus: number, message = "denied", extra: Partial<ReportResult> = {}) =>
+    fail(httpStatus, message, { credentialScoped: true, ...extra });
+
+  const settle = (
+    state: CredentialState,
+    model: string,
+    seq: number,
+    credentialMark: number,
+    now = NOW + 1000,
+  ) =>
+    markResult({
+      credential: { provider: "claude", metadata: {} },
+      state,
+      now,
+      model,
+      result: { success: true },
+      settings: DEFAULT_COOLDOWN_SETTINGS,
+      dispatch: { seq, marks: { credential: credentialMark, models: new Map() } },
+    });
+
+  it("lasts the failure's own cooldown, not a longer quota window it lands on", () => {
+    const quota = mark(emptyState(), "m", fail(429, "quota", { retryAfterMs: 5 * HOUR }));
+    const forbidden = mark(quota, "m", scoped(403));
+
+    // The model keeps its 5 h quota window; the lockout is the 403's 30 min.
+    expect(forbidden.modelStates.m?.nextRetryAfter).toBe(NOW + 5 * HOUR);
+    expect(forbidden.credentialRetryAfter).toBe(NOW + 30 * MIN);
+  });
+
+  it("without a model, lasts the failure's own cooldown and none when the cooldown is skipped", () => {
+    const cooling = mark(emptyState(), "", fail(503, "busy", { retryAfterMs: 5 * HOUR }));
+    const forbidden = mark(cooling, "", scoped(403));
+
+    expect(forbidden.nextRetryAfter).toBe(NOW + 5 * HOUR);
+    expect(forbidden.credentialRetryAfter).toBe(NOW + 30 * MIN);
+    // A connection-lifecycle failure skips the credential cooldown, and so the lockout, even on a cooling credential.
+
+    const lifecycle = scoped(499, "client closed", {
+      error: { message: "closed", retryable: false, httpStatus: 499, code: "connection_lifecycle" },
+    });
+
+    expect(mark(cooling, "", lifecycle).credentialRetryAfter).toBeUndefined();
+  });
+
+  it("is set by a credential-scoped 429 that is not a quota exhaustion, never by a quota one", () => {
+    expect(mark(emptyState(), "m", scoped(429, "quota")).credentialRetryAfter).toBeUndefined();
+    expect(
+      mark(emptyState(), "m", scoped(429, "cloudflare challenge")).credentialRetryAfter,
+    ).toBeGreaterThan(NOW);
+  });
+
+  it("outlives a success dispatched before it, or one while a credential quota runs", () => {
+    const locked = mark(emptyState(), "m", scoped(403));
+
+    // Dispatched at or before the lockout's stamp (5): kept; after it: cleared.
+    expect(settle(locked, "m", 5, 5).credentialRetryAfter).toBe(NOW + 30 * MIN);
+    expect(settle(locked, "m", 6, 5).credentialRetryAfter).toBeUndefined();
+
+    // A live credential quota keeps the whole state, the lockout included.
+    const quota = mark(locked, "m", scoped(429, "quota", { retryAfterMs: HOUR }));
+
+    expect(quota.quota.reason).toBe("credential_quota");
+    expect(settle(quota, "m", 9, 0).credentialRetryAfter).toBe(NOW + 30 * MIN);
+  });
+});

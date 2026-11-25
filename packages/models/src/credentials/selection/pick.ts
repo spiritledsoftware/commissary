@@ -303,7 +303,17 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
       now,
     );
 
-    // The credits fallback may use credentials that are cooling down because their model quota is exhausted.
+    // The credits fallback may use credentials that are cooling down because their model quota is exhausted, but not
+    // one locked out as a whole by a credential-scoped failure (Go `credentialRetryAfter`, CLIProxyAPI 8860264b).
+    const lockedUntil =
+      request.ignoreCooldown === true ? (candidate.entry.state.credentialRetryAfter ?? 0) : 0;
+
+    if (lockedUntil > now) {
+      if (earliest === 0 || lockedUntil < earliest) earliest = lockedUntil;
+      claudeAll = false;
+      continue;
+    }
+
     if (!block.blocked || (request.ignoreCooldown === true && block.reason === "cooldown")) {
       available.push(candidate);
       continue;

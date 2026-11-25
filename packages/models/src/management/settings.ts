@@ -12,6 +12,7 @@
  */
 import { Result, Schema } from "effect";
 import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from "@commissary/core";
+import { isTosPauseOff } from "@commissary/contract/settings";
 import { parseGoDuration } from "../config/accessors.ts";
 import { encodeConfig } from "../config/codec.ts";
 import { compileGoRegex } from "../config/payload/re2.ts";
@@ -222,6 +223,11 @@ const valueRule = (key: string, value: Json, policy: OutboundPolicy): string | u
 
     return ok ? undefined : `${quoted(value)} is not a duration or whole seconds`;
   }
+
+  if (typeof value === "string" && key === "oauth.providers.antigravity.tos-pause-window")
+    return isTosPauseOff(value) || isPositiveDuration(value.trim())
+      ? undefined
+      : `${quoted(value)} is not a duration greater than zero or off`;
 
   if (typeof value === "string" && key === "multimedia.gpt-image-2-base-model")
     return value === "" || value.toLowerCase().startsWith("gpt-")

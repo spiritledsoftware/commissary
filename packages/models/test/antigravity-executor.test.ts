@@ -137,7 +137,7 @@ describe("antigravity executor: non-stream", () => {
     expect(call?.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent");
     expect(call?.headers["authorization"]).toBe("Bearer ya29.token");
     expect(call?.headers["user-agent"]).toBe(
-      "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
+      "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)",
     );
     expect(call?.headers["x-extra"]).toBe("yes");
     expect(call?.headers["accept"]).toBeUndefined();
@@ -204,8 +204,8 @@ describe("antigravity executor: non-stream", () => {
     expect(JSON.parse(h.calls[1]?.body ?? "{}").project).toBe("found-proj");
   });
 
-  it("answers 400 when the project id cannot be discovered", async () => {
-    const h = harness(() => new Response("nope", { status: 500 }), {
+  it("keeps the status of a failed project discovery, credential-scoped (CLIProxyAPI 204be8b9, 2f57a5a6)", async () => {
+    const h = harness(() => new Response("nope", { status: 403 }), {
       credential: credential("antigravity", "ag-3", {
         kind: "oauth",
         metadata: { access_token: "t" },
@@ -219,9 +219,11 @@ describe("antigravity executor: non-stream", () => {
       postJson({ model: "gemini-2.5-flash", messages: [{ role: "user", content: "hi" }] }),
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(403);
     expect(await response.text()).toContain("antigravity auth missing project_id");
-    expect(h.calls).toHaveLength(1);
+    // No longer a request fault: the credential is retried like after any 403, never reaching generation.
+    expect(h.calls.length).toBeGreaterThan(0);
+    expect(h.calls.every((call) => call.url.endsWith(":loadCodeAssist"))).toBe(true);
   });
 
   it("streams Claude models upstream and merges the SSE for non-stream callers", async () => {

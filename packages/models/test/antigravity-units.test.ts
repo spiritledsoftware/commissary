@@ -19,9 +19,17 @@ import {
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import {
+  antigravityStatusError,
   decideAntigravity429,
   hasExplicitCreditsBalanceExhaustedReason,
+  parseTosViolation,
+  type TosViolation,
+  prepareProjectIdError,
+  type ProjectDiscoveryFailure,
+  redactTosAppealUrl,
 } from "../src/executor/antigravity/errors.ts";
+import { isValidationRequiredError } from "../src/credentials/cooldown/classify.ts";
+import { ERROR_INFO } from "../src/executor/helps/google-retry.ts";
 import { parseGoDuration } from "../src/config/accessors.ts";
 import { parseGoogleRetryDelayMs } from "../src/executor/helps/google-retry.ts";
 import {
@@ -45,8 +53,16 @@ import { usesReasoningReplay } from "../src/executor/helps/reasoning-replay.ts";
 import {
   antigravityCatalogScope,
   loadAntigravityHints,
+  AUTH_ERROR_BACKOFF,
+  type BackoffPolicy,
+  FORBIDDEN_BACKOFF,
+  type FailureState,
   type ModelsRecord,
+  modelsUserAgent,
   nextFailure,
+  recordExpiresAt,
+  routeFingerprint,
+  TRANSIENT_BACKOFF,
   parseModelHints,
   refreshAntigravityModels,
 } from "../src/executor/antigravity/models.ts";
@@ -55,6 +71,7 @@ import {
   selectAntigravityModel,
 } from "../src/executor/antigravity/model-selection.ts";
 import { decodeConfig } from "../src/config/codec.ts";
+import { emptyState } from "../src/credentials/model.ts";
 import {
   convertStreamToNonStream,
   inBandErrorStatus,
@@ -67,6 +84,7 @@ import {
   ANTIGRAVITY_VERSION_KEY,
   antigravityRequestUserAgent,
   antigravityVersionFromUserAgent,
+  resolveAntigravityHubVersion,
   parseManifestVersion,
   refreshAntigravityVersion,
   resetAntigravityVersionCache,
@@ -97,6 +115,32 @@ import { CurrentOrg, GLOBAL_ORG, OrgId, orgKv } from "@commissary/core";
 import { envContext } from "./support/context.ts";
 
 const LONG_SIGNATURE = "S".repeat(80);
+
+/** What a credits-fallback case adds to its failure. */
+interface FallbackExtra {
+  readonly code?: string;
+  readonly retryAfterMs?: number;
+  readonly terminalAuth?: boolean;
+}
+
+/** A 403 TOS_VIOLATION as Cloud Code answers it (CLIProxyAPI 5a351d95). */
+const TOS_BODY = JSON.stringify({
+  error: {
+    code: 403,
+    status: "PERMISSION_DENIED",
+    message: "The caller does not have permission",
+    details: [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        reason: "TOS_VIOLATION",
+        metadata: {
+          appeal_url: "https://support.google.com/appeal?id=1#x",
+          appeal_url_link_text: "Appeal",
+        },
+      },
+    ],
+  },
+});
 
 describe("429 decisions and retry delays", () => {
   const body = (reason: string, delay?: string, status = "RESOURCE_EXHAUSTED") =>
@@ -191,14 +235,156 @@ describe("429 decisions and retry delays", () => {
     expect(hasExplicitCreditsBalanceExhaustedReason(body("QUOTA_EXHAUSTED"))).toBe(false);
   });
 
-  it("starts the credits fallback only after capacity failures", () => {
-    const failure = (status: number, code?: string) =>
-      new ExecutionError({ status, message: "m", ...(code === undefined ? {} : { code }) });
+  it("starts the credits fallback only after quota or capacity failures (CLIProxyAPI e0a1e93d)", () => {
+    const failure = (status: number, message = "m", extra: FallbackExtra = {}) =>
+      new ExecutionError({ status, message, ...extra });
 
-    expect(shouldAttemptCreditsFallback(failure(429))).toBe(true);
-    expect(shouldAttemptCreditsFallback(failure(503))).toBe(true);
-    expect(shouldAttemptCreditsFallback(failure(500, "model_cooldown"))).toBe(true);
+    // A quota exhaustion 429 qualifies; a rate limit or a short wait does not.
+    expect(shouldAttemptCreditsFallback(failure(429, body("QUOTA_EXHAUSTED")))).toBe(true);
+    expect(shouldAttemptCreditsFallback(failure(429, "You have exhausted your quota"))).toBe(true);
+    expect(shouldAttemptCreditsFallback(failure(429, body("RATE_LIMIT_EXCEEDED")))).toBe(false);
+
+    expect(
+      shouldAttemptCreditsFallback(
+        failure(429, body("RATE_LIMIT_EXCEEDED"), { retryAfterMs: 10 * 60_000 }),
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldAttemptCreditsFallback(failure(429, body("QUOTA_EXHAUSTED"), { retryAfterMs: 2_000 })),
+    ).toBe(false);
+    expect(shouldAttemptCreditsFallback(failure(429, "too many requests per minute"))).toBe(false);
+    expect(shouldAttemptCreditsFallback(failure(429))).toBe(false);
+    expect(shouldAttemptCreditsFallback(failure(429, "m", { code: "transient_rate_limit" }))).toBe(
+      false,
+    );
+    // A capacity 503 qualifies; any other 503 does not.
+    expect(shouldAttemptCreditsFallback(failure(503, "No capacity available for model"))).toBe(
+      true,
+    );
+    expect(shouldAttemptCreditsFallback(failure(503, "backend unavailable"))).toBe(false);
+    expect(
+      shouldAttemptCreditsFallback(failure(503, "<!DOCTYPE html><html>capacity_exhausted")),
+    ).toBe(false);
+    // Nothing left to pick.
+    expect(shouldAttemptCreditsFallback(failure(500, "m", { code: "model_cooldown" }))).toBe(true);
+    expect(shouldAttemptCreditsFallback(failure(503, "m", { code: "auth_unavailable" }))).toBe(
+      true,
+    );
+    // Never after a request fault, a terminal auth failure or a TOS_VIOLATION.
     expect(shouldAttemptCreditsFallback(failure(400))).toBe(false);
+    expect(
+      shouldAttemptCreditsFallback(failure(429, body("QUOTA_EXHAUSTED"), { terminalAuth: true })),
+    ).toBe(false);
+    expect(shouldAttemptCreditsFallback(failure(403, TOS_BODY))).toBe(false);
+    expect(shouldAttemptCreditsFallback(failure(503, "tos_violation capacity_exhausted"))).toBe(
+      false,
+    );
+  });
+
+  it("recognises a TOS_VIOLATION and keeps its appeal details (CLIProxyAPI 5a351d95)", () => {
+    expect(parseTosViolation(TOS_BODY)).toEqual({
+      appealUrl: "https://support.google.com/appeal?id=1#x",
+      appealUrlText: "Appeal",
+    });
+
+    const grpc = JSON.stringify({
+      error: {
+        code: 7,
+        details: [{ "@type": ERROR_INFO, reason: "tos_violation" }],
+      },
+    });
+
+    expect(parseTosViolation(grpc)).toEqual({ appealUrl: "", appealUrlText: "" });
+    expect(parseTosViolation(body("QUOTA_EXHAUSTED"))).toBeUndefined();
+    expect(parseTosViolation("TOS_VIOLATION")).toBeUndefined();
+    expect(redactTosAppealUrl(" https://a.example/p?q=1#f ")).toBe("https://a.example/p");
+
+    const error = antigravityStatusError(403, TOS_BODY, new Headers(), 0);
+
+    expect(error).toMatchObject({
+      status: 403,
+      code: "tos_violation",
+      credentialScoped: true,
+      credentialMetadata: {
+        tos_appeal_url: "https://support.google.com/appeal?id=1#x",
+        tos_appeal_url_text: "Appeal",
+      },
+    });
+    // Another 403 stays a plain status error; a validation challenge is credential-scoped.
+    expect(
+      antigravityStatusError(403, "denied", new Headers(), 0).credentialScoped,
+    ).toBeUndefined();
+
+    expect(
+      antigravityStatusError(
+        403,
+        JSON.stringify({ error: { details: [{ reason: "VALIDATION_REQUIRED" }] } }),
+        new Headers(),
+        0,
+      ).credentialScoped,
+    ).toBe(true);
+  });
+
+  it("recognises a VALIDATION_REQUIRED challenge like Go", () => {
+    const check = (status: number, message: string, code?: string) =>
+      isValidationRequiredError({ status, message, ...(code === undefined ? {} : { code }) });
+
+    expect(check(0, "", "validation_required")).toBe(true);
+    expect(check(403, JSON.stringify({ details: [{ reason: "VALIDATION_REQUIRED" }] }))).toBe(true);
+    expect(check(403, JSON.stringify({ error: { status: "VALIDATION_REQUIRED" } }))).toBe(true);
+    expect(check(403, JSON.stringify({ error: { message: "VALIDATION_REQUIRED: verify" } }))).toBe(
+      true,
+    );
+
+    expect(
+      check(
+        403,
+        JSON.stringify({
+          error: { message: "VALIDATION_REQUIRED", details: [{ reason: "OTHER" }] },
+        }),
+      ),
+    ).toBe(false);
+    expect(check(403, "plain VALIDATION_REQUIRED text")).toBe(true);
+    expect(check(401, "VALIDATION_REQUIRED")).toBe(false);
+  });
+
+  it("keeps a project discovery failure's status, wait and TOS details (CLIProxyAPI 204be8b9, 2f57a5a6)", () => {
+    const failure = (fields: Partial<ProjectDiscoveryFailure>): ProjectDiscoveryFailure => ({
+      message: "x",
+      status: 0,
+      body: "",
+      notFound: false,
+      ...fields,
+    });
+
+    expect(prepareProjectIdError(undefined, 0)).toMatchObject({
+      status: 503,
+      credentialScoped: true,
+    });
+
+    expect(prepareProjectIdError(failure({ notFound: true }), 0)).toMatchObject({
+      status: 503,
+      credentialScoped: true,
+    });
+
+    const transient = prepareProjectIdError(failure({}), 0);
+
+    expect(transient).toMatchObject({ status: 503, code: "transient_transport" });
+    expect(transient.credentialScoped).toBeUndefined();
+
+    expect(prepareProjectIdError(failure({ status: 429, retryAfterMs: 7000 }), 0)).toMatchObject({
+      status: 429,
+      credentialScoped: true,
+      retryAfterMs: 7000,
+      safeHeaders: { "retry-after": "7" },
+    });
+
+    expect(prepareProjectIdError(failure({ status: 403, body: TOS_BODY }), 0)).toMatchObject({
+      status: 403,
+      code: "tos_violation",
+      credentialScoped: true,
+    });
   });
 });
 
@@ -1087,6 +1273,7 @@ describe("state and credits", () => {
     await Effect.runPromise(
       probeCredits(
         credential,
+        "scope",
         "tok",
         "ua",
         makeKvAntigravityState(orgKv(env.CACHE, GLOBAL_ORG)),
@@ -1104,6 +1291,7 @@ describe("state and credits", () => {
     await Effect.runPromise(
       probeCredits(
         credential,
+        "scope",
         "tok",
         "antigravity/hub/2.29.0",
         makeKvAntigravityState(orgKv(env.CACHE, GLOBAL_ORG)),
@@ -1138,11 +1326,117 @@ describe("state and credits", () => {
         updatedAt: 1,
       },
     });
-    expect(parseCreditsReply({ paidTier: { id: "x" } }, 1).record).toMatchObject({
-      creditAmount: 0,
-      minCreditAmount: 1,
+    // No usable GOOGLE_ONE_AI entry: known and unavailable (CLIProxyAPI 737ba4c6).
+    expect(parseCreditsReply({ paidTier: { id: "x" } }, 1)).toEqual({
+      known: true,
+      record: { creditAmount: 0, minCreditAmount: 0, paidTierId: "x", updatedAt: 1 },
     });
-    expect(parseCreditsReply({ paidTier: { availableCredits: [] } }, 1).known).toBe(false);
+    expect(parseCreditsReply({ paidTier: { availableCredits: [] } }, 1).known).toBe(true);
+    // Invalid JSON publishes nothing.
+    expect(parseCreditsReply(undefined, 1)).toEqual({ known: false, record: undefined });
+  });
+
+  it("reads a missing, null or blank minimum as 0 and skips an invalid or negative one", () => {
+    const reply = (min: Json | undefined, amount: Json = "10") => ({
+      paidTier: {
+        availableCredits: [
+          {
+            creditType: "GOOGLE_ONE_AI",
+            creditAmount: amount,
+            ...(min === undefined ? {} : { minimumCreditAmountForUsage: min }),
+          },
+        ],
+      },
+    });
+
+    for (const min of [undefined, null, " "])
+      expect(parseCreditsReply(reply(min), 1).record?.minCreditAmount).toBe(0);
+    expect(parseCreditsReply(reply("5"), 1).record).toMatchObject({
+      creditAmount: 10,
+      minCreditAmount: 5,
+    });
+
+    for (const min of ["-1", "abc", "NaN"])
+      expect(parseCreditsReply(reply(min), 1).record).toMatchObject({
+        creditAmount: 0,
+        minCreditAmount: 0,
+      });
+    expect(parseCreditsReply(reply("1", "Infinity"), 1).record?.creditAmount).toBe(0);
+  });
+
+  it("calls a balance available only when positive, finite and at least a valid minimum", () => {
+    const record = (creditAmount: number, minCreditAmount: number) => ({
+      creditAmount,
+      minCreditAmount,
+      paidTierId: "",
+      updatedAt: 0,
+    });
+
+    expect(creditsAvailable(undefined)).toBe(true);
+    expect(creditsAvailable(record(10, 0))).toBe(true);
+    expect(creditsAvailable(record(10, 10))).toBe(true);
+    expect(creditsAvailable(record(0, 0))).toBe(false);
+    expect(creditsAvailable(record(5, 10))).toBe(false);
+    expect(creditsAvailable(record(5, -1))).toBe(false);
+    expect(creditsAvailable(record(Number.POSITIVE_INFINITY, 0))).toBe(false);
+  });
+
+  it("sends the credential's custom headers on the credits probe and publishes nothing for a huge or broken reply", async () => {
+    const calls: Array<UpstreamCall> = [];
+    const state = makeMemoryAntigravityState(GLOBAL_ORG);
+
+    const credential = {
+      attributes: { "header:X-Custom": "yes", "header:X-Session": "$CPA-SESSION-ID" },
+      metadata: {},
+    } as unknown as CredentialSnapshot;
+
+    const scope = `probe-${crypto.randomUUID()}`;
+
+    await Effect.runPromise(
+      probeCredits(credential, scope, "tok", "ua", state, 1).pipe(
+        Effect.provide(mockHttpClient(calls, () => new Response("{not json"))),
+      ),
+    );
+
+    expect(calls[0]?.headers["x-custom"]).toBe("yes");
+    // The probe is no client request: no session id to expand.
+    expect(calls[0]?.headers["x-session"]).toBeUndefined();
+    expect(await state.credits(scope)).toBeUndefined();
+
+    const huge = JSON.stringify({ paidTier: { id: "x".repeat((1 << 20) + 1) } });
+
+    await Effect.runPromise(
+      probeCredits(credential, scope, "tok", "ua", state, 1).pipe(
+        Effect.provide(mockHttpClient(calls, () => new Response(huge))),
+      ),
+    );
+
+    expect(await state.credits(scope)).toBeUndefined();
+  });
+
+  it("hands a credits probe's TOS_VIOLATION to the TOS bookkeeping, and no other 403", async () => {
+    const calls: Array<UpstreamCall> = [];
+    const seen: TosViolation[] = [];
+    const credential = { attributes: {}, metadata: {} } as unknown as CredentialSnapshot;
+
+    const probe = (body: string) =>
+      Effect.runPromise(
+        probeCredits(
+          credential,
+          "scope",
+          "tok",
+          "ua",
+          makeMemoryAntigravityState(GLOBAL_ORG),
+          1,
+          (violation) => Effect.sync(() => void seen.push(violation)),
+        ).pipe(Effect.provide(mockHttpClient(calls, () => new Response(body, { status: 403 })))),
+      );
+
+    await probe(TOS_BODY);
+    await probe("denied");
+
+    expect(calls).toHaveLength(2);
+    expect(seen).toEqual([parseTosViolation(TOS_BODY)]);
   });
 });
 
@@ -1172,10 +1466,22 @@ describe("version", () => {
     expect(antigravityRequestUserAgent("", "2.29.0")).toBe(
       "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
     );
-    // Unknown releases keep their online version without claiming another build's changelist.
-    expect(antigravityRequestUserAgent("", "2.30.0")).toBe(
-      "antigravity/hub/2.30.0 (aidev_client; os_type=darwin; arch=arm64)",
+
+    // An unmapped release is pinned to the highest mapped release and its changelist (CLIProxyAPI f2b00303).
+    for (const unmapped of ["2.30.0", "2.36.0", "2.9.1"]) {
+      expect(antigravityRequestUserAgent("", unmapped)).toBe(
+        "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)",
+      );
+    }
+
+    expect(antigravityRequestUserAgent("", "2.35.0")).toBe(
+      "antigravity/hub/2.35.0 (aidev_client; os_type=darwin; arch=arm64; cl=1028447422)",
     );
+    expect(resolveAntigravityHubVersion("2.34.0")).toEqual({
+      version: "2.34.0",
+      changelist: "1026637980",
+    });
+    expect(ANTIGRAVITY_FALLBACK_VERSION).toBe("2.35.1");
     expect(
       antigravityRequestUserAgent(
         "antigravity/hub/2.1.0 linux/x64 google-api-nodejs-client/10.3.0",
@@ -1186,7 +1492,9 @@ describe("version", () => {
     expect(antigravityVersionFromUserAgent("antigravity/2.4.6 darwin/arm64", "2.9.1")).toBe(
       "2.4.6",
     );
-    expect(antigravityVersionFromUserAgent("custom/1", "2.9.1")).toBe("2.9.1");
+    // Without a version of its own, the effective (pinned) release.
+    expect(antigravityVersionFromUserAgent("custom/1", "2.9.1")).toBe("2.35.1");
+    expect(antigravityVersionFromUserAgent("custom/1", "2.33.0")).toBe("2.33.0");
   });
 
   it("stores the fetched version in KV and keeps the old value when the fetch fails", async () => {
@@ -1249,6 +1557,41 @@ describe("model catalog probes", () => {
     expect(applyAntigravityHints(catalog, undefined)).toBe(catalog);
   });
 
+  it("backs off 401s 10, 20, 30 min and 403s 10, 20, 40, 60 min (CLIProxyAPI f8e297aa)", () => {
+    const windows = (policy: BackoffPolicy, steps: number) => {
+      let state: FailureState | undefined;
+      const out: number[] = [];
+
+      for (let i = 0; i < steps; i++) {
+        state = nextFailure(state, 0, 1, policy);
+        out.push(state.nextRetryAt / 60_000);
+      }
+
+      return out;
+    };
+
+    expect(windows(AUTH_ERROR_BACKOFF, 4)).toEqual([10, 20, 30, 30]);
+    expect(windows(FORBIDDEN_BACKOFF, 5)).toEqual([10, 20, 40, 60, 60]);
+    expect(windows(TRANSIENT_BACKOFF, 6)).toEqual([2, 4, 8, 16, 30, 30]);
+  });
+
+  it("keeps stored entitlements fresh only on their own route for at most 3 h (CLIProxyAPI 533edd38)", () => {
+    const fingerprint = routeFingerprint("ua");
+
+    const record: ModelsRecord = {
+      fetchedAt: 0,
+      expiresAt: 10 * 3_600_000,
+      routeFingerprint: fingerprint,
+    };
+
+    expect(recordExpiresAt(record, fingerprint, 1000)).toBe(3 * 3_600_000);
+    expect(recordExpiresAt(record, routeFingerprint("other"), 1000)).toBe(0);
+    expect(recordExpiresAt({ fetchedAt: 0 }, fingerprint, 1000)).toBe(0);
+    expect(recordExpiresAt(record, fingerprint, 4 * 3_600_000)).toBe(0);
+    expect(modelsUserAgent({ user_agent: "custom/1" }, {}, "2.35.1")).toBe("custom/1");
+    expect(modelsUserAgent({}, {}, "2.35.1")).toMatch(/^antigravity\/hub\/2\.35\.1 /);
+  });
+
   it("backs off 2, 4, 8, 16, 30 min with equal jitter and resets after a long quiet period", () => {
     let state = nextFailure(undefined, 0, 0);
     expect(state).toMatchObject({ count: 1, nextRetryAt: 60_000 });
@@ -1272,17 +1615,46 @@ describe("model catalog probes", () => {
       ...(await loadAntigravityHints(orgKv(env.CACHE, GLOBAL_ORG), ["known", "missing"])).keys(),
     ]).toEqual(["known"]);
 
+    let token = "tok";
+    let userAgent = "";
+
     const plane = {
       listModelSources: async () => [
-        { id, provider: "antigravity", disabled: false },
-        { id: "other", provider: "claude", disabled: false },
-        { id: "off", provider: "antigravity", disabled: true },
+        { id, provider: "antigravity", disabled: false, state: emptyState() },
+        { id: "other", provider: "claude", disabled: false, state: emptyState() },
+        { id: "off", provider: "antigravity", disabled: true, state: emptyState() },
+        {
+          id: "tos",
+          provider: "antigravity",
+          disabled: false,
+          state: { ...emptyState(), status: "disabled" },
+        },
       ],
       ensureFresh: async () => ({
         ok: true,
         refreshed: false,
-        credential: { attributes: {}, metadata: { access_token: "tok", project_id: "proj" } },
+        credential: {
+          attributes: userAgent === "" ? {} : { user_agent: userAgent },
+          metadata: { access_token: token, project_id: "proj" },
+        },
       }),
+    };
+
+    const run = (reply: () => Response) =>
+      Effect.runPromise(
+        refreshAntigravityModels.pipe(
+          Effect.provide(mockHttpClient(calls, reply)),
+          Effect.provideContext(envContext(stubEnv)),
+          Effect.provideService(CurrentOrg, GLOBAL_ORG),
+        ),
+      );
+
+    /** Ages the stored record so the next run probes again. */
+    const expire = async () => {
+      const name = `ag:models:${id}`;
+      const record = JSON.parse((await env.CACHE.get(name)) ?? "{}") as ModelsRecord;
+
+      await env.CACHE.put(name, JSON.stringify({ ...record, fetchedAt: 1, expiresAt: 2 }));
     };
 
     const stubEnv = {
@@ -1305,7 +1677,12 @@ describe("model catalog probes", () => {
       ),
     );
 
-    expect(results).toEqual([{ id, status: "success" }]);
+    // Disabled credentials, by file or by state (a TOS_VIOLATION), are not probed (CLIProxyAPI f48975b4).
+    expect(results).toEqual([
+      { id, status: "success" },
+      { id: "off", status: "skipped" },
+      { id: "tos", status: "skipped" },
+    ]);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
@@ -1318,30 +1695,42 @@ describe("model catalog probes", () => {
       webSearchModelIds: ["gemini-3-pro-high"],
     });
 
-    // A failing probe keeps the last good entitlements and records the failure.
-    const failed = await Effect.runPromise(
-      refreshAntigravityModels.pipe(
-        Effect.provide(mockHttpClient(calls, () => new Response("down", { status: 503 }))),
-        Effect.provideContext(envContext(stubEnv)),
-        Effect.provideService(CurrentOrg, GLOBAL_ORG),
-      ),
-    );
+    // Fresh entitlements of the same route are kept without a probe (CLIProxyAPI 533edd38).
+    expect((await run(() => new Response("never", { status: 500 })))[0]).toEqual({
+      id,
+      status: "fresh",
+    });
+    expect(calls).toHaveLength(1);
 
-    expect(failed).toEqual([{ id, status: "transient" }]);
+    // A failing probe keeps the last good entitlements and records the failure.
+    await expire();
+    const failed = await run(() => new Response("down", { status: 503 }));
+
+    expect(failed[0]).toEqual({ id, status: "transient" });
     expect((await loadAntigravityHints(orgKv(env.CACHE, GLOBAL_ORG), [id])).get(id)).toEqual(
       stored,
     );
 
-    // The failure window suppresses the next probe.
-    const backoff = await Effect.runPromise(
-      refreshAntigravityModels.pipe(
-        Effect.provide(mockHttpClient(calls, () => new Response("never", { status: 500 }))),
-        Effect.provideContext(envContext(stubEnv)),
-        Effect.provideService(CurrentOrg, GLOBAL_ORG),
-      ),
-    );
+    // The failure window suppresses the next probe for the same token; a refreshed token probes at once, with the
+    // credential's own user agent and no empty project (CLIProxyAPI f8e297aa, 753bfa19).
+    expect((await run(() => new Response("never", { status: 500 })))[0]).toEqual({
+      id,
+      status: "backoff",
+    });
 
-    expect(backoff).toEqual([{ id, status: "backoff" }]);
+    token = "tok-2";
+    userAgent = "custom/1";
+    const forbidden = await run(() => new Response("denied", { status: 403 }));
+
+    expect(forbidden[0]).toEqual({ id, status: "forbidden" });
+    expect(calls.at(-1)?.headers["user-agent"]).toBe("custom/1");
+
+    // A 403 backoff holds whatever the token.
+    token = "tok-3";
+    expect((await run(() => new Response("never", { status: 500 })))[0]).toEqual({
+      id,
+      status: "backoff",
+    });
   });
 });
 

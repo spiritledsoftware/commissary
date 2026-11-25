@@ -33,6 +33,7 @@ import {
   isCreditBalanceTooLow,
   isInvalidGrantError,
   isModelSupportError,
+  isTosViolationResult,
   shouldSkipCredentialCooldown,
 } from "./classify.ts";
 import { rejectedSignalsForCooldown } from "./claude-unified.ts";
@@ -444,6 +445,7 @@ const clearStateOnSuccess = (state: Draft, now: number): void => {
   delete state.lastError;
   state.nextRetryAfter = 0;
   delete state.forcedUntil;
+  delete state.credentialRetryAfter;
   state.updatedAt = now;
 };
 
@@ -521,10 +523,11 @@ const applyCredentialFailure = (
   credentialScoped: boolean,
   provider: string,
   headers: Readonly<Record<string, string>> | undefined,
-): void => {
+): number => {
   const previous = state.nextRetryAfter;
 
-  if (shouldSkipCredentialCooldown(classified)) return;
+  // A skipped cooldown has no deadline of its own.
+  if (shouldSkipCredentialCooldown(classified)) return 0;
   state.unavailable = true;
   state.status = "error";
   state.updatedAt = now;
@@ -663,12 +666,16 @@ const applyCredentialFailure = (
     }
   }
 
+  // The failure's own deadline (Go `ownAuthRetryDeadline`), before the earlier one is merged in.
+  let ownDeadline = state.nextRetryAfter;
+
   if (state.nextRetryAfter !== 0 && previous > state.nextRetryAfter && previous > now)
     state.nextRetryAfter = previous;
 
   if (error?.code === ErrorCode.forceCooldown && state.nextRetryAfter === 0) {
     state.nextRetryAfter = now + TRANSIENT_ERROR_COOLDOWN_MS;
     state.unavailable = true;
+    ownDeadline = state.nextRetryAfter;
   }
 
   if (disableCooling && state.nextRetryAfter === 0 && state.quota.nextRecoverAt === 0) {
@@ -677,6 +684,8 @@ const applyCredentialFailure = (
   }
 
   holdForcedCooldown(state, error?.code === ErrorCode.forceCooldown, now);
+
+  return ownDeadline;
 };
 
 // --- MarkResult -----------------------------------------------------------------------------------------------------
@@ -765,6 +774,36 @@ export const classifiable = (error: CredentialError): ClassifiableError => ({
   ...(error.code === undefined ? {} : { code: error.code }),
 });
 
+/**
+ * `isQuotaCooldownResultError`: a 429 that is a real quota exhaustion, not a Cloudflare challenge, a transient rate
+ * limit, an invalid grant, a low credit balance or a TOS_VIOLATION.
+ */
+const isQuotaCooldownFailure = (error: CredentialError, classified: ClassifiableError): boolean =>
+  classified.status === 429 &&
+  error.code !== ErrorCode.transientRateLimit &&
+  !isCloudflareChallengeError(classified) &&
+  !isInvalidGrantError(classified) &&
+  !isCreditBalanceTooLow(classified.status, classified.message) &&
+  !isTosViolationResult(error);
+
+/**
+ * Go `credentialRetryAfter`: a credential-scoped failure other than a quota 429 locks the whole credential out of the
+ * credits round until the failure's own deadline (CLIProxyAPI 8860264b), not one merged with an earlier cooldown. A
+ * later deadline only extends it.
+ */
+const recordCredentialRetry = (
+  state: Draft,
+  until: number,
+  disableCooling: boolean,
+  now: number,
+): boolean => {
+  if (disableCooling || until <= now) return false;
+
+  if (until > (state.credentialRetryAfter ?? 0)) state.credentialRetryAfter = until;
+
+  return true;
+};
+
 /** `MarkResult` for one attempt. Returns the new state (the input is not modified). */
 export const markResult = (input: MarkInput): CredentialState => markResultDetailed(input).state;
 
@@ -809,6 +848,16 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         modelCooldownActive(modelState, now) &&
         sequence <= (marks.models.get(canonicalModelLookupKey(modelKey)) ?? 0));
 
+  // A credential-scoped lockout recorded after this attempt was dispatched outlives its success (Go
+  // `retainCredentialRetry`).
+  const retainedLockout =
+    sequence > 0 &&
+    marks !== undefined &&
+    !wasTerminalUnauthorized &&
+    (state.credentialRetryAfter ?? 0) > now &&
+    marks.credential > 0 &&
+    sequence <= marks.credential;
+
   if (result.success) {
     if (input.credential.disabled === true || state.status === "disabled") {
       // A late success of an attempt still in flight on a disabled credential resets no state (CLIProxyAPI 29de31a8).
@@ -823,11 +872,14 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
       }
     } else if (state.quota.reason === "credential_quota" && state.quota.nextRecoverAt > now) {
       // Retain the active credential-scoped cooldown.
-    } else if (retainedCooldown) {
+    } else if (retainedCooldown || retainedLockout) {
       // Retain a cooldown recorded after this attempt was dispatched.
     } else if (modelKey !== "") {
       modelState = ensureModelState(state, modelKey);
       resetModelState(modelState, now);
+      // A success ends a credential-scoped lockout (Go clears `credentialRetryAfter` here and in
+      // `clearAuthStateOnSuccess`); an active credential quota (above) keeps it.
+      delete state.credentialRetryAfter;
       updateAggregatedAvailability(state, now);
 
       if (!hasModelError(state, now) && !((state.forcedUntil ?? 0) > now)) {
@@ -838,6 +890,17 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
     } else {
       clearStateOnSuccess(state, now);
     }
+  } else if (
+    error !== undefined &&
+    (input.credential.disabled === true || state.status === "disabled")
+  ) {
+    // A disabled credential (operator action, terminal refresh failure or TOS_VIOLATION) stays as it is until it is
+    // enabled again: a late failure neither overwrites its state nor arms a cooldown (CLIProxyAPI 5a351d95).
+  } else if (error !== undefined && isTosViolationResult(error)) {
+    // A terminal TOS_VIOLATION disables the credential whatever its status and cooling setting (CLIProxyAPI 5a351d95,
+    // 14cc6ad1); the pool also sets the file flag and stores the appeal details. No cooldown: nothing to wait for.
+    applyTosViolation(state, error, modelKey, now);
+    modelState = modelKey === "" ? undefined : ensureModelState(state, modelKey);
   } else if (error !== undefined) {
     const failure = error;
     const classified = classifiable(failure);
@@ -968,6 +1031,9 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
           }
         }
 
+        // The failure's own deadline (Go `ownModelNonQuotaDeadline`), before an earlier cooldown is merged in.
+        let ownDeadline = model.nextRetryAfter;
+
         if (disableCooling && model.nextRetryAfter === 0 && model.quota.nextRecoverAt === 0) {
           model.unavailable = false;
           model.quota.exceeded = false;
@@ -977,6 +1043,8 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
           model.nextRetryAfter = now + TRANSIENT_ERROR_COOLDOWN_MS;
           model.unavailable = true;
         }
+
+        if (forced) ownDeadline = Math.max(ownDeadline, model.nextRetryAfter);
 
         // A later failure only extends a live cooldown; a deliberate zero write (cooling disabled) still clears it,
         // except an explicit forced cooldown, which outlasts it.
@@ -990,11 +1058,19 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
 
         holdForcedCooldown(model, forced, now);
 
+        if (
+          result.credentialScoped === true &&
+          !wasTerminalUnauthorized &&
+          !isQuotaCooldownFailure(failure, classified) &&
+          recordCredentialRetry(state, ownDeadline, disableCooling, now)
+        )
+          cooledCredential = true;
+
         state.status = "error";
         updateAggregatedAvailability(state, now);
       }
     } else if (!wasTerminalUnauthorized) {
-      applyCredentialFailure(
+      const ownDeadline = applyCredentialFailure(
         state,
         failure,
         classified,
@@ -1006,11 +1082,16 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         input.credential.provider,
         result.headers,
       );
+
       cooledCredential = !shouldSkipCredentialCooldown(classified);
+
+      if (result.credentialScoped === true && !isQuotaCooldownFailure(failure, classified))
+        recordCredentialRetry(state, ownDeadline, disableCooling, now);
     }
   }
 
-  if (wasTerminalUnauthorized) {
+  // A credential a TOS_VIOLATION (or an operator) disabled keeps its disabled status.
+  if (wasTerminalUnauthorized && state.status !== "disabled") {
     state.unavailable = true;
     state.status = "error";
     state.nextRefreshAfter = 0;
@@ -1027,6 +1108,31 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
   }
 
   return { state, cooled: { credential: cooledCredential, models: cooledModels } };
+};
+
+/** The terminal state of a TOS_VIOLATION: the credential and the reporting model are disabled without a deadline. */
+const applyTosViolation = (
+  state: Draft,
+  failure: CredentialError,
+  modelKey: string,
+  now: number,
+): void => {
+  if (modelKey !== "") {
+    const model = ensureModelState(state, modelKey);
+    model.unavailable = true;
+    model.status = "disabled";
+    model.statusMessage = ErrorCode.tosViolation;
+    model.nextRetryAfter = 0;
+    model.lastError = cloneError(failure);
+    model.updatedAt = now;
+  }
+
+  state.lastError = cloneError(failure);
+  state.statusMessage = ErrorCode.tosViolation;
+  state.status = "disabled";
+  state.unavailable = true;
+  state.nextRetryAfter = 0;
+  state.updatedAt = now;
 };
 
 /** The 429 row, including credential-wide propagation for credential-scoped limits. */

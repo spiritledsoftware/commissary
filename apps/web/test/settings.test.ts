@@ -99,6 +99,7 @@ const DEFAULTS: SettingsValues = {
         "antigravity-credits": false,
         "signature-cache-enabled": null,
         "signature-bypass-strict": null,
+        "tos-pause-window": "",
       },
       devin: {
         "sensitive-words": [],
@@ -334,6 +335,18 @@ describe("inputs and checks", () => {
 
     expect(inputOf(cache, null)).toBe(true);
     expect(inputOf(cache, false)).toBe(false);
+  });
+
+  it("takes a TOS pause window or off", () => {
+    const pause = spec("oauth.providers.antigravity.tos-pause-window");
+
+    for (const text of ["", "off", "0", "None", "disabled", "10m", "1h30m"])
+      expect(parseInput(pause, text)).toEqual({ ok: true, value: text });
+    expect(parseInput(pause, "-5m").ok).toBe(false);
+    expect(parseInput(pause, "soon").ok).toBe(false);
+    expect(durationReading(pause, "off")).toBe("= no pause");
+    expect(durationReading(pause, "")).toBe("= no pause");
+    expect(durationReading(pause, "10m")).toBe("= 10 minutes");
   });
 
   it("reads durations out", () => {

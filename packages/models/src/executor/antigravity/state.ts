@@ -9,10 +9,18 @@
  * claim, which KV cannot give: it is a create-if-absent write in the `SessionState` Durable Object (per credential,
  * TTL 10 min), with the per-isolate map as fallback. Credential ids are only unique within an org, so every key and
  * address is scoped to the org (`OrgKv`, `OrgCache` and `orgScopedName`; unchanged for `global`).
+ *
+ * Credits, short cooldowns and the probe slot are keyed by {@link antigravityCreditsScope}, the credential id and a
+ * digest of its grant (CLIProxyAPI 16bf182f), so a credential re-added under the same id starts with no state of the
+ * one it replaced. The pool-wide TOS_VIOLATION pause (CLIProxyAPI 5a351d95, `markAntigravityTOSPause`) is one key per
+ * org, `ag:tos-pause`, with the window plus 5 s as TTL.
  */
 import { createHash } from "node:crypto";
 import { addressName, type SessionState } from "@commissary/state";
 import { makeOrgCache, type OrgId, type OrgKv, orgScopedName } from "@commissary/core";
+import { shortDigest } from "../../credentials/grant-digest.ts";
+import type { JsonObject } from "@commissary/json";
+import { metadataString } from "../gemini/targets.ts";
 import { type OptionalKvEnv, orgKvIfBound } from "../../kv.ts";
 
 export const CREDITS_TTL_MS = 30 * 60_000;
@@ -29,8 +37,29 @@ export interface CreditsRecord {
   readonly updatedAt: number;
 }
 
+/**
+ * `antigravityCreditsAvailable` (CLIProxyAPI 737ba4c6, 8e5a98e8): unknown is optimistic; a known balance is usable when
+ * it is positive, finite and at least a finite, non-negative minimum.
+ */
 export const creditsAvailable = (record: CreditsRecord | undefined): boolean =>
-  record === undefined || record.creditAmount >= record.minCreditAmount;
+  record === undefined ||
+  (Number.isFinite(record.creditAmount) &&
+    Number.isFinite(record.minCreditAmount) &&
+    record.minCreditAmount >= 0 &&
+    record.creditAmount > 0 &&
+    record.creditAmount >= record.minCreditAmount);
+
+/**
+ * `AntigravityCreditsScope` (CLIProxyAPI 16bf182f): the key of a credential's credits, short cooldowns and probe slot,
+ * its id and a digest of its grant (refresh token, else access token). Go hashes the grant with the email, account id
+ * and creation time; the grant alone already changes when the credential is replaced and stays through refreshes.
+ */
+export const antigravityCreditsScope = (credentialId: string, metadata: JsonObject): string => {
+  const grant =
+    metadataString(metadata, "refresh_token") || metadataString(metadata, "access_token");
+
+  return grant === "" ? credentialId : `${credentialId}:${shortDigest(grant)}`;
+};
 
 /** `IsAntigravityCreditsHintFresh`: a record older than the refresh interval is re-validated, not trusted. */
 export const creditsRecordFresh = (record: CreditsRecord, now: number): boolean =>
@@ -51,6 +80,10 @@ export interface AntigravityState {
   markCreditsExhausted(authId: string, now: number): Promise<void>;
   /** Claims the per-credential balance probe slot (10 min); `false` when another probe ran recently. */
   readonly claimCreditsRefresh: CreditsRefreshClaim;
+  /** Remaining time (ms) of the org's pool-wide TOS_VIOLATION pause, `0` when none. */
+  tosPauseRemaining(now: number): Promise<number>;
+  /** `markAntigravityTOSPause`: pauses the org's Antigravity pool for `windowMs`. */
+  pauseForTos(windowMs: number, now: number): Promise<void>;
 }
 
 const memoryCooldowns = makeOrgCache<number>();
@@ -58,6 +91,10 @@ const memoryCooldowns = makeOrgCache<number>();
 const memoryCredits = makeOrgCache<{ readonly record: CreditsRecord; readonly expires: number }>();
 
 const memoryRefresh = makeOrgCache<number>();
+
+const memoryTosPause = makeOrgCache<number>();
+
+const TOS_PAUSE_KEY = "pool";
 
 /** Per-isolate implementation of `org` (tests and deployments without KV). */
 export const makeMemoryAntigravityState = (org: OrgId): AntigravityState => {
@@ -92,6 +129,11 @@ export const makeMemoryAntigravityState = (org: OrgId): AntigravityState => {
 
       return true;
     },
+    tosPauseRemaining: async (now) =>
+      Math.max(0, (memoryTosPause.get(org, TOS_PAUSE_KEY) ?? 0) - now),
+    pauseForTos: async (windowMs, now) => {
+      memoryTosPause.set(org, TOS_PAUSE_KEY, now + windowMs);
+    },
   };
 };
 
@@ -100,12 +142,16 @@ export const resetMemoryAntigravityState = (): void => {
   memoryCooldowns.clear();
   memoryCredits.clear();
   memoryRefresh.clear();
+  memoryTosPause.clear();
 };
 
 /** Claims the probe slot of a credential atomically; `false` when it is taken (or the claim failed). */
 export type CreditsRefreshClaim = (authId: string, now: number) => Promise<boolean>;
 
 const CREDITS_LOCK_STORE = "antigravity-credits-probe";
+
+/** The org's TOS_VIOLATION pause deadline (Go `cpa:antigravity:tos-pause:until`). */
+export const TOS_PAUSE_KV_KEY = "ag:tos-pause";
 
 /**
  * {@link CreditsRefreshClaim} of `org` over the `SessionState` Durable Object (`put` with `ifGeneration: 0`).
@@ -191,6 +237,21 @@ export const makeKvAntigravityState = (
     markCreditsExhausted: (authId, now) =>
       putCredits(authId, { creditAmount: 0, minCreditAmount: 1, paidTierId: "", updatedAt: now }),
     claimCreditsRefresh: claimRefresh,
+    tosPauseRemaining: (now) =>
+      swallow(async () => {
+        const raw = await kv.get(TOS_PAUSE_KV_KEY);
+        const deadline = raw === null ? 0 : Number(raw);
+
+        return Number.isFinite(deadline) ? Math.max(0, deadline - now) : 0;
+      }, 0),
+    pauseForTos: (windowMs, now) =>
+      swallow(
+        () =>
+          kv.put(TOS_PAUSE_KV_KEY, String(now + windowMs), {
+            expirationTtl: ttlSeconds(windowMs + 5000),
+          }),
+        undefined,
+      ),
   };
 };
 

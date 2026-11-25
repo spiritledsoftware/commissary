@@ -15,7 +15,7 @@
 import type { Config } from "../config/schema.ts";
 import { sessionAffinityTtlMs } from "../config/accessors.ts";
 import type { Reach } from "../grants/reach.ts";
-import type { JsonObject } from "@commissary/json";
+import type { Json, JsonObject } from "@commissary/json";
 import { resetCooldownState } from "./cooldown-reset.ts";
 import { type StoredCredential, deriveFileCredential, sanitizeAliases } from "./derive.ts";
 import { parseAuthFile, type ImportFailureReason } from "./import.ts";
@@ -28,7 +28,13 @@ import {
   modelCooldownActive,
   seedForcedCooldowns,
 } from "./cooldown/mark-result.ts";
-import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
+import {
+  ErrorCode,
+  isTosViolationResult,
+  isValidationRequiredError,
+  shouldSkipCredentialCooldown,
+} from "./cooldown/classify.ts";
+import { grantDigestOf } from "./grant-digest.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
 import { MerklePrefixMatcher } from "../session-routing/matcher.ts";
 import type { SpendPolicy } from "@commissary/state/spend";
@@ -66,7 +72,12 @@ export interface PoolStore {
   list(): StoredCredential[];
   get(id: string): StoredCredential | undefined;
   upsert(id: string, provider: string, metadata: JsonObject, options: UpsertOptions): UpsertOutcome;
-  setDisabled(id: string, disabled: boolean): StoredCredential | undefined;
+  /** `metadata`: keys written with the flag (a TOS_VIOLATION's appeal details). */
+  setDisabled(
+    id: string,
+    disabled: boolean,
+    metadata?: Readonly<Record<string, string>>,
+  ): StoredCredential | undefined;
   remove(id: string): boolean;
   loadStates(): Map<string, CredentialState>;
   saveState(id: string, state: CredentialState): void;
@@ -445,8 +456,13 @@ export class CredentialPool {
 
     if (credential === undefined) return { ok: false, error: "unknown_credential" };
 
-    // A result for credentials that changed in the meantime says nothing about the new material.
-    if (lease.credentialVersion < credential.credentialVersion) return { ok: true, applied: false };
+    // A result for credentials that changed in the meantime says nothing about the new material, unless it is an
+    // account-wide signal reported with the same refresh token (an access-token refresh in between).
+    if (
+      lease.credentialVersion < credential.credentialVersion &&
+      !sameAccountSignal(result, credential.metadata)
+    )
+      return { ok: true, applied: false };
 
     const now = this.#now();
     const previous = this.#state(credential.id);
@@ -467,6 +483,19 @@ export class CredentialPool {
     this.#recordCooldownMarks(credential.id, cooled, next, now);
     this.#states.set(credential.id, next);
     this.#store.saveState(credential.id, next);
+
+    // A TOS_VIOLATION disables the auth file too and keeps its appeal details there (`persistTOSAppealMetadata`):
+    // it stays off until an operator enables it again.
+    if (
+      !result.success &&
+      isTosViolationResult(result.error) &&
+      credential.source === "file" &&
+      !credential.disabled
+    ) {
+      this.#store.setDisabled(credential.id, true, result.credentialMetadata ?? {});
+      this.#invalidateBindings(credential.id);
+      this.#invalidate();
+    }
 
     if (result.success) {
       for (const key of lease.affinityKeys ?? []) this.#affinity.touch(key, credential.id, now);
@@ -550,7 +579,9 @@ export class CredentialPool {
 
     for (const model of cooled.models) marks.models.set(canonicalModelLookupKey(model), seq);
 
-    if (!credentialCooldownActive(next, now)) marks.credential = 0;
+    // A live credential-scoped lockout (`credentialRetryAfter`) keeps the credential's stamp too.
+    if (!credentialCooldownActive(next, now) && !((next.credentialRetryAfter ?? 0) > now))
+      marks.credential = 0;
 
     for (const key of marks.models.keys()) {
       const state = findModelState(next.modelStates, key);
@@ -710,6 +741,7 @@ export class CredentialPool {
     );
 
     if (disabled) for (const id of applied) this.#invalidateBindings(id);
+    else for (const id of applied) this.#clearTosViolation(id);
 
     if (applied.length > 0) this.#invalidate();
 
@@ -725,8 +757,45 @@ export class CredentialPool {
     this.#store.setDisabled(id, disabled);
 
     if (disabled) this.#invalidateBindings(id);
+    else this.#clearTosViolation(id);
     this.#invalidate();
 
     return "ok";
   }
+
+  /**
+   * Enabling a credential a TOS_VIOLATION disabled starts it afresh (Go `applyAuthDisabledState` sets it active): its
+   * disabled state and model marks go, as after a re-login.
+   */
+  #clearTosViolation(id: string): void {
+    const state = this.#state(id);
+
+    if (state.status !== "disabled" || state.statusMessage !== ErrorCode.tosViolation) return;
+    this.#states.delete(id);
+    this.#cooldownMarks.delete(id);
+    this.#store.deleteState(id);
+  }
 }
+
+/**
+ * `isStaleResultForCurrentAuth`'s exemptions: a TOS_VIOLATION or VALIDATION_REQUIRED result applies to the account, so
+ * one reported against an older version still counts when its refresh-token digest matches the current refresh token.
+ */
+const sameAccountSignal = (
+  result: ReportResult,
+  metadata: Readonly<Record<string, Json>>,
+): boolean => {
+  if (result.success || result.grantDigest === undefined) return false;
+  const error = result.error;
+
+  const accountWide =
+    isTosViolationResult(error) ||
+    (error !== undefined &&
+      isValidationRequiredError({
+        status: error.httpStatus ?? result.httpStatus ?? 0,
+        message: error.message,
+        ...(error.code === undefined ? {} : { code: error.code }),
+      }));
+
+  return accountWide && grantDigestOf(metadata) === result.grantDigest;
+};

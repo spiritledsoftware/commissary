@@ -269,6 +269,9 @@ export const CredentialEntry = Schema.Struct({
   account: optional(Schema.String),
   account_type: optional(Schema.String),
   project_id: optional(Schema.String),
+  /** Antigravity: the appeal link of a credential a TOS_VIOLATION deactivated, and its link text. */
+  tos_appeal_url: optional(Schema.String),
+  tos_appeal_url_text: optional(Schema.String),
   id_token: optional(IdTokenClaims),
   created_at: optional(Schema.String),
   updated_at: optional(Schema.String),

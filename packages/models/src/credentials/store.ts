@@ -200,15 +200,22 @@ export class CredentialStore {
     return { record, created: existing === undefined, credentialsChanged: changed };
   }
 
-  /** Sets the `disabled` flag (persisted in the file JSON like Go). `undefined` when the credential is unknown. */
-  setDisabled(id: string, disabled: boolean): StoredCredential | undefined {
+  /**
+   * Sets the `disabled` flag (persisted in the file JSON like Go), with `metadata` written beside it (a TOS_VIOLATION's
+   * appeal details). `undefined` when the credential is unknown.
+   */
+  setDisabled(
+    id: string,
+    disabled: boolean,
+    metadata: Readonly<Record<string, string>> = {},
+  ): StoredCredential | undefined {
     const existing = this.get(id);
 
     if (existing === undefined) return undefined;
 
     const record: StoredCredential = {
       ...existing,
-      metadata: { ...existing.metadata, disabled },
+      metadata: { ...existing.metadata, ...metadata, disabled },
       updatedAt: this.#now(),
     };
 

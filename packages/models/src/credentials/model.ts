@@ -135,6 +135,11 @@ export const CredentialState = Schema.Struct({
    * 9d7d012b): later failures never shorten the cooldown below it, whatever they write.
    */
   forcedUntil: optional(Schema.Number),
+  /**
+   * Deadline of a credential-scoped failure that is not a quota one (Go `credentialRetryAfter`): the model it was
+   * reported for cools as usual, and the credits round (`PickRequest.ignoreCooldown`) skips the credential until then.
+   */
+  credentialRetryAfter: optional(Schema.Number),
   quota: QuotaState,
   lastError: optional(CredentialError),
   modelStates: Schema.Record(Schema.String, ModelState),

@@ -643,8 +643,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   - A disabled credential stays disabled and unavailable through a late success and a cooldown reset (CLIProxyAPI
     29de31a8, 35afdf07); one disabled only in its file keeps its runtime state, so turning it back on needs no reset. A disabled model keeps its
     state through the reset too, only its timers cleared.
-    Commissary has no model reconciliation, inference verification or TOS-violation path, so the rest of those commits
-    has nothing to apply to.
+    A TOS_VIOLATION (SPI-1422, _Antigravity provider_) disables the credential this way too, so its late successes and
+    failures leave it disabled. Commissary has no model reconciliation or inference verification, so the rest of those
+    commits has nothing to apply to.
   - A live cooldown set by an explicit `force_cooldown` (`stop-and-cooldown`) outlasts later failures that write a zero
     deadline because cooling is disabled, or shorter ones, however many interleave: its deadline is persisted apart
     (`forcedUntil` on the credential and model state, Go's `forceCooldownUntil`, CLIProxyAPI 9d7d012b) until it passes, a
@@ -3545,6 +3546,75 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     picking a credential whose variant is exhausted. Connection pools and transports (`bffe6e7e`, `80fb55d8`, `d0c90bb5`) have no counterpart on Workers `fetch`; AI Studio has no
     executor here. Go `dd0d80c8` (canonical session on the credits round) needs no change: the credits round copies the
     request's metadata.
+- **Credential lifecycle at `dd543d09` (SPI-1422)**:
+  - _TOS_VIOLATION_ (`errors.ts` `parseTosViolation`, CLIProxyAPI `5a351d95`, `14cc6ad1`, `acb56c6c`): a 403 whose
+    `ErrorInfo.reason` is `TOS_VIOLATION` (HTTP, an in-band stream frame, `countTokens`, project discovery or the credits
+    probe) is reported with code `tos_violation`, credential-scoped, with the appeal link (query and fragment cut) as
+    `credentialMetadata`. `CredentialPool.report` disables the file credential (`setDisabled` with `tos_appeal_url` and
+    `tos_appeal_url_text`, shown in the credential list) and `markResultDetailed` leaves its state terminal (status
+    `disabled`, message `tos_violation`, no retry time); a later failure reported against a disabled credential changes
+    nothing. A TOS or validation-required result reported against an older credential version still counts when the
+    refresh token's digest (`grantDigest`) matches the current one (Go's same-account exemption to
+    `isStaleResultForCurrentAuth`). A stream and the credits round end at the violation; a non-stream request moves on
+    to the next credential (`handlers/conductor.ts`, as Go's `isDirectStreamTerminalError`, `tryAntigravityCreditsExecute`
+    and `executeMixedOnce`). Difference: re-enabling a TOS-disabled credential resets its state, where Go keeps the
+    terminal state until the next success.
+  - _Pool pause_ (`tos-pause.ts`, `state.ts`, CLIProxyAPI `5a351d95`, `e96d4c48`, `81018ba4`): `oauth.providers.antigravity.tos-pause-window`
+    (a Go duration; empty or `0`/`off`/`false`/`none`/`disabled` turns it off, the default) arms a pause on the first
+    TOS_VIOLATION. While it runs, every generate, stream and token count answers a request-scoped 503 (`antigravity pool
+    paused after TOS_VIOLATION`) before any credential is touched. The deadline is one key per org, KV `ag:tos-pause`
+    (TTL = window + 5 s; per-isolate memory without a binding), where Go keeps one per process: the pause covers the
+    org's pool, not the deployment's. Go `d88d8dcb` (the same checks in `HttpRequest`) is skipped: Commissary has no raw
+    HTTP passthrough to an Antigravity credential.
+  - _Credits isolation_ (`state.ts` `antigravityCreditsScope`, CLIProxyAPI `16bf182f`, `e0a1e93d`): the credits record,
+    the short cooldowns and the probe claim are keyed by `<credential id>:<sha256(refresh token, else access token)[:16]>`,
+    so a credential whose grant changes starts with no credits state. Go's scope also mixes in the email and creation
+    time; the grant alone is what changes the account here. The credits round is gated by `shouldAttemptCreditsFallback`
+    (selection failures, a quota-exhaustion 429 that is not a short or rate-limit wait, a capacity 503; never request-scoped,
+    terminal-auth, invalid-request, transient rate-limit or TOS failures), and filters each candidate by its own route
+    (an upstream model containing `claude`); a candidate without one is released as a lifecycle failure, never penalised.
+    A validation-required failure ends the credits round and disables the stream bootstrap retry (CLIProxyAPI `d3e4db8b`).
+  - _Credits parsing_ (`credits.ts`, CLIProxyAPI `737ba4c6`, `8e5a98e8`, `acb56c6c`): an omitted
+    `minimumCreditAmountForUsage` is 0; a reply without a `GOOGLE_ONE_AI` entry publishes a known-empty balance; the probe
+    sends the credential's `header:*` attributes and reads at most 1 MiB. The Host header is not set: Workers `fetch`
+    derives it from the URL.
+  - _Errors_ (`errors.ts`, `helps/credential-refresh.ts`, CLIProxyAPI `d3e4db8b`, `2f57a5a6`, `204be8b9`, `91ccf284`): 403
+    validation-required and TOS failures are credential-scoped; an Antigravity token-refresh failure with an HTTP status is
+    credential-scoped, and a refresh 429 carries its Google retry delay as `blockMs`. A failed project discovery
+    (`prepareProjectIdError`) keeps the upstream status and `Retry-After` (or a 429 body's retry delay), credential-scoped;
+    a discovery without an answer is a 503 `transient_transport`, one that finished without a project a credential-scoped 503. Discovery reads are bounded (1 MiB, 64 KiB for an error body, 8 KiB kept in a message) and time out after 30 s;
+    onboarding does not sleep after its last attempt. The OAuth login fails with `Failed to fetch project ID` when
+    discovery fails or finds nothing (CLIProxyAPI `d214f881`), and trims the project id.
+  - _Catalog probe_ (`models.ts`, CLIProxyAPI `f48975b4`, `533edd38`, `753bfa19`, `f8e297aa`): the cron skips disabled
+    credentials, ones whose last result was a terminal 401, and ones without an access token; it sends the credential's own
+    `user_agent` and omits an empty project. A record carries `expiresAt` (fetch + 3 h) and the `routeFingerprint` of the
+    user agent it was fetched with; it is fresh only on the same route and is not probed again while it has more than
+    15 min left. Failures back off separately: transient ones 2/4/8/16/30 min and 401s 10/20/30 min, both tied to the
+    access token (a new token probes at once), and 403s 10/20/40/60 min tied to the credential (`forbidden`). Old records
+    decode unchanged (the new fields are optional).
+  - _Credential lockouts_ (`cooldown/mark-result.ts`, `selection/pick.ts`, CLIProxyAPI `8860264b`): a credential-scoped
+    failure that is not a quota 429 (`isQuotaCooldownResultError`: a Cloudflare challenge 429 does lock out) records the
+    failure's own deadline as the state's `credentialRetryAfter` (Go `ownModelNonQuotaDeadline`/`ownAuthRetryDeadline`):
+    taken before an earlier, longer cooldown of the model or credential is merged in, so a 403 on a model already in a
+    5 h quota window locks the credential out for the 403's 30 min. A skipped credential cooldown records nothing, and a
+    later deadline extends the lockout. A success clears it unless it was dispatched before the lockout was recorded
+    (Go `retainCredentialRetry`, the pool's dispatch stamps) or a credential quota is running; so does a cooldown
+    reset. `PickRequest.ignoreCooldown` lifts per-model and quota cooldowns only: the credits round skips a credential
+    whose `credentialRetryAfter` is still ahead, as Go's `findAllAntigravityCreditsCandidateAuths` does. Go also tracks
+    `nonAuthCredentialRetryAfter`, the same deadline minus failures a refresh can clear; the credits round checks both,
+    so the one field answers it. Normal selection does not read the field: Commissary cools the model the failure was
+    reported for, as before. A credits round that ends at a stopping error (TOS_VIOLATION, validation challenge, request
+    fault, stop rule) answers with that error; one that only runs out answers with the normal rotation's
+    (`tryAntigravityCreditsExecuteCandidates`).
+  - _Already holds_: `8e0641c9`, `a35e8be3` (the credits round runs through the conductor's normal retry and stop
+    rules), `cdbda2f2`, `0861f9e1` (refreshes go through
+    `withCredentialRefresh`, which persists, with the refresh protocol's own transport and user agent), `99a1c1ca` (the
+    credits warm is one bounded `waitUntil` probe, with no goroutine to leak), `d2086b4c` (picks exclude disabled
+    credentials, and the executor reads config per request). `f2b00303`, `093c7efa`, `2d50f315`: the Hub map is at
+    2.35.1 (`version.ts`). _Skipped_: `4ea1527c` (the version updater's service lifecycle and proxy: the cron task is the
+    lifecycle, and Workers has no outbound proxy), `acf238f6` with its revert `ca43428b`, and the rest of Go's
+    `credentialRetryAfter` bookkeeping from `d3e4db8b` (its use in normal selection and its
+    clearing on a token refresh): the ControlPlane cooldowns already carry each failure's retry time.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
@@ -3573,19 +3643,19 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   under 5 min records a per-(credential, model) short cooldown (KV `ag:sc:*`, memory without a binding) and later calls answer
   `429 auth in short cooldown` without an upstream request; `retryAfterMs` of every 429 reaches the ControlPlane cooldown bookkeeping.
 - **Credits** (`credits.ts`, `handlers/conductor.ts`): `quota-exceeded.antigravity-credits` enables one extra _credits round_ after the normal
-  rotation failed with 429/503/`auth_not_found|auth_unavailable|model_cooldown` for Claude models: the conductor picks Antigravity credentials
+  rotation failed for quota or capacity (`shouldAttemptCreditsFallback`, below) for credentials routing to Claude: the conductor picks Antigravity credentials
   again with `PickRequest.ignoreCooldown` (cooling credentials stay selectable), skips credentials whose stored balance is known to be empty and
   asks the executor for `enabledCreditTypes: ["GOOGLE_ONE_AI"]` through `ExecutorOptions.metadata.antigravityCredits`
-  (`attemptOptions`). `INSUFFICIENT_G1_CREDITS_BALANCE` marks the credential out of credits (KV `ag:credits:<id>`, 30 min); the balance probe
+  (`attemptOptions`). `INSUFFICIENT_G1_CREDITS_BALANCE` marks the credential out of credits (KV `ag:credits:<credits scope>`, 30 min); the balance probe
   (`loadCodeAssist`, daily endpoint, no `Accept`, `waitUntil`; one probe per credential per 10 min, claimed atomically with a create-if-absent
   write in the `SessionState` DO, not KV) refreshes it. A record whose `updatedAt` is 10 min old or more is no longer trusted (Go `IsAntigravityCreditsHintFresh`): the probe runs again
   and an out-of-credits record that old counts as unknown, so the credential is retried before the 30 min KV expiry. The round walks every Antigravity credential once in the Go order
   (`findAllAntigravityCreditsCandidateAuths`): known-available balances first, then unknown ones (optimistic), each group sorted by credential id;
   known-empty credentials (fresh records only) are skipped without an attempt (the conductor collects them with repeated `pick`s and releases the skipped leases
   as connection-lifecycle failures).
-- **Cron** (`models/scheduled-tasks.ts`): `antigravity-version` polls the Hub manifest into KV `antigravity:version` (`2.29.0` fallback, 6 h TTL; executors read it
-  through a 60 s isolate cache) and `antigravity-models` probes `fetchAvailableModels` for every enabled credential (first endpoint only, global
-  user agent, failures keep the last good list and back off 2-30 min with jitter) into KV `ag:models:<id>`. The registry snapshot attaches
+- **Cron** (`models/scheduled-tasks.ts`): `antigravity-version` polls the Hub manifest into KV `antigravity:version` (`2.35.1` fallback, 6 h TTL, an unmapped release pinned to the highest mapped one; executors read it
+  through a 60 s isolate cache) and `antigravity-models` probes `fetchAvailableModels` for every enabled credential (first endpoint only, the
+  credential's user agent, failures keep the last good list and back off with jitter, see SPI-1422 below) into KV `ag:models:<id>`. The registry snapshot attaches
   the stored entitlements to the credential's `ModelSource` (`antigravityHints`): registered models = static list intersected with the fetched
   ids, `webSearchModelIds` set `supportsWebSearch`; credentials without a record serve the static list (like Go before the probe finishes).
   The Go 1-minute scan is replaced by the 3 h cron (= the Go catalog TTL).
@@ -4535,8 +4605,8 @@ Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_fil
   never containing code/state/tokens/errors); everything else is a neutral 400. The state of a login names its org
   (`orgScopedName`: `org.<org>.<hex>`, a bare state is `global`'s), so the callback asks only that org's ControlPlane.
 
-Deviations from Go: the Antigravity login uses the Go fallback client version `2.29.0` (the executor reads the polled Hub version, see
-_Antigravity provider_) and project discovery runs inside the login (non-fatal; the executor repeats it when `project_id` is missing); a transport failure or 5xx of one xAI/Kimi/Copilot poll keeps waiting instead of ending the login; Codex
+Deviations from Go: the Antigravity login uses the Go fallback client version `2.35.1` (the executor reads the polled Hub version, see
+_Antigravity provider_) and project discovery runs inside the login, which fails when discovery fails or finds no project (CLIProxyAPI `d214f881`; the executor still repeats it for a credential stored without `project_id`); a transport failure or 5xx of one xAI/Kimi/Copilot poll keeps waiting instead of ending the login; Codex
 exchange errors include the (scrubbed) upstream status/body like Go but cap it at 512 chars; device-flow states carry a random
 suffix (`xai-<ms>-<hex>`); Kimi stores the normalised `domain`; Claude's uTLS/ordered-header fingerprint cannot be reproduced (see
 Claude provider). `POST /v9/management/oauth/import?provider=vertex` (`models/management/oauth-import.ts`, Go `ImportVertexCredential`)

@@ -350,6 +350,14 @@ export const buildCredentialEntry = (
   const projectId = text(metadata.project_id);
 
   if (projectId !== "") entry.project_id = projectId;
+
+  // The appeal link of a credential a TOS_VIOLATION deactivated, for the operator (CLIProxyAPI 5a351d95).
+  const appealUrl = text(metadata.tos_appeal_url);
+  const appealText = text(metadata.tos_appeal_url_text);
+
+  if (appealUrl !== "") entry.tos_appeal_url = appealUrl;
+
+  if (appealText !== "") entry.tos_appeal_url_text = appealText;
   entry.account_type = "oauth";
 
   if (email !== "") entry.account = email;

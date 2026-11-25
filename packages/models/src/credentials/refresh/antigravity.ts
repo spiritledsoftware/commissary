@@ -10,7 +10,8 @@ import { Effect } from "effect";
 import { HttpClientRequest } from "effect/http";
 import type { JsonObject } from "@commissary/json";
 import { refreshError } from "./error.ts";
-import { parseJsonObject, rfc3339, send, seconds, statusFailure, str } from "./http.ts";
+import { parseGoogleRetryDelayWithHeadersMs } from "../../executor/helps/google-retry.ts";
+import { clipBody, parseJsonObject, rfc3339, send, seconds, statusFailure, str } from "./http.ts";
 import type { RefreshContext, RefreshProtocolEffect } from "./types.ts";
 
 export const ANTIGRAVITY_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -41,6 +42,20 @@ export const refreshAntigravity = (context: RefreshContext): RefreshProtocolEffe
     );
 
     const reply = yield* send(request);
+
+    if (reply.status === 429) {
+      // The body's RetryInfo blocks the refresh token for that long (`refreshTokenSingleFlight`), so the attempt's
+      // error carries the wait (CLIProxyAPI 2f57a5a6).
+      const blockMs = parseGoogleRetryDelayWithHeadersMs(undefined, reply.text, context.now);
+
+      return yield* Effect.fail(
+        refreshError({
+          message: `token refresh failed with status 429: ${clipBody(reply.text)}`,
+          status: 429,
+          ...(blockMs === undefined || blockMs <= 0 ? {} : { blockMs }),
+        }),
+      );
+    }
 
     if (reply.status < 200 || reply.status >= 300)
       return yield* Effect.fail(statusFailure("token refresh", reply));

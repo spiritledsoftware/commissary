@@ -135,7 +135,10 @@ export const needsPreparation = (credential: CredentialSnapshot, now: number): b
 /** Failures that mean "nothing to prepare" rather than a broken credential. */
 const BENIGN = new Set(["not_refreshable"]);
 
-const refreshError = (failure: Extract<RefreshResult, { ok: false }>): ExecutionError => {
+const refreshError = (
+  failure: Extract<RefreshResult, { ok: false }>,
+  provider: string,
+): ExecutionError => {
   // The credential was removed before or while it was prepared: its snapshot must not be used (CLIProxyAPI 0a34244e,
   // `prepareRequestAuthInternal`). The request moves on to another credential.
   if (failure.error.code === "not_found") {
@@ -156,6 +159,11 @@ const refreshError = (failure: Extract<RefreshResult, { ok: false }>): Execution
     code: failure.error.code === "unauthorized" ? "unauthorized" : "refresh_failed",
     message: failure.error.message,
     ...(failure.terminal ? { terminalAuth: true } : {}),
+    // An Antigravity token endpoint's rejection keeps the whole credential out until it recovers (CLIProxyAPI
+    // 2f57a5a6, `refreshTokenSingleFlight`); a failure without an answer is not the credential's.
+    ...(provider === "antigravity" && failure.error.httpStatus !== undefined
+      ? { credentialScoped: true }
+      : {}),
     // The upstream's wait goes with the failure like an execution error's (CLIProxyAPI 2f57a5a6).
     ...(retryAfterMs === undefined || retryAfterMs <= 0 ? {} : { retryAfterMs }),
   });
@@ -193,7 +201,7 @@ export const withCredentialRefresh = <A, R>(
       if (prepared.ok) {
         current = { ...current, credential: toExecutorSnapshot(prepared.credential) };
       } else if (!BENIGN.has(prepared.error.code)) {
-        return yield* refreshError(prepared);
+        return yield* refreshError(prepared, context.credential.provider);
       }
     }
 
