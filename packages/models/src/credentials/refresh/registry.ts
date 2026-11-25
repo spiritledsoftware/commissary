@@ -7,6 +7,7 @@
 import { refreshAntigravity } from "./antigravity.ts";
 import { refreshClaude } from "./claude.ts";
 import { refreshCodex } from "./codex.ts";
+import { refreshCopilot } from "./copilot.ts";
 import { refreshKimi } from "./kimi.ts";
 import { refreshMeta } from "./meta.ts";
 import type { RefreshProtocol } from "./types.ts";
@@ -17,6 +18,7 @@ const PROTOCOLS = new Map<string, RefreshProtocol>([
   ["codex", refreshCodex],
   ["antigravity", refreshAntigravity],
   ["xai", refreshXai],
+  ["copilot", refreshCopilot],
   ["kimi", refreshKimi],
   ["kimi-ai", refreshKimi],
   ["meta", refreshMeta],
