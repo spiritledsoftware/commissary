@@ -10,7 +10,7 @@ import {
   extractResponsesCallID,
   normalizeResponsesToolCallOutputs,
 } from "../../../common/responses.ts";
-import { UserTurnDrops } from "../../../common/parts.ts";
+import { UnsupportedPartError, UserTurnDrops } from "../../../common/parts.ts";
 import { ResponsesToolIndex, responsesToolOutputText } from "./tools.ts";
 
 const REASONING_UNAVAILABLE = "[reasoning unavailable]";
@@ -151,6 +151,15 @@ const chatToolOutputFallbackPart = (item: Json): JsonObject => {
   return { type: "text", text };
 };
 
+/**
+ * `chatToolMediaMode`: where a tool output's files and images go. A tool message with an awaiting call relays them
+ * in a following user message (`relayToolFiles`); a standalone output, already a user message, keeps them inline
+ * (`standaloneToolOutput`). Go's third mode, `inlineToolAttachments`, belongs to its Copilot provider (7ae771fc),
+ * which Commissary does not have.
+ */
+type ChatToolMediaMode = "relayToolFiles" | "standaloneToolOutput";
+
+/** `chatToolOutputContentPart`. */
 const chatToolOutputContentPart = (item: Json): JsonObject => {
   switch (getStr(item, "type")) {
     case "text":
@@ -169,35 +178,110 @@ const chatToolOutputContentPart = (item: Json): JsonObject => {
       return { type: "image_url", image_url: imageUrl };
     }
 
+    case "input_file":
+    case "file":
+      return chatToolOutputFilePart(item) ?? chatToolOutputFallbackPart(item);
     default:
       return chatToolOutputFallbackPart(item);
   }
 };
 
-const hasChatToolOutputImagePart = (content: Json | undefined): boolean => {
-  if (!isArr(content)) return false;
-  let hasImage = false;
+/** `chatToolOutputFilePart`: a `file` part may nest its fields under `file`. */
+const chatToolOutputFilePart = (item: Json): JsonObject | undefined => {
+  const nested = get(item, "file");
 
-  for (const item of content) {
-    const itemType = get(item, "type");
+  if (getStr(item, "type") === "file" && isObj(nested)) return responsesInputFileToChatPart(nested);
 
-    if (typeof itemType !== "string") continue;
+  return responsesInputFileToChatPart(item);
+};
 
-    switch (itemType) {
+/** `isChatToolOutputPartObject`: a single content part given as the whole output. */
+const isChatToolOutputPartObject = (content: Json | undefined): boolean => {
+  if (!isObj(content)) return false;
+
+  switch (getStr(content, "type").trim().toLowerCase()) {
+    case "input_text":
+    case "output_text":
+    case "image_url":
+    case "input_image":
+    case "input_file":
+    case "file":
+    case "input_audio":
+    case "audio":
+    case "input_video":
+    case "video":
+      return true;
+    case "text":
+      return typeof get(content, "text") === "string";
+    default:
+      return false;
+  }
+};
+
+/** What `inspectChatToolOutputParts` finds in a tool output's content parts. */
+interface ChatToolOutputParts {
+  items: Json[];
+  hasImage: boolean;
+  hasFile: boolean;
+  invalidTextOrImage: boolean;
+  /** The first image part without a usable URL, or "". */
+  badImageType: string;
+  /** The first file part Chat Completions cannot take, or the first audio/video part, or "". */
+  unsupportedType: string;
+}
+
+/** `inspectChatToolOutputParts` (replaces `hasChatToolOutputImagePart`, f08cb931). */
+const inspectChatToolOutputParts = (content: Json | undefined): ChatToolOutputParts => {
+  const parts: ChatToolOutputParts = {
+    items: [],
+    hasImage: false,
+    hasFile: false,
+    invalidTextOrImage: false,
+    badImageType: "",
+    unsupportedType: "",
+  };
+
+  if (isArr(content)) parts.items = content;
+  else if (content !== undefined && isChatToolOutputPartObject(content)) parts.items = [content];
+  else return parts;
+
+  for (const item of parts.items) {
+    const typeName = get(item, "type");
+
+    if (typeof typeName !== "string") continue;
+
+    switch (typeName) {
       case "text":
       case "input_text":
       case "output_text":
-        if (typeof get(item, "text") !== "string") return false;
+        if (typeof get(item, "text") !== "string") parts.invalidTextOrImage = true;
         break;
       case "image_url":
       case "input_image":
-        if (chatToolOutputImageFields(item) === undefined) return false;
-        hasImage = true;
+        if (chatToolOutputImageFields(item) === undefined) {
+          parts.invalidTextOrImage = true;
+
+          if (parts.badImageType === "") parts.badImageType = typeName;
+        } else {
+          parts.hasImage = true;
+        }
+
+        break;
+      case "input_file":
+      case "file":
+        if (chatToolOutputFilePart(item) !== undefined) parts.hasFile = true;
+        else if (parts.unsupportedType === "") parts.unsupportedType = typeName;
+        break;
+      case "input_audio":
+      case "audio":
+      case "input_video":
+      case "video":
+        if (parts.unsupportedType === "") parts.unsupportedType = typeName;
         break;
     }
   }
 
-  return hasImage;
+  return parts;
 };
 
 const tryParse = (text: string): Json | undefined => {
@@ -208,8 +292,16 @@ const tryParse = (text: string): Json | undefined => {
   }
 };
 
-/** `setFunctionCallOutputContent` (mutates `toolMessage`). */
-const setFunctionCallOutputContent = (toolMessage: JsonObject, output: Json): JsonObject => {
+/**
+ * `setFunctionCallOutputContentDoc` (mutates `toolMessage`): returns the file and image parts to relay in a
+ * following user message, or the unsupported part's type. Files, single-object media and audio/video in tool
+ * outputs are handled since f08cb931 (before, they went upstream as raw JSON text).
+ */
+const setFunctionCallOutputContent = (
+  toolMessage: JsonObject,
+  output: Json,
+  mode: ChatToolMediaMode,
+): ChatToolOutputResult => {
   let structured: Json | undefined = output;
 
   if (typeof output === "string") {
@@ -218,25 +310,99 @@ const setFunctionCallOutputContent = (toolMessage: JsonObject, output: Json): Js
     if (structured === undefined) {
       toolMessage.content = output;
 
-      return toolMessage;
+      return {};
     }
   }
 
-  if (isArr(structured) && hasChatToolOutputImagePart(structured)) {
-    const items = structured.map(chatToolOutputContentPart);
+  const { items, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType } =
+    inspectChatToolOutputParts(structured);
 
-    if (items.length > 0) toolMessage.content = items;
+  if (unsupportedType !== "") return { unsupportedType };
 
-    return toolMessage;
+  if (hasFile || (isObj(structured) && hasImage)) {
+    if (badImageType !== "") return { unsupportedType: badImageType };
+    const toolItems: JsonObject[] = [];
+    const userMediaItems: JsonObject[] = [];
+    const textParts: string[] = [];
+
+    for (const item of items) {
+      switch (getStr(item, "type")) {
+        case "input_file":
+        case "file": {
+          const filePart = chatToolOutputFilePart(item);
+
+          if (filePart !== undefined)
+            (mode === "relayToolFiles" ? userMediaItems : toolItems).push(filePart);
+          break;
+        }
+
+        case "image_url":
+        case "input_image":
+          if (chatToolOutputImageFields(item) !== undefined)
+            (mode === "relayToolFiles" ? userMediaItems : toolItems).push(
+              chatToolOutputContentPart(item),
+            );
+          break;
+        case "text":
+        case "input_text":
+        case "output_text": {
+          const text = get(item, "text");
+
+          if (typeof text === "string") {
+            textParts.push(text);
+            toolItems.push(chatToolOutputContentPart(item));
+          } else {
+            const fallback = chatToolOutputFallbackPart(item);
+            textParts.push(str(fallback.text));
+            toolItems.push(fallback);
+          }
+
+          break;
+        }
+
+        default: {
+          const fallback = chatToolOutputFallbackPart(item);
+          textParts.push(str(fallback.text));
+          toolItems.push(fallback);
+        }
+      }
+    }
+
+    if (mode === "relayToolFiles") {
+      toolMessage.content =
+        textParts.length === 0
+          ? "Attached media from tool output follows in the user message."
+          : textParts.join("\n");
+
+      return { fileParts: userMediaItems };
+    }
+
+    if (toolItems.length > 0) toolMessage.content = toolItems;
+
+    return {};
+  }
+
+  if (isObj(structured) && badImageType !== "") return { unsupportedType: badImageType };
+
+  if (hasImage && !invalidTextOrImage) {
+    const contentItems = items.map(chatToolOutputContentPart);
+
+    if (contentItems.length > 0) toolMessage.content = contentItems;
+
+    return {};
   }
 
   toolMessage.content = str(output);
 
-  return toolMessage;
+  return {};
 };
 
-/** `setCustomToolCallOutputContent` (mutates `toolMessage`). */
-const setCustomToolCallOutputContent = (toolMessage: JsonObject, output: Json): JsonObject => {
+/** `setCustomToolCallOutputContentDoc` (mutates `toolMessage`). */
+const setCustomToolCallOutputContent = (
+  toolMessage: JsonObject,
+  output: Json,
+  mode: ChatToolMediaMode,
+): ChatToolOutputResult => {
   let structured: Json | undefined = output;
 
   if (typeof output === "string") {
@@ -245,12 +411,36 @@ const setCustomToolCallOutputContent = (toolMessage: JsonObject, output: Json): 
     if (parsed !== undefined) structured = parsed;
   }
 
-  if (hasChatToolOutputImagePart(structured))
-    return setFunctionCallOutputContent(toolMessage, output);
+  const { hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType } =
+    inspectChatToolOutputParts(structured);
+
+  if (unsupportedType !== "") return { unsupportedType };
+
+  if (
+    hasFile ||
+    (isObj(structured) && (hasImage || badImageType !== "")) ||
+    (hasImage && !invalidTextOrImage)
+  )
+    return setFunctionCallOutputContent(toolMessage, output, mode);
   toolMessage.content = responsesToolOutputText(output);
 
-  return toolMessage;
+  return {};
 };
+
+/**
+ * What a tool output's content setter reports: the parts to relay in a following user message, or the type of a
+ * part Chat Completions cannot take (Go's `([][]byte, error)`; the error is built once the body is known).
+ */
+interface ChatToolOutputResult {
+  fileParts?: JsonObject[];
+  unsupportedType?: string;
+}
+
+type ChatToolOutputContentSetter = (
+  message: JsonObject,
+  output: Json,
+  mode: ChatToolMediaMode,
+) => ChatToolOutputResult;
 
 /** `convertResponsesTextFormatToChatResponseFormat`. */
 const convertResponsesTextFormatToChatResponseFormat = (
@@ -329,20 +519,27 @@ export const convertResponsesToolChoice = (
  */
 const appendStandaloneResponsesToolOutputAsUser = (
   output: Json | undefined,
-  setContent: (message: JsonObject, output: Json) => JsonObject,
+  setContent: ChatToolOutputContentSetter,
   appendMessage: (message: JsonObject) => void,
-): void => {
+): string | undefined => {
   const userMessage: JsonObject = { role: "user", content: "" };
 
-  if (output !== undefined) setContent(userMessage, output);
+  if (output !== undefined) {
+    const { unsupportedType } = setContent(userMessage, output, "standaloneToolOutput");
+
+    if (unsupportedType !== undefined) return unsupportedType;
+  }
+
   const content = userMessage.content;
 
-  if (content === undefined) return;
+  if (content === undefined) return undefined;
 
-  if (typeof content === "string" && content.trim() === "") return;
+  if (typeof content === "string" && content.trim() === "") return undefined;
 
-  if (isArr(content) && content.length === 0) return;
+  if (isArr(content) && content.length === 0) return undefined;
   appendMessage(userMessage);
+
+  return undefined;
 };
 
 /** `convertOpenAIResponsesRequestToOpenAIChatCompletions`. */
@@ -352,6 +549,8 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
   stream: boolean,
 ): Json => {
   const drops = new UserTurnDrops();
+  // The first unsupported part in a tool output (f08cb931); reported after the user-turn drops.
+  let toolOutputErrType: string | undefined;
   const out: JsonObject = { model: modelName, messages: [], stream };
   const toolIndex = new ResponsesToolIndex(root);
   const messages: JsonObject[] = [];
@@ -465,6 +664,7 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
     const awaitingToolOutputs = new Set<string>();
     const outputCounts = new Map<string, number>();
     let mergeableAssistantIndex = -1;
+    let pendingToolFileParts: JsonObject[] = [];
 
     const fallbackToolReasoning = (): string => {
       if (latestReasoningContent !== "") return latestReasoningContent;
@@ -547,6 +747,13 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
       return messages.length - 1;
     };
 
+    /** `flushPendingToolFileParts`: relayed tool output files and media, after every awaited tool output. */
+    const flushPendingToolFileParts = (): void => {
+      if (pendingToolFileParts.length === 0) return;
+      appendRegularMessage({ role: "user", content: pendingToolFileParts });
+      pendingToolFileParts = [];
+    };
+
     const appendPendingReasoningMessage = (): void => {
       const reasoningContent = takePendingReasoningContent();
 
@@ -575,10 +782,7 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
       if (callId !== "") pendingToolCallIds.push(callId);
     };
 
-    const emitToolOutput = (
-      item: Json,
-      setContent: (message: JsonObject, output: Json) => JsonObject,
-    ): void => {
+    const emitToolOutput = (item: Json, setContent: ChatToolOutputContentSetter): void => {
       mergeableAssistantIndex = -1;
       const callId = extractResponsesCallID(item);
       recordOutputCount(callId);
@@ -586,15 +790,30 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
 
       if (!awaitingToolOutputs.has(callId)) {
         // Orphan outputs (empty call_id or no matching assistant tool_calls) must not become tool messages.
-        appendStandaloneResponsesToolOutputAsUser(output, setContent, (message) => {
-          appendRegularMessage(message);
-        });
+        const unsupportedType = appendStandaloneResponsesToolOutputAsUser(
+          output,
+          setContent,
+          (message) => {
+            appendRegularMessage(message);
+          },
+        );
+
+        toolOutputErrType ??= unsupportedType;
       } else {
         const toolMessage: JsonObject = { role: "tool", tool_call_id: callId, content: "" };
         awaitingToolOutputs.delete(callId);
 
-        if (output !== undefined) setContent(toolMessage, output);
+        if (output !== undefined) {
+          const { fileParts, unsupportedType } = setContent(toolMessage, output, "relayToolFiles");
+          toolOutputErrType ??= unsupportedType;
+
+          if (fileParts !== undefined) pendingToolFileParts.push(...fileParts);
+        }
+
         appendMessage(toolMessage);
+
+        // Relayed files follow once every awaited output is in, keeping tool messages paired with their calls.
+        if (awaitingToolOutputs.size === 0) flushPendingToolFileParts();
       }
     };
 
@@ -604,6 +823,9 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
       if (itemType === "" && getStr(item, "role") !== "") itemType = "message";
 
       if (itemType !== "function_call" && itemType !== "custom_tool_call") flushPendingToolCalls();
+
+      if (itemType !== "function_call_output" && itemType !== "custom_tool_call_output")
+        flushPendingToolFileParts();
 
       switch (itemType) {
         case "message":
@@ -754,8 +976,10 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
                 : toolIndex.canonicalName(functionName);
           }
 
+          // Omitted or blank arguments become a valid empty object (Go 927ed398).
           const args = get(item, "arguments");
-          pushToolCall(item, functionName, args !== undefined ? str(args) : undefined);
+          const argsText = args !== undefined ? str(args) : "";
+          pushToolCall(item, functionName, argsText.trim() !== "" ? argsText : "{}");
           break;
         }
 
@@ -788,6 +1012,7 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
     }
 
     flushPendingToolCalls();
+    flushPendingToolFileParts();
     appendPendingReasoningMessage();
   } else if (typeof input === "string") {
     appendMessage({ role: "user", content: input });
@@ -822,6 +1047,8 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
   const err = drops.err(out);
 
   if (err !== undefined) throw err;
+
+  if (toolOutputErrType !== undefined) throw new UnsupportedPartError(toolOutputErrType, out);
 
   return out;
 };
