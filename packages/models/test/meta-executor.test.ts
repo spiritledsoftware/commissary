@@ -209,7 +209,6 @@ describe("Meta executor", () => {
             stream: false,
             generate: true,
             safety_identifier: "s",
-            prompt_cache_retention: "24h",
             client_metadata: { a: 1 },
             stream_options: { include_obfuscation: true },
             tools: [{ type: "web_search", search_content_types: ["text"] }],
@@ -1173,5 +1172,162 @@ describe("Meta executor reasoning signatures by upstream host", () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+describe("prompt_cache_retention (Go f77a3c10)", () => {
+  const sent = async (payload: Json, yaml?: string) => {
+    const h = await harness(metaKey(), () => sse([completed([message("x")])]), yaml);
+    await execute(executor, h, { model: "muse-spark", payload: json(payload) }, responsesOptions());
+
+    return JSON.parse(h.calls[0]?.text ?? "{}") as Record<string, unknown>;
+  };
+
+  it("passes an explicit client value through, trimmed", async () => {
+    expect(
+      (await sent(responsesRequest({ prompt_cache_retention: " 24h " })))["prompt_cache_retention"],
+    ).toBe("24h");
+  });
+
+  it("injects no default and drops null, blank and non-string values", async () => {
+    for (const value of [undefined, null, "", "  ", 24, { ttl: "24h" }]) {
+      const body = await sent(
+        responsesRequest(value === undefined ? {} : { prompt_cache_retention: value }),
+      );
+
+      expect(body).not.toHaveProperty("prompt_cache_retention");
+    }
+  });
+
+  it("leaves payload rules the final word (default when omitted, override and filter)", async () => {
+    const rules = (kind: string, params: string) =>
+      `payload:\n  ${kind}:\n    - models: [{ name: "muse*", protocol: meta }]\n      params:${params}\n`;
+
+    const defaulted = rules("default", `\n        prompt_cache_retention: "24h"`);
+
+    expect((await sent(responsesRequest(), defaulted))["prompt_cache_retention"]).toBe("24h");
+    expect(
+      (await sent(responsesRequest({ prompt_cache_retention: "in_memory" }), defaulted))[
+        "prompt_cache_retention"
+      ],
+    ).toBe("in_memory");
+    expect(
+      await sent(
+        responsesRequest({ prompt_cache_retention: "24h" }),
+        rules("filter", `\n        - prompt_cache_retention`),
+      ),
+    ).not.toHaveProperty("prompt_cache_retention");
+  });
+});
+
+describe("unstreamed output synthesis and clean EOF (Go ca459712, 32625f13)", () => {
+  const REFUSAL = "I'm sorry, but I can't help with that request.";
+
+  const refusal = {
+    id: "msg_1",
+    type: "message",
+    role: "assistant",
+    content: [{ type: "refusal", refusal: REFUSAL }],
+  };
+
+  const stream = async (events: ReadonlyArray<unknown>, sourceFormat: string, payload: Json) => {
+    const h = await harness(metaKey(), () => sse(events), undefined, true);
+
+    const collected = await collectStream(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(payload) },
+      options({ stream: true, sourceFormat }),
+    );
+
+    return { h, collected };
+  };
+
+  const chatRequest = { model: "muse-spark", messages: [{ role: "user", content: "hi" }] };
+
+  it("streams a refusal only the terminal event carries to a chat client", async () => {
+    const { collected } = await stream(
+      [{ type: "response.created", response: { id: "r" } }, completed([refusal])],
+      "openai",
+      chatRequest,
+    );
+
+    expect(collected.error).toBeUndefined();
+
+    const content = collected.chunks
+      .map((chunk) => JSON.parse(chunk) as { choices?: Array<{ delta?: { content?: string } }> })
+      .map((chunk) => chunk.choices?.[0]?.delta?.content ?? "")
+      .join("");
+
+    expect(content).toBe(REFUSAL);
+  });
+
+  it("emits the synthesised item events to a Responses client, before the terminal event", async () => {
+    const { collected } = await stream(
+      [{ type: "response.created", response: { id: "r" } }, completed([message("hello")])],
+      "openai-response",
+      responsesRequest(),
+    );
+
+    const types = collected.chunks
+      .flatMap((chunk) => chunk.split("\n"))
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => (JSON.parse(line.slice(5)) as { type: string }).type);
+
+    expect(types).toEqual([
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+  });
+
+  it("does not repeat a streamed message", async () => {
+    const { collected } = await stream(
+      [
+        { type: "response.created", response: { id: "r" } },
+        {
+          type: "response.output_text.delta",
+          item_id: "msg_1",
+          output_index: 0,
+          content_index: 0,
+          delta: "hello",
+        },
+        completed([message("hello")]),
+      ],
+      "openai-response",
+      responsesRequest(),
+    );
+
+    expect(collected.chunks.join("").match(/output_text\.delta/g)).toHaveLength(1);
+  });
+
+  it("fails a stream that ends cleanly before its terminal event with a truncated 502", async () => {
+    const { h, collected } = await stream(
+      [
+        { type: "response.created", response: { id: "r" } },
+        {
+          type: "response.output_text.delta",
+          item_id: "msg_1",
+          output_index: 0,
+          content_index: 0,
+          delta: "hello",
+        },
+      ],
+      "openai-response",
+      responsesRequest(),
+    );
+
+    expect(collected.chunks.join("")).toContain("hello");
+    expect(collected.error).toMatchObject({
+      status: 502,
+      code: "stream_truncated",
+      message: "upstream stream closed before terminal event",
+    });
+    expect(h.usage.failed).toBe(true);
   });
 });

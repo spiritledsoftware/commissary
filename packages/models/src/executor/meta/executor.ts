@@ -177,6 +177,7 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     eventError: metaStreamEventError,
     stallMessage: STREAM_STALL,
     lineFilter: makeSubscriptionUsageFilter,
+    strictTerminal: true,
   });
 
   /** One Responses exchange with Muse, without any compaction handling: what the summary turn of a local compaction runs. */

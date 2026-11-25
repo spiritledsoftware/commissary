@@ -45,6 +45,8 @@ import type {
 } from "../types.ts";
 import { APPLY_PATCH_UPSTREAM_ERROR_MESSAGE } from "./apply-patch-responses.ts";
 import type { ResponsesPrepared } from "./responses-request.ts";
+import { ResponsesStreamOutputTracker } from "./responses-synthesis.ts";
+import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 
 interface StepResult {
   readonly chunks: ReadonlyArray<string>;
@@ -68,7 +70,16 @@ export interface ResponsesSseInput {
   readonly stallMessage: string;
   /** A fresh stateful line filter per answer (Meta drops `response.subscription_usage` frames). */
   readonly lineFilter?: () => SseLineFilter;
+  /**
+   * Streams synthesise the events of message items that only the terminal event carries, and a stream that ends
+   * cleanly without `response.completed`/`response.incomplete` fails with a truncated 502 (Meta: Go ca459712,
+   * 32625f13).
+   */
+  readonly strictTerminal?: boolean;
 }
+
+/** Error of a stream that ended cleanly before its terminal event (Go 32625f13). */
+export const TRUNCATED_STREAM_MESSAGE = "upstream stream closed before terminal event";
 
 /**
  * Stateful SSE line filter. `push` returns the lines to keep now; an `event:` line is held back until its data line is
@@ -236,6 +247,9 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
   };
 
   let stopped = false;
+  let terminalDelivered = false;
+  let sawEventHeader = false;
+  const tracker = input.strictTerminal === true ? new ResponsesStreamOutputTracker() : undefined;
 
   const filter = input.lineFilter?.();
 
@@ -275,9 +289,6 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
       const held = filter?.takeHeld() ?? [];
 
       switch (asString(get(event, "type"))) {
-        case "response.output_item.done":
-          collector.collect(event);
-          break;
         case "response.completed":
         case "response.incomplete": {
           if (!isJsonObject(event)) break;
@@ -285,9 +296,27 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
 
           if (detail !== undefined) context.usage.publish(detail);
           patchCodexCompletedOutput(event, collector);
+          terminalDelivered = true;
 
-          return emitAll([...held, `data: ${JSON.stringify(event)}`]);
+          if (tracker === undefined) return emitAll([...held, `data: ${JSON.stringify(event)}`]);
+          const synthesized = tracker.synthesize(event);
+
+          // Each synthesised event is a full SSE frame (`event:` only when the upstream names its events).
+          const frames = synthesized.events.flatMap((synth) => [
+            ...(sawEventHeader || held.length > 0 ? [`event: ${asString(synth["type"])}`] : []),
+            `data: ${JSON.stringify(synth)}`,
+            "",
+          ]);
+
+          return emitAll([...frames, ...held, `data: ${JSON.stringify(synthesized.terminal)}`]);
         }
+
+        case "response.output_item.done":
+          collector.collect(event);
+          tracker?.observe(event);
+          break;
+        default:
+          tracker?.observe(event);
       }
 
       return emitAll([...held, `data: ${payload}`]);
@@ -311,7 +340,12 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
   const lines = Stream.concat(
     splitLines(response.stream).pipe(
       Stream.mapError(transportError),
-      Stream.mapEffect((line) => processAll(filter === undefined ? [line] : filter.push(line))),
+      Stream.mapEffect((line) => {
+        // Go's `sawEventHeader`: the upstream names its events (seen before the line filter holds them back).
+        if (line.trimStart().startsWith("event:")) sawEventHeader = true;
+
+        return processAll(filter === undefined ? [line] : filter.push(line));
+      }),
     ),
     Stream.suspend(() =>
       filter === undefined ? Stream.empty : Stream.fromEffect(processAll(filter.flush())),
@@ -331,9 +365,22 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
     const chunks = finished.lines.flatMap(translate);
     const emitted = Stream.fromIterable(chunks);
 
-    return finished.error === undefined
-      ? emitted
-      : Stream.concat(emitted, Stream.fail(gatewayError()));
+    if (finished.error !== undefined) return Stream.concat(emitted, Stream.fail(gatewayError()));
+
+    // A clean EOF before the terminal event is a truncated stream (Go 32625f13), not a finished answer.
+    if (input.strictTerminal === true && !terminalDelivered)
+      return Stream.concat(
+        emitted,
+        Stream.fail(
+          new ExecutionError({
+            status: 502,
+            message: TRUNCATED_STREAM_MESSAGE,
+            code: ErrorCode.streamTruncated,
+          }),
+        ),
+      );
+
+    return emitted;
   });
 
   const chunks = Stream.concat(

@@ -2010,6 +2010,12 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
 - **Meta subscription telemetry** (`executor/meta/subscription-usage.ts`): `response.subscription_usage` frames are dropped
   from streams and aggregated answers by a line filter the shared Responses SSE code applies; an `event:` line is held
   until its data line passes the upstream error check.
+- **Meta stream terminal** (`helps/responses-sse.ts` `strictTerminal`, `helps/responses-synthesis.ts`; Go ca459712, 32625f13):
+  before `response.completed`/`response.incomplete` the stream gets the item, part, text or refusal delta/done events of each
+  message only the terminal event carries, so stream clients see it (refusals included); a clean EOF before the terminal
+  event fails the stream with a `stream_truncated` 502. OpenCode shares the SSE code but keeps neither (no Go counterpart).
+- **Meta `prompt_cache_retention`** (Go f77a3c10): a client's explicit non-empty string passes through, trimmed; none is
+  injected (a `default` payload rule with `protocol: meta` opts into one), and other values are dropped.
 - **Meta deviations from Go**: the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
