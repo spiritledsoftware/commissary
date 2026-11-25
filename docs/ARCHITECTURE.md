@@ -1405,9 +1405,10 @@ Port of `auto_refresh_loop.go` + `conductor_refresh.go` + the per-provider `Refr
   therefore does: `if (!snapshot.metadata.access_token) snapshot = (await controlPlane.ensureFresh(id)).credential`.
 
 An expired refresh token (Anthropic's `invalid_grant` "Refresh token expired", CLIProxyAPI 0bfb3d01) is terminal:
-refreshes stop until a new login (`lastError.code` `refresh_token_expired`). Commissary has no `RequiresSignIn` state and
-none of Go's other terminal grant codes: a still valid access token keeps serving, and without one the credential is
-unauthorized.
+refreshes stop until a new login (`lastError.code` `refresh_token_expired`). As in Go (`conductor_lifecycle.go`
+`canServeWithAccessToken`), a still valid access token keeps serving; without one the credential is unauthorized.
+Commissary has no `RequiresSignIn` flag of its own (the terminal state is the error code) and recognises only this terminal
+grant message, not Go's whole list.
 
 Deviations from Go: credentials without a refresh token are never scheduled (Go loops every 30 s on an unchanged auth);
 Codex keeps `email`/`plan_type` when the new `id_token` lacks them; a cached xAI `token_endpoint` must be an https x.ai

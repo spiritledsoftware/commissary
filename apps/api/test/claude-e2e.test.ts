@@ -103,6 +103,17 @@ describe("Claude routes through the API Worker", () => {
     expect(upstreamCalls).toHaveLength(0);
   });
 
+  it("answers 413 for a gzip body that decodes past 32 MiB without calling upstream", async () => {
+    // A few KiB on the wire, 33 MiB decoded: workerd's gunzipSync stops at maxOutputLength.
+    const bomb = gzipSync(new Uint8Array(33 * 1024 * 1024));
+    const response = await messages(bomb, { "content-encoding": "gzip" });
+
+    // 413 only comes from the RangeError branch of body.ts; the message proves which one.
+    expect(response.status).toBe(413);
+    expect(await response.text()).toContain("decoded request body exceeds");
+    expect(upstreamCalls).toHaveLength(0);
+  });
+
   it("injects no server-side fallback unless upstream.claude.server-side-fallback opts in", async () => {
     expect((await messages(JSON.stringify(body("claude-opus-5-5")))).status).toBe(200);
     expect(lastUpstreamBody()["fallbacks"]).toBeUndefined();
@@ -132,6 +143,7 @@ describe("Claude routes through the API Worker", () => {
       );
 
     expect((await messages(JSON.stringify(body("claude-sonnet-4-5")))).status).toBe(429);
+    // Real time, not TestClock: the Worker computes the reset from its own clock, so the test bounds it by Date.now().
     const before = Math.floor(Date.now() / 1000);
 
     // The cooldown is reported after the answer: ask until the Worker answers locally.
