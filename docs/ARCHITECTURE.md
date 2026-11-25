@@ -926,8 +926,9 @@ Core contracts every provider slice implements (Go references in each module hea
   48 upstream lines (WebSocket: messages read), 1 MiB and the optional timeout (Go duration or whole seconds,
   `0`/`none`/... = unlimited; the clock is the Effect clock on the WebSocket path, the reader's injected `nowMs` on
   SSE). An overload/rate-limit/capacity rejection inside the HTTP 200 stream (or any upstream `error` frame on the
-  WebSocket) fails the attempt with a 503 before anything reaches the client, so the conductor fails over to the next
-  credential; other terminal failures flush the held handshake and are delivered in-stream, except a terminal
+  WebSocket) fails the attempt before anything reaches the client, so the conductor fails over to the next credential:
+  a 429 that already carries a retry hint passes through as that 429, anything else becomes a 503 that keeps the
+  failure's retry hint (both paths, as in Go); other terminal failures flush the held handshake and are delivered in-stream, except a terminal
   `response.failed` usage limit (`usage_limit_reached`) on the WebSocket, which fails the attempt over like an `error`
   frame (a 429 with its own `resets_at` cooldown, CLIProxyAPI 86a1aabf; the SSE path fails over only on overloads, as in
   Go); a clean EOF while holding fails the attempt without releasing. `grok-pager` / `grok-shell` clients get
