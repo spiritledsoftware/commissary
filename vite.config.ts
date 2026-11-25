@@ -35,7 +35,8 @@ const restrictImports = (...patterns: ReadonlyArray<{ regex: string; message: st
 
 export default defineConfig({
   // `vp staged`, run by .vite-hooks/pre-commit: the staged files formatted, then linted (type-aware, through
-  // the tsrs bundled with Vite+). The Effect diagnostics surface at pre-push (`pnpm run typecheck`) or in CI (ADR 0047).
+  // the tsrs bundled with Vite+). The Effect diagnostics surface at pre-push (the touched packages' typecheck,
+  // tools/pre-push.sh) or in CI (ADR 0047).
   staged: {
     "*": "vp fmt --no-error-on-unmatched-pattern",
     "*.{ts,mts,cts,js,mjs,cjs}": "vp lint --quiet --no-error-on-unmatched-pattern",

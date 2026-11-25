@@ -533,8 +533,9 @@ dispatcher in `.vite-hooks/_` and points `core.hooksPath` at it):
   `style:`, `test:`, `ci:`, …; header and body lines up to 100 characters).
 - `pre-push`: `tools/pre-push.sh`, targeted checks on what the pushed branch changes since its merge base with the
   default branch: `vp fmt --check` and `vp lint --quiet` on its changed files, and the typecheck of each package they
-  belong to (plus `typecheck:root` when the deploy code changes). Several agents share a machine, so nothing at
-  push is repo-wide: CI runs the full typecheck, lint, tests and smoke test on every pull request.
+  belong to, deleted files included (plus `typecheck:root` when the deploy code changes). It reads the working tree, so
+  a pushed commit other than the checked-out HEAD is left to CI. Several agents share a machine, so nothing at push is
+  repo-wide: CI runs the full typecheck, lint, tests and smoke test on every pull request.
 
 Skip them once with `git commit --no-verify` / `git push --no-verify`, or for a whole shell with `VP_GIT_HOOKS=0`
 (`vp hooks disable` turns them off in one clone).
