@@ -239,6 +239,7 @@ const Body = ({
               {field("upstream.claude.disable-claude-cloak-mode")}
               {field("upstream.claude.cloak-level")}
               {field("upstream.claude.tool-search")}
+              {field("upstream.claude.server-side-fallback")}
               {field("upstream.claude.disable-cloaking-model-list")}
               {field("upstream.claude.header-defaults.stabilize-device-profile")}
               {field("upstream.claude.header-defaults.native-entrypoints")}
