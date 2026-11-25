@@ -182,17 +182,21 @@ const reasoningSummary = (cfg: Json): string => {
   return "";
 };
 
-const copySystem = (out: Json, root: Json): Json => {
+/**
+ * `interactionsCodexSystemText`: the system instruction's text, which Codex receives as a leading developer message
+ * rather than `instructions` (Go 56ab1549).
+ */
+const systemText = (root: Json): string => {
   let system = get(root, "system_instruction");
 
   if (system === undefined) system = get(root, "systemInstruction");
 
-  if (system === undefined) return out;
+  if (system === undefined) return "";
 
-  if (typeof system === "string") return set(out, "instructions", system);
+  if (typeof system === "string") return system;
   const text = get(system, "text");
 
-  if (typeof text === "string") return set(out, "instructions", text);
+  if (typeof text === "string") return text;
   const parts = get(system, "parts");
 
   if (isJsonArray(parts)) {
@@ -204,10 +208,10 @@ const copySystem = (out: Json, root: Json): Json => {
       if (value !== "") lines.push(value);
     }
 
-    if (lines.length > 0) return set(out, "instructions", lines.join("\n"));
+    return lines.join("\n");
   }
 
-  return out;
+  return "";
 };
 
 const copyGenerationConfig = (out: Json, root: Json): Json => {
@@ -774,9 +778,11 @@ export const convertInteractionsRequestToCodex = (
   out = set(out, "model", modelName);
 
   if (stream || asBool(get(request, "stream"))) out = set(out, "stream", true);
-  out = copySystem(out, request);
   out = copyGenerationConfig(out, request);
   const items: Json[] = [];
+  const system = systemText(request);
+
+  if (system !== "") appendText(items, "developer", system);
 
   const run = appendInput(
     items,
