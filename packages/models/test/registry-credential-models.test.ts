@@ -377,6 +377,7 @@ oauth:
       - { name: claude-sonnet-5.5, max-context-length: 111000 }
     devin:
       - { name: devin/swe-2, max-context-length: 222000 }
+      - { name: swe-2-flash, max-context-length: 333000 }
 `;
 
     const copilot = assembleCredentialModels(
@@ -402,6 +403,8 @@ oauth:
       contextLength: 222000,
     });
     expect(byId(devin, "devin/swe-2")?.contextLength).toBe(222000);
+    // A setting that names Devin's bare id now applies too (it used to match nothing).
+    expect(byId(devin, "devin/swe-2-flash")?.contextLength).toBe(333000);
   });
 
   it("keeps an alias that already carries the credential prefix", () => {

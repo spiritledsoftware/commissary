@@ -1340,9 +1340,12 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
   context length, prefixes (`force-model-prefix`). OpenAI-compatibility models keep duplicate aliases (model pools) and skip
   exclusions/aliases like Go. Copilot's and Devin's catalog models are _published routes_ (Go `f89d408e`): each registers as
   `<provider>/<native id>` (Copilot's display names end in ` (Copilot)`), and that qualified id is its source
-  (`sourceModelId`, Go `SourceModelID`), kept by its aliases and prefixed copies. Exclusions and OAuth aliases apply after
-  the namespace, so they name `copilot/gpt-6-sol`, not `gpt-6-sol` (an exclusion matches the published id or the source);
-  `oauth.settings` also match the source and its native id, so an alias shares its source's settings; a prefixed copy never
+  (`sourceModelId`, Go `SourceModelID`), kept by its aliases and prefixed copies (the providers and their prefixes:
+  `published-routes.ts`). Exclusions and OAuth aliases apply after the namespace, so they name `copilot/gpt-6-sol`, not
+  `gpt-6-sol` (an exclusion matches the published id or the source). Devin's ids were already `devin/<id>`, so its
+  exclusions and aliases behave as before. `oauth.settings` also match the source and its native id, so an alias shares
+  its source's settings; for Devin that is new: a setting that names a bare id (`swe-2`) now applies, where it was
+  ignored before. A prefixed copy never
   replaces an alias already named `<prefix>/<id>`; and Copilot's payload rules also match the source of the request's
   route. The management API (`routing/models`, `credentials/models`) shows the qualified ids as clients call them, which is
   what Go's v8 `model-definitions` answers for these two channels (`2a33e205`; that static catalog route is not ported).
