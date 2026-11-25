@@ -14,6 +14,11 @@ import {
   hasLevel,
   mapToClaudeEffort,
 } from "../../../../thinking/index.ts";
+import {
+  decodeBase64Raw,
+  decodeBase64Std,
+  decodeUtf8Strict,
+} from "../../../../signature/base64.ts";
 import { compatibleSignatureForProvider } from "../../../../signature/provider.ts";
 import { lookupModelInfo } from "../../../model-info.ts";
 import {
@@ -21,8 +26,12 @@ import {
   applyPatchParameters,
   isApplyPatchCustomTool,
 } from "../../../common/apply-patch.ts";
-import { attachCacheControl, moveBlankPartCacheControl } from "../../../common/cache-control.ts";
-import { buildClaudeStructuredOutputInstruction } from "../../../common/claude-system.ts";
+import {
+  attachCacheControl,
+  isValidCacheControl,
+  moveBlankPartCacheControl,
+} from "../../../common/cache-control.ts";
+import { applyClaudeStructuredOutput } from "../../../common/claude-system.ts";
 import { deriveClaudeUserID } from "../../../common/claude-user-id.ts";
 import {
   defaultClaudeMaxTokensForModel,
@@ -32,7 +41,9 @@ import {
 import { generateClaudeToolCallId } from "../../../common/request.ts";
 import { sanitizeClaudeToolId } from "../../../common/tool-names.ts";
 import { exists, isArr, isBlankText, isObj, isStr, str } from "../../../common/gjson.ts";
-import { UserTurnDrops } from "../../../common/parts.ts";
+import { normalizeOpenAIFileData } from "../../../common/file-data.ts";
+import { mimeTypeForExtension } from "../../../common/mime-types.ts";
+import { isHttpUrl, UnsupportedPartError, UserTurnDrops } from "../../../common/parts.ts";
 import {
   extractResponsesCallID,
   normalizeResponsesToolCallOutputs,
@@ -102,6 +113,8 @@ const convertRequest = (
   const normalized = normalizeCodexAgentMessages(inputRoot);
   const root = nativeToolSearch ? normalized : stripClientToolSearch(normalized);
   const drops = new UserTurnDrops();
+  // The first part type a tool output could not send (f08cb931); a refused user turn takes precedence over it.
+  let toolOutputErr = "";
 
   const out: JsonObject = {
     model: "",
@@ -240,6 +253,9 @@ const convertRequest = (
   let pendingRole = "";
   let pendingParts: JsonObject[] = [];
   let pendingToolUseParts: JsonObject[] = [];
+  // Claude response origin of the trailing thinking block in pendingParts (c71aa824).
+  let pendingThinkingResponseID = "";
+  let pendingThinkingBlockIndex = -1;
 
   // An assistant turn whose web search has no result: its citations would point at nothing (9acf81d3).
   let turnHasEmptyWebSearchResult = false;
@@ -286,6 +302,8 @@ const convertRequest = (
     pendingRole = "";
     pendingParts = [];
     pendingToolUseParts = [];
+    pendingThinkingResponseID = "";
+    pendingThinkingBlockIndex = -1;
   };
 
   const appendParts = (role: string, parts: JsonObject[]): void => {
@@ -294,6 +312,8 @@ const convertRequest = (
     if (pendingRole !== "" && pendingRole !== role) flushPendingMessage();
     pendingRole = role;
     pendingParts.push(...parts);
+    pendingThinkingResponseID = "";
+    pendingThinkingBlockIndex = -1;
   };
 
   const appendToolUse = (toolUse: JsonObject): void => {
@@ -302,7 +322,13 @@ const convertRequest = (
     pendingToolUseParts.push(toolUse);
   };
 
-  const appendReasoning = (reasoningPart: JsonObject | undefined): void => {
+  const lastPendingIsThinking = (): boolean =>
+    pendingParts.length > 0 && str(pendingParts[pendingParts.length - 1]?.type) === "thinking";
+
+  const appendReasoning = (
+    reasoningPart: JsonObject | undefined,
+    origin: ClaudeReasoningItemOrigin,
+  ): void => {
     if (reasoningPart === undefined) return;
 
     if (pendingRole !== "" && pendingRole !== "assistant") flushPendingMessage();
@@ -312,20 +338,42 @@ const convertRequest = (
     if (pendingToolUseParts.length > 0) {
       pendingParts.push(...pendingToolUseParts);
       pendingToolUseParts = [];
+      pendingThinkingResponseID = "";
+      pendingThinkingBlockIndex = -1;
     }
 
-    if (str(reasoningPart.type) === "thinking" && pendingParts.length > 0) {
-      const lastIdx = pendingParts.length - 1;
+    // Adjacent thinking blocks from different responses are rejected by Anthropic, so only the latest is kept. Blocks
+    // from the same response in ascending block index order (a reasoning block then a progress-update block) are
+    // replayed unchanged, as Anthropic requires (c71aa824).
+    const isThinking = str(reasoningPart.type) === "thinking";
+    const sameResponse = origin.ok && origin.responseID === pendingThinkingResponseID;
 
-      // SAFETY: `lastIdx` is the last index of `pendingParts`, which was checked to be non-empty; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      if (str((pendingParts[lastIdx] as JsonObject).type) === "thinking") {
-        pendingParts[lastIdx] = reasoningPart;
+    if (isThinking) {
+      if (
+        sameResponse &&
+        origin.blockIndex === pendingThinkingBlockIndex &&
+        lastPendingIsThinking()
+      ) {
+        // Replaying the same trailing block index replaces only that block.
+        pendingParts[pendingParts.length - 1] = reasoningPart;
 
         return;
+      }
+
+      if (!(sameResponse && origin.blockIndex > pendingThinkingBlockIndex)) {
+        while (lastPendingIsThinking()) pendingParts.pop();
       }
     }
 
     pendingParts.push(reasoningPart);
+
+    if (isThinking && origin.ok) {
+      pendingThinkingResponseID = origin.responseID;
+      pendingThinkingBlockIndex = origin.blockIndex;
+    } else {
+      pendingThinkingResponseID = "";
+      pendingThinkingBlockIndex = -1;
+    }
   };
 
   let inputItems: Json[] = [];
@@ -432,10 +480,9 @@ const convertRequest = (
               }
 
               case "input_file": {
-                const fileData = str(get(part, "file_data"));
+                const contentPart = responsesInputFileToClaude(part);
 
-                if (fileData !== "") {
-                  const contentPart = documentBlock(fileData);
+                if (contentPart !== undefined) {
                   attachCacheControl(contentPart, part);
                   partsJSON.push(contentPart);
 
@@ -488,7 +535,10 @@ const convertRequest = (
       }
 
       case "reasoning":
-        appendReasoning(reasoningToClaudeThinking(item, preserveEmptyThinkingBlocks));
+        appendReasoning(
+          reasoningToClaudeThinking(item, preserveEmptyThinkingBlocks),
+          parseClaudeReasoningItemID(str(get(item, "id"))),
+        );
         break;
       case "function_call":
       case "custom_tool_call": {
@@ -548,7 +598,11 @@ const convertRequest = (
 
         // Outputs without a paired tool_use in this input would be orphan tool_results, which Claude rejects.
         if (rawID === "" || !emittedRawToolUses.has(rawID)) {
-          appendParts("user", standaloneToolOutputToClaudeText(output));
+          const standalone = standaloneToolOutputToClaudeText(outputItem, output);
+
+          if (standalone.unsupported !== "" && toolOutputErr === "")
+            toolOutputErr = standalone.unsupported;
+          appendParts("user", standalone.parts);
           endWebSearchTurn();
           break;
         }
@@ -565,7 +619,14 @@ const convertRequest = (
           toolResult.is_error = true;
         }
 
-        applyToolResultContent(toolResult, output);
+        const applied = applyToolResultContent(toolResult, output);
+
+        if (applied.unsupported !== "" && toolOutputErr === "") toolOutputErr = applied.unsupported;
+
+        // Anthropic rejects cache_control inside tool_result.content, so the last valid part-level marker (or the
+        // item's) goes on the outer tool_result block (8cab158f).
+        if (!attachClaudeCacheControl(toolResult, applied.cacheSource))
+          attachClaudeCacheControl(toolResult, outputItem);
         appendParts("user", [toolResult]);
         break;
       }
@@ -620,7 +681,7 @@ const convertRequest = (
   for (const entry of systemEntries) if (!entry.emitted) systemBlocks.push(...entry.blocks);
   pendingSystemEntries = [];
   const formatResult = first(get(root, "text.format"), get(root, "response_format"));
-  const formatInstruction = buildClaudeStructuredOutputInstruction(formatResult);
+  const formatInstruction = applyClaudeStructuredOutput(out, modelName, formatResult);
 
   if (formatInstruction !== "") pushSystemText(systemBlocks, formatInstruction);
 
@@ -750,6 +811,8 @@ const convertRequest = (
 
   if (refusal !== undefined) throw refusal;
 
+  if (toolOutputErr !== "") throw new UnsupportedPartError(toolOutputErr, result);
+
   return result;
 };
 
@@ -863,22 +926,6 @@ const imageBlock = (url: string): JsonObject | undefined => {
   }
 
   return { type: "image", source: { type: "url", url } };
-};
-
-const documentBlock = (fileData: string): JsonObject => {
-  let mediaType = "application/octet-stream";
-  let data = fileData;
-
-  if (fileData.startsWith("data:")) {
-    const parsed = parseDataUrl(fileData);
-
-    if (parsed.data !== "") {
-      mediaType = parsed.mediaType;
-      data = parsed.data;
-    }
-  }
-
-  return { type: "document", source: { type: "base64", media_type: mediaType, data } };
 };
 
 const systemUnsupportedBlock = (part: Json | undefined): JsonObject | undefined => {
@@ -997,6 +1044,34 @@ const reasoningToClaudeThinking = (item: Json, preserveEmpty: boolean): JsonObje
   return { type: "thinking", thinking: reasoningText(item), signature };
 };
 
+/** A Responses reasoning item's Claude response ID and content block index. */
+export interface ClaudeReasoningItemOrigin {
+  readonly responseID: string;
+  readonly blockIndex: number;
+  readonly ok: boolean;
+}
+
+/**
+ * `parseClaudeReasoningItemID` (c71aa824): the Claude response ID and content block index of a reasoning item ID
+ * `rs_<response id>_<block index>`, as the Claude -> Responses translator names them; other IDs are not ok.
+ */
+export const parseClaudeReasoningItemID = (itemID: string): ClaudeReasoningItemOrigin => {
+  const none: ClaudeReasoningItemOrigin = { responseID: "", blockIndex: -1, ok: false };
+
+  if (!itemID.startsWith("rs_")) return none;
+  const rest = itemID.slice(3);
+  const sep = rest.lastIndexOf("_");
+
+  if (sep <= 0) return none;
+  const responseID = rest.slice(0, sep);
+  const indexStr = rest.slice(sep + 1);
+
+  if (responseID.trim() === "" || !/^[0-9]+$/u.test(indexStr)) return none;
+  const blockIndex = Number.parseInt(indexStr, 10);
+
+  return Number.isSafeInteger(blockIndex) ? { responseID, blockIndex, ok: true } : none;
+};
+
 const reasoningText = (item: Json): string => {
   const summary = reasoningPartsText(get(item, "summary"));
 
@@ -1032,17 +1107,110 @@ const thinkingSeparatorForToolUse = (parts: JsonObject[]): JsonObject | undefine
   return undefined;
 };
 
-const applyToolResultContent = (toolResult: JsonObject, output: Json | undefined): void => {
-  if (isArr(output)) {
+/** `hasValidClaudeCacheControl`. */
+const hasValidClaudeCacheControl = (src: Json | undefined): boolean =>
+  isValidCacheControl(get(src, "cache_control"));
+
+/**
+ * `attachClaudeCacheControlDoc`: copies a valid `cache_control` from `src` onto `block` unless the block cannot host
+ * one (thinking, or blank text); reports whether it was attached.
+ */
+const attachClaudeCacheControl = (block: JsonObject, src: Json | undefined): boolean => {
+  if (!hasValidClaudeCacheControl(src)) return false;
+
+  switch (str(block.type)) {
+    case "thinking":
+    case "redacted_thinking":
+      return false;
+    case "text":
+      if (isBlankText(str(block.text))) return false;
+  }
+
+  attachCacheControl(block, src);
+
+  return true;
+};
+
+/** `isResponsesStructuredToolOutputPart`: a single tool output object that is a content part, not a domain value. */
+const isResponsesStructuredToolOutputPart = (part: Json | undefined): boolean => {
+  if (!isObj(part)) return false;
+
+  switch (str(part.type).trim().toLowerCase()) {
+    case "input_text":
+    case "output_text":
+    case "input_image":
+    case "input_file":
+    case "file":
+    case "input_audio":
+    case "audio":
+    case "input_video":
+    case "video":
+      return true;
+    case "text":
+      return isStr(part.text);
+    default:
+      return false;
+  }
+};
+
+/** `unsupportedResponsesToolPartType`: the type of a media part Claude cannot take, `""` otherwise. */
+const unsupportedResponsesToolPartType = (part: Json | undefined): string => {
+  const ptype = str(get(part, "type")).trim();
+
+  switch (ptype.toLowerCase()) {
+    case "input_file":
+    case "file":
+    case "input_audio":
+    case "audio":
+    case "input_video":
+    case "video":
+    case "input_image":
+      return ptype;
+    default:
+      return "";
+  }
+};
+
+/** `responsesToolOutputItems`: an output array's items, or a single structured part as one item. */
+const responsesToolOutputItems = (output: Json | undefined): Json[] | undefined => {
+  if (output === undefined) return undefined;
+
+  if (isArr(output)) return output;
+
+  return isResponsesStructuredToolOutputPart(output) ? [output] : undefined;
+};
+
+interface ToolResultContent {
+  /** The last converted part with a valid cache_control, to hoist onto the tool_result (8cab158f). */
+  readonly cacheSource: Json | undefined;
+  /** The first media part type Claude cannot take, `""` when none (f08cb931). */
+  readonly unsupported: string;
+}
+
+/** `applyResponsesToolResultContentDoc`. */
+const applyToolResultContent = (
+  toolResult: JsonObject,
+  output: Json | undefined,
+): ToolResultContent => {
+  const items = responsesToolOutputItems(output);
+
+  if (items !== undefined) {
     const partsJSON: JsonObject[] = [];
     let hasImage = false;
     let hasFile = false;
     let droppedBlankPart = false;
+    let unsupported = "";
+    let cacheSource: Json | undefined;
 
-    for (const part of output) {
+    for (const part of items) {
       const converted = contentPartToClaude(part);
 
-      if (converted === undefined) continue;
+      if (converted === undefined) {
+        if (unsupported === "") unsupported = unsupportedResponsesToolPartType(part);
+        continue;
+      }
+
+      if (hasValidClaudeCacheControl(part)) cacheSource = part;
 
       if (!contentPartHasVisibleContent(converted)) {
         droppedBlankPart = true;
@@ -1056,10 +1224,12 @@ const applyToolResultContent = (toolResult: JsonObject, output: Json | undefined
       if (converted.type === "document") hasFile = true;
     }
 
-    if (partsJSON.length === 0) {
-      toolResult.content = droppedBlankPart ? "" : JSON.stringify(output);
+    if (unsupported !== "") return { cacheSource: undefined, unsupported };
 
-      return;
+    if (partsJSON.length === 0) {
+      toolResult.content = droppedBlankPart ? "" : str(output);
+
+      return { cacheSource, unsupported: "" };
     }
 
     if (partsJSON.length === 1 && !hasImage && !hasFile) {
@@ -1069,48 +1239,107 @@ const applyToolResultContent = (toolResult: JsonObject, output: Json | undefined
       if (textPart.type === "text") {
         toolResult.content = str(textPart.text);
 
-        return;
+        return { cacheSource, unsupported: "" };
       }
     }
 
     delete toolResult.content;
     toolResult.content = partsJSON;
 
-    return;
+    return { cacheSource, unsupported: "" };
   }
 
   toolResult.content = str(output);
+
+  return { cacheSource: undefined, unsupported: "" };
 };
 
 const contentPartHasVisibleContent = (part: Json): boolean =>
   str(get(part, "type")) !== "text" || str(get(part, "text")).trim() !== "";
 
-const standaloneToolOutputToClaudeText = (output: Json | undefined): JsonObject[] => {
-  if (isArr(output)) {
-    const partsJSON: JsonObject[] = [];
+/**
+ * `convertResponsesStandaloneToolOutputToClaudeText`: a tool output with no matching tool_use as ordinary user
+ * content blocks, keeping the item's and its parts' cache_control (8cab158f).
+ */
+interface StandaloneToolOutput {
+  readonly parts: JsonObject[];
+  /** The first media part type Claude cannot take, `""` when none (f08cb931). */
+  readonly unsupported: string;
+}
 
-    for (const part of output) {
+const standaloneToolOutputToClaudeText = (
+  outputItem: Json | undefined,
+  output: Json | undefined,
+): StandaloneToolOutput => {
+  let droppedPartCacheSource: Json | undefined;
+  const items = responsesToolOutputItems(output);
+
+  if (items !== undefined) {
+    const partsJSON: JsonObject[] = [];
+    let unsupported = "";
+
+    for (const part of items) {
       const converted = contentPartToClaude(part);
 
-      if (converted === undefined || !contentPartHasVisibleContent(converted)) continue;
+      if (converted === undefined) {
+        if (unsupported === "") unsupported = unsupportedResponsesToolPartType(part);
+        continue;
+      }
+
+      // Empty text parts are dropped so a mixed array never emits blocks Anthropic rejects; their cache_control
+      // moves to the block before (or to the placeholder when none is left).
+      if (!contentPartHasVisibleContent(converted)) {
+        const previous = partsJSON[partsJSON.length - 1];
+
+        if (previous !== undefined) {
+          if (!exists(previous.cache_control)) attachClaudeCacheControl(previous, part);
+        } else if (hasValidClaudeCacheControl(part)) {
+          droppedPartCacheSource = part;
+        }
+
+        continue;
+      }
+
+      attachClaudeCacheControl(converted, part);
       partsJSON.push(converted);
     }
 
-    if (partsJSON.length > 0) return partsJSON;
+    if (unsupported !== "") return { parts: [], unsupported };
+
+    const last = partsJSON[partsJSON.length - 1];
+
+    if (last !== undefined) {
+      if (!exists(last.cache_control)) attachClaudeCacheControl(last, outputItem);
+
+      return { parts: partsJSON, unsupported: "" };
+    }
   }
 
   const text = str(output);
 
-  if (isArr(output) || text.trim() === "")
-    return [{ type: "text", text: "Tool result was empty." }];
+  // An empty standalone output still needs a block so the user message it joins never ends up empty; the array
+  // guard keeps the raw array dump out when every converted part was empty.
+  if (isArr(output) || isResponsesStructuredToolOutputPart(output) || text.trim() === "") {
+    const placeholder: JsonObject = { type: "text", text: "Tool result was empty." };
 
-  return [{ type: "text", text }];
+    if (!attachClaudeCacheControl(placeholder, droppedPartCacheSource))
+      attachClaudeCacheControl(placeholder, outputItem);
+
+    return { parts: [placeholder], unsupported: "" };
+  }
+
+  const block: JsonObject = { type: "text", text };
+  attachClaudeCacheControl(block, outputItem);
+
+  return { parts: [block], unsupported: "" };
 };
 
+/** `convertResponsesContentPartToClaude`. */
 const contentPartToClaude = (part: Json | undefined): JsonObject | undefined => {
   switch (str(get(part, "type"))) {
     case "input_text":
-    case "output_text": {
+    case "output_text":
+    case "text": {
       const text = get(part, "text");
 
       return exists(text) ? { type: "text", text: str(text) } : undefined;
@@ -1124,14 +1353,137 @@ const contentPartToClaude = (part: Json | undefined): JsonObject | undefined => 
       return url === "" ? undefined : imageBlock(url);
     }
 
-    case "input_file": {
-      const fileData = str(get(part, "file_data"));
-
-      return fileData === "" ? undefined : documentBlock(fileData);
-    }
+    case "input_file":
+    case "file":
+      return responsesInputFileToClaude(part);
   }
 
   return undefined;
+};
+
+/** `isGenericClaudeInputFileMIME`. */
+const isGenericClaudeInputFileMIME = (mimeType: string): boolean => {
+  const m = mimeType.trim().toLowerCase();
+
+  return m === "" || m === "application/octet-stream" || m === "binary/octet-stream";
+};
+
+/** `isSupportedClaudeDocumentMIME`: Claude documents take PDF and plain text only. */
+const isSupportedClaudeDocumentMIME = (mimeType: string): boolean => {
+  const m = mimeType.trim().toLowerCase();
+
+  return m === "application/pdf" || m === "text/plain";
+};
+
+/** `filepath.Ext` without the dot, lower-cased. */
+const fileExtension = (filename: string): string => {
+  const base = filename.slice(filename.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+
+  return dot < 0 ? "" : base.slice(dot + 1).toLowerCase();
+};
+
+/** `resolveClaudeInputFileFallbackMIME`: an explicit MIME type or format, else the filename's extension. */
+const resolveClaudeInputFileFallbackMIME = (part: Json | undefined, filename: string): string => {
+  for (const path of ["mime_type", "file.mime_type", "format", "file.format"]) {
+    const candidate = str(get(part, path)).trim();
+
+    if (candidate === "" || isGenericClaudeInputFileMIME(candidate)) continue;
+
+    if (candidate.includes("/")) return candidate;
+    const ext = candidate.toLowerCase();
+    const mapped = mimeTypeForExtension(ext.startsWith(".") ? ext.slice(1) : ext);
+
+    if (mapped !== "" && !isGenericClaudeInputFileMIME(mapped)) return mapped;
+  }
+
+  if (filename !== "") {
+    const mapped = mimeTypeForExtension(fileExtension(filename));
+
+    if (mapped !== "" && !isGenericClaudeInputFileMIME(mapped)) return mapped;
+  }
+
+  return "";
+};
+
+/** `base64.StdEncoding`, then `RawStdEncoding`, decoded as valid non-empty UTF-8. */
+const decodeBase64Text = (data: string): string | undefined => {
+  const bytes = decodeBase64Std(data) ?? decodeBase64Raw(data);
+
+  if (bytes === undefined || bytes.length === 0) return undefined;
+
+  return decodeUtf8Strict(bytes);
+};
+
+/**
+ * `convertResponsesInputFileToClaude` (f08cb931): base64 file data becomes a PDF or plain-text document (its MIME type
+ * from the data URL, the part's MIME type or format, the filename, or a `%PDF-` prefix), an http(s) `file_url` a URL
+ * document; anything else (other binary types, other URLs) is `undefined`.
+ */
+const responsesInputFileToClaude = (part: Json | undefined): JsonObject | undefined => {
+  const field = (key: string): string => {
+    const direct = str(get(part, key)).trim();
+
+    return direct !== "" ? direct : str(get(part, `file.${key}`)).trim();
+  };
+
+  const filename = field("filename");
+  let fileData = field("file_data");
+  let fileURL = field("file_url");
+
+  if (fileData === "" && fileURL.slice(0, 5).toLowerCase() === "data:") {
+    fileData = fileURL;
+    fileURL = "";
+  }
+
+  const fallbackMIME = resolveClaudeInputFileFallbackMIME(part, filename);
+
+  if (fileData !== "") {
+    let mediaType: string;
+    let data: string;
+
+    if (fileData.slice(0, 5).toLowerCase() === "data:") {
+      const rest = fileData.slice(5);
+      const comma = rest.indexOf(",");
+
+      if (comma < 0) return undefined;
+      const payload = rest.slice(comma + 1).trim();
+
+      if (payload === "") return undefined;
+      const fields = rest.slice(0, comma).split(";");
+
+      if (!fields.slice(1).some((f) => f.trim().toLowerCase() === "base64")) return undefined;
+      mediaType = (fields[0] ?? "").trim();
+      data = payload;
+    } else {
+      const normalized = normalizeOpenAIFileData(filename, fallbackMIME, fileData);
+
+      mediaType = normalized?.mimeType ?? fallbackMIME;
+      data = normalized?.data ?? fileData;
+    }
+
+    if (isGenericClaudeInputFileMIME(mediaType)) {
+      if (fallbackMIME !== "") mediaType = fallbackMIME;
+      else if (data.startsWith("JVBERi0")) mediaType = "application/pdf";
+    }
+
+    if (!isSupportedClaudeDocumentMIME(mediaType) || data === "") return undefined;
+    const normalizedMIME = mediaType.trim().toLowerCase();
+
+    if (normalizedMIME === "text/plain") {
+      const decoded = decodeBase64Text(data);
+
+      return decoded === undefined || decoded === ""
+        ? undefined
+        : { type: "document", source: { type: "text", media_type: "text/plain", data: decoded } };
+    }
+
+    return { type: "document", source: { type: "base64", media_type: normalizedMIME, data } };
+  }
+
+  return isHttpUrl(fileURL)
+    ? { type: "document", source: { type: "url", url: fileURL } }
+    : undefined;
 };
 
 const toolDescriptorToClaude = (
@@ -1364,10 +1716,22 @@ const normalizeToolResultMessage = (
       if (!answeredIDs.has(str(get(block, "tool_use_id")))) {
         changed = true;
         seenOther = true;
-        const textParts = toolResultTextParts(block);
+        let foldedParts = toolResultTextParts(block);
 
-        if (textParts.length > 0) otherParts.push(...textParts);
-        else otherParts.push({ type: "text", text: "Tool result was empty." });
+        // An empty orphan result folds to nothing, so an explicit marker keeps the user message non-empty.
+        if (foldedParts.length === 0)
+          foldedParts = [{ type: "text", text: "Tool result was empty." }];
+
+        // The folded block keeps the orphan's cache_control on its last part (8cab158f).
+        const last = foldedParts[foldedParts.length - 1];
+
+        if (exists(get(block, "cache_control")) && isObj(last) && !exists(last.cache_control)) {
+          const copy: JsonObject = { ...last };
+
+          if (attachClaudeCacheControl(copy, block)) foldedParts[foldedParts.length - 1] = copy;
+        }
+
+        otherParts.push(...foldedParts);
         continue;
       }
 

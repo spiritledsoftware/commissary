@@ -1,13 +1,17 @@
 // Responses -> Claude: mid-session system/developer items stay in place as `role: "system"` turns when the executor
 // says so (Go: internal/translator/claude/openai/responses/claude_openai-responses_system_placement_test.go, upstream
-// 27762819). The executor's `topLevelSystemItems` request option picks the placement; absent means top level.
+// 27762819, 43806c86). The executor's `topLevelSystemItems` request option picks the placement; absent means top level.
 import { describe, expect, it } from "vite-plus/test";
 import { get, type Json, type JsonObject } from "@commissary/json";
 import { Formats } from "../src/translator/formats.ts";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { convertOpenAIResponsesRequestToClaude } from "../src/translator/claude/openai/responses/request.ts";
 
-const FORMAT = `"text":{"format":{"type":"json_schema","name":"facts","schema":{"type":"object","properties":{"facts":{"type":"string"}}}}}`;
+// A json_schema format maps to output_config.format since 43806c86, so placement uses json_object, which still adds a
+// trailing structured-output block.
+const FORMAT = `"text":{"format":{"type":"json_object"}}`;
+
+const FORMAT_INSTRUCTION = "valid JSON object";
 
 const IN_PLACE = { topLevelSystemItems: false };
 
@@ -142,7 +146,7 @@ describe("mid-session system items kept in place", () => {
     expect(system[0]?.text).toBe("typed");
     expect(system[3]?.text).toBe("trailing");
     expect(system[4]?.text).toBe("after_trailing");
-    expect(blockText(system[5])).toContain("facts");
+    expect(blockText(system[5])).toContain(FORMAT_INSTRUCTION);
   });
 
   it("keeps the fallback user message of a request that only carries a structured-output format", () => {
@@ -189,7 +193,7 @@ describe("the topLevelSystemItems option", () => {
     const out = convert(BODY, options);
 
     expect(systemTexts(out).slice(0, 4)).toEqual(["I1", "S1", "D1", "S2"]);
-    expect(systemTexts(out).at(-1)).toContain("facts");
+    expect(systemTexts(out).at(-1)).toContain(FORMAT_INSTRUCTION);
     expect(roles(out)).toEqual(["user", "assistant", "user"]);
   });
 
@@ -201,7 +205,7 @@ describe("the topLevelSystemItems option", () => {
     const out = convert(BODY, IN_PLACE);
 
     expect(systemTexts(out).slice(0, 2)).toEqual(["I1", "S1"]);
-    expect(systemTexts(out).at(-1)).toContain("facts");
+    expect(systemTexts(out).at(-1)).toContain(FORMAT_INSTRUCTION);
     expect(roles(out)).toEqual(["user", "system", "assistant", "user", "system"]);
   });
 
