@@ -255,8 +255,8 @@ const patchAliases = (metadata: JsonObject, value: Json): Refusal | undefined =>
     if (name === "" || alias === "")
       return refuse(at, "each alias needs the provider's model name and the alias");
 
-    if (name.toLowerCase() === alias.toLowerCase())
-      return refuse(at, `the alias ${alias} is the model's own name`);
+    // A case-only alias is allowed (34d8fe0f).
+    if (name === alias) return refuse(at, `the alias ${alias} is the model's own name`);
     const taken = seen.get(alias.toLowerCase());
 
     if (taken !== undefined)

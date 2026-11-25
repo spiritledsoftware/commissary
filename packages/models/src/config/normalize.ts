@@ -356,7 +356,8 @@ const normalizeAliases = (input: Readonly<Record<string, readonly OAuthModelAlia
       const name = entry.name.trim();
       const alias = entry.alias.trim();
 
-      if (name === "" || alias === "" || name.toLowerCase() === alias.toLowerCase()) continue;
+      // Only an alias spelled exactly like its model is dropped; a case-only alias is kept (34d8fe0f).
+      if (name === "" || alias === "" || name === alias) continue;
 
       if (seen.has(alias.toLowerCase())) continue;
       seen.add(alias.toLowerCase());

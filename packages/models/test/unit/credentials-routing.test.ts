@@ -200,6 +200,54 @@ describe("OAuth aliases", () => {
     });
   });
 
+  // Go: oauth_model_alias_test.go (TestApplyOAuthModelAlias_CaseOnlyAlias) at 34d8fe0f.
+  it("a case-only alias maps to the upstream spelling", () => {
+    const credential = cred("a", { provider: "claude" });
+    const alias = { name: "minimax-m3.1-flash", alias: "MiniMax-M3.1-Flash" };
+    const plain = context({ oauthModelAlias: { claude: [alias] } });
+
+    expect(resolveModelRoute(credential, "MiniMax-M3.1-Flash", plain)?.upstreamModel).toBe(
+      "minimax-m3.1-flash",
+    );
+    expect(resolveModelRoute(credential, "MiniMax-M3.1-Flash(high)", plain)).toMatchObject({
+      upstreamModel: "minimax-m3.1-flash(high)",
+      forceMapping: false,
+    });
+
+    const forced = context({ oauthModelAlias: { claude: [{ ...alias, "force-mapping": true }] } });
+
+    expect(resolveModelRoute(credential, "MiniMax-M3.1-Flash(high)", forced)).toMatchObject({
+      upstreamModel: "minimax-m3.1-flash(high)",
+      forceMapping: true,
+      originalAlias: "MiniMax-M3.1-Flash",
+    });
+
+    const account = cred("b", { provider: "claude", modelAliases: [alias] });
+
+    expect(resolveModelRoute(account, "MiniMax-M3.1-Flash", context())?.upstreamModel).toBe(
+      "minimax-m3.1-flash",
+    );
+  });
+
+  it("a matching per-account case-only fork does not fall back to the global table", () => {
+    const account = cred("a", {
+      provider: "claude",
+      modelAliases: [{ name: "minimax-m3.1-flash", alias: "MiniMax-M3.1-Flash", fork: true }],
+    });
+
+    const ctx = context({
+      oauthModelAlias: { claude: [{ name: "another-model", alias: "MiniMax-M3.1-Flash" }] },
+    });
+
+    for (const [requested, upstream] of [
+      ["MiniMax-M3.1-Flash", "minimax-m3.1-flash"],
+      ["minimax-m3.1-flash", "minimax-m3.1-flash"],
+      ["minimax-m3.1-flash(high)", "minimax-m3.1-flash(high)"],
+    ] as const) {
+      expect(resolveModelRoute(account, requested, ctx)?.upstreamModel).toBe(upstream);
+    }
+  });
+
   it("force-mapping reports the alias as the response model", () => {
     const credential = cred("a", { provider: "claude" });
 

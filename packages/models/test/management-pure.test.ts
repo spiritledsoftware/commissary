@@ -499,6 +499,10 @@ describe("field patch", () => {
       metadata: { type: "codex", websockets: true },
     });
     expect(applyFieldPatch(base, { excluded_models: [] })).toEqual({ ok: true, metadata: base });
+    // A case-only alias is an alias (34d8fe0f).
+    expect(applyFieldPatch(base, { model_aliases: [{ name: "a", alias: "A" }] })).toMatchObject({
+      ok: true,
+    });
     // Outer slashes are dropped like Go's synthesizer.
     expect(applyFieldPatch(base, { prefix: "/team/" })).toEqual({
       ok: true,
@@ -516,7 +520,7 @@ describe("field patch", () => {
       [{ excluded_models: [1] }, "excluded_models"],
       [{ model_aliases: {} }, "model_aliases"],
       [{ model_aliases: [{ name: "a", alias: "" }] }, "model_aliases.0"],
-      [{ model_aliases: [{ name: "a", alias: "A" }] }, "model_aliases.0"],
+      [{ model_aliases: [{ name: "a", alias: "a" }] }, "model_aliases.0"],
       [
         {
           model_aliases: [
