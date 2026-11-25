@@ -516,10 +516,10 @@ version (Docker, e.g. OrbStack). Delete a cached worktree with `git -C .repos/CL
 file per format pair, plus `translator-executor.json`), so after regenerating, commit the files the ticket names and
 restore the rest (`git checkout -- <path>`); a ticket that needs a file another ticket owns stops and says so. Two runs
 at the same commit can differ: the tests mask the generated ids, timestamps and local ports, and the Go map order of the
-model listings in `registry.json`. One known case is not masked and is non-deterministic at the current port target:
-the order of the final events of `stream: interleaved patch and function calls`
-(`translator/openai-response-claude-apply-patch.json`) follows Go map iteration, so a regeneration can fail that case
-until its test or fixture handles the order.
+model listings in `registry.json`. One known case orders its events by Go map iteration: the final item-closing
+events of `stream: interleaved patch and function calls` (`translator/openai-response-claude-apply-patch.json`). The
+translator harness (`packages/translation/test/support/translator-fixtures.ts`, `UNORDERED_ITEM_DONE_CASES`) compares
+those events in `output_index` order, with their sequence numbers renumbered, so either order passes.
 
 ## Git hooks
 
