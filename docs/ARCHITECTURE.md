@@ -1796,9 +1796,11 @@ Deviations from Go (all deliberate, documented in code headers):
   the executor checks it before translating, and a block counts as the stream's finish signal, so it never reaches the
   `closed before finishReason` check, which now also covers OpenAI chat clients). Safety/recitation/blocklist/
   prohibited-content/SPII/image-safety/malformed finishReasons end `content_filter` (chat) or `response.incomplete`
-  with `content_filter` (Responses); Claude clients get a `refusal`, except `MALFORMED_FUNCTION_CALL` without a tool call:
+  with `content_filter` (Responses); Claude clients get a `refusal`, except `MALFORMED_FUNCTION_CALL` with no visible output
+  (no tool call and no non-blank text; a call counts with a name, an id, partial arguments or non-empty args, Go `cf07c78a`):
   the translator writes an Anthropic `api_error` and the executor fails the request (non-stream) or the stream (after the
-  event; the Claude framer does not repeat it) with a retryable 502. Gemini and Antigravity chat chunks accumulate the text
+  event; the Claude framer does not repeat it) with a retryable 502. Partial visible text before it is kept and the message
+  ends normally. Gemini and Antigravity chat chunks accumulate the text
   and reasoning of all parts, skip empty signature carriers, count tool-call indices across the stream and keep upstream
   `functionCall.id`s. Claude tool arguments are cleaned against the client's declared schemas
   (`translator/common/claude-tool-args.ts`, one module for both providers): the schema analysis works on parsed JSON instead
@@ -1889,7 +1891,10 @@ Deviations from Go (all deliberate, documented in code headers):
   the sentinel, and a Vertex bare-Tink signature can never reach the Gemini API through it. The credential is not part of the key
   (as in Go): rotating between credentials of one provider keeps the replay state. `gemini-3-*` signatures are assumed to validate
   across keys and projects of one provider; if one does not, the client gets one 400 and the entry is cleared.
-  `gjson.Raw` whitespace is not preserved (embedded raw JSON is compacted); model capability lookups
+  `gjson.Raw` whitespace is not preserved (embedded raw JSON is compacted, which also shows in text that carries raw JSON, such
+  as a Gemini `functionResponse` result that the Interactions request carries as a text item beside its media); the Interactions -> Gemini stream's 50 MiB cap on
+  buffered function-call arguments (Go `9d60b36f`) counts UTF-16 code units where Go counts bytes, so non-ASCII arguments
+  can buffer up to 3 times the bytes before the call is dropped; model capability lookups
   (`ModelSupportsWebSearch`, the Claude thinking budget) go through the lookup the executor installs
   (`withModelInfoLookup`: the attempt's registry snapshot, which falls back to the static catalogs); Go's
   `PrepareAntigravityInteractions` lives in `executor/gemini/antigravity-interactions.ts` (see _SessionState Durable Object_); a Vertex Imagen
