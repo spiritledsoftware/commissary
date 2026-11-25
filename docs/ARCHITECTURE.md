@@ -2974,8 +2974,10 @@ Copilot credential (_Provider OAuth logins_) serves the Copilot CLI's preset mod
   and MAI models), with the CLI's defaults (effort or budget where the request names none, Messages `max_tokens` capped by the
   model and without streaming by the 16k non-streaming limit, verbosity, `tool_choice`, `snippy`, the block-binding betas). A
   model without a preset and a profile gets a 404.
-- **Requests** (`request.ts`, `executor.ts`): the client request is translated to the route's protocol, then the defaults, the
-  thinking pipeline, Copilot's protocol fixes (`NormalizeCopilotRequest`: plain-text assistant history flattened to a string for
+- **Requests** (`request.ts`, `attempt.ts`, one file per route: `chat.ts`, `messages.ts`, `responses.ts`): the client request
+  is translated to the route's protocol (OpenAI and Claude clients of a Responses route to standard Responses, without the
+  Codex wire defaults: `standardResponsesTranslators`, Go `CopilotTranslationRegistry`, `7ae771fc`; their `temperature` and
+  `top_p` pass through), then the CLI defaults, the thinking pipeline that validates them, Copilot's protocol fixes (`NormalizeCopilotRequest`: plain-text assistant history flattened to a string for
   every client, `9abeef8c`/`f911b453`; a leading system prompt moved to `instructions` or kept as `system` input, the model's
   CLI choice) and the payload rules last. A request only goes to the credential's `base_url`, re-checked with
   `isTrustedCopilotApi` before each send, with the CLI's identity headers (`Copilot-Integration-Id`, `Editor-Version`,
@@ -2992,11 +2994,9 @@ refreshed every 2 hours in its own worker pool, and revokes it when the origin c
 through its preset ("cold") route, and an account that lacks a model answers with its own error. No in-memory turn links and
 no server-side replay of private reasoning or signatures: the session, interaction and task ids are derived (UUIDv5 of the
 credential, caller, session and the digest of the user turns, so a tool follow-up shares its turn's ids), and reasoning
-round-trips through the client like on the other Responses upstreams. Responses requests use the Codex translators and the
-shared Responses shaping (`helps/responses-request.ts`) and always stream upstream (a non-stream client gets the collected
-answer); so they carry the Codex translators' defaults (`reasoning.effort` `medium` when the client names none, which is the
-CLI default of every Responses preset but `grok-4.7`'s `high`; no `temperature`/`top_p`). Messages answers for non-Claude
-clients stream upstream, as on the other Messages upstreams. Home dispatch and the upstream API request log are not ported.
+round-trips through the client like on the other Responses upstreams. Responses requests go through the shared Responses
+shaping (`helps/responses-request.ts`) and always stream upstream (a non-stream client gets the collected answer). Messages
+answers for non-Claude clients stream upstream, as on the other Messages upstreams. Home dispatch and the upstream API request log are not ported.
 
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 

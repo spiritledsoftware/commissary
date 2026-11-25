@@ -108,12 +108,20 @@ const transportError = (error: HttpClientError.HttpClientError) =>
 const gatewayError = () =>
   new ExecutionError({ status: 502, message: APPLY_PATCH_UPSTREAM_ERROR_MESSAGE });
 
-const responseContext = (input: ResponsesSseInput): ResponseContext => ({
-  model: input.request.model,
-  originalRequest: input.options.originalRequest ?? input.request.payload,
-  translatedRequest: input.prepared.translated,
+/** The response translators' context: the client's request, the translated one and a fresh state. */
+export const translatorResponseContext = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+  translated: Json,
+): ResponseContext => ({
+  model: request.model,
+  originalRequest: options.originalRequest ?? request.payload,
+  translatedRequest: translated,
   state: makeTranslationState(),
 });
+
+const responseContext = (input: ResponsesSseInput): ResponseContext =>
+  translatorResponseContext(input.request, input.options, input.prepared.translated);
 
 /** `metaAsCompletedEvent`: a plain JSON response body is wrapped as a `response.completed` event. */
 const asCompletedEvent = (data: string): JsonObject | undefined => {

@@ -224,6 +224,7 @@ const dataFrames = (text: string): unknown[] =>
   text
     .split("\n")
     .filter((line) => line.startsWith("data:") && line.slice(5).trim() !== "[DONE]")
+    // SAFETY: `JSON.parse` returns `any`; each frame is narrowed by the reader that uses it.
     .map((line) => JSON.parse(line.slice(5).trim()) as unknown);
 
 /** The text an OpenAI Chat Completions stream carries. */
@@ -281,6 +282,7 @@ beforeAll(async () => {
 
     upstreamCalls.push({
       url: request.url,
+      // SAFETY: the executor only ever posts JSON objects to Copilot.
       headers: request.headers,
       body: text === "" ? {} : (JSON.parse(text) as Record<string, unknown>),
     });
@@ -503,6 +505,43 @@ describe("Copilot Responses route", () => {
       store: false,
       text: { verbosity: "low" },
       reasoning: { effort: "medium" },
+    });
+  });
+
+  it("converts OpenAI and Claude clients to standard Responses, with the CLI's default effort", async () => {
+    const chat = await post("/v1/chat/completions", {
+      model: "grok-4.7",
+      stream: true,
+      temperature: 0.2,
+      top_p: 0.9,
+      messages: USER,
+    });
+
+    expect(chat.status).toBe(200);
+    expect(chatText(await chat.text())).toBe("Hello");
+    // 7ae771fc: no Codex wire defaults, so the CLI profile's effort applies and sampling passes through.
+    expect(lastCall().body).toMatchObject({
+      model: "grok-4.7",
+      temperature: 0.2,
+      top_p: 0.9,
+      reasoning: { effort: "high" },
+    });
+
+    const claude = await post("/v1/messages", {
+      model: "grok-4.7",
+      max_tokens: 256,
+      stream: true,
+      temperature: 0.5,
+      top_p: 0.8,
+      messages: USER,
+    });
+
+    expect(claude.status).toBe(200);
+    expect(claudeText(await claude.text())).toBe("Hello");
+    expect(lastCall().body).toMatchObject({
+      temperature: 0.5,
+      top_p: 0.8,
+      reasoning: { effort: "high" },
     });
   });
 
