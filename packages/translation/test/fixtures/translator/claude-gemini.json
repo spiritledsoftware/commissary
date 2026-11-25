@@ -1021,5 +1021,100 @@
   "translatedRequest": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"model\":\"gemini-2.5-flash\",\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]}",
   "responseBodyText": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"responseId\":\"r\"}",
   "nonStreamOutput": "{\"id\":\"r\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null}"
+ },
+ {
+  "name": "request: tool_result base64 documents go to functionResponse.parts (e1384430)",
+  "from": "claude",
+  "to": "gemini",
+  "model": "gemini-3.1-pro-preview",
+  "stream": false,
+  "request": {
+   "model": "gemini-3.1-pro-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "read them"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "tool_use",
+       "id": "call_pdf",
+       "name": "read_file",
+       "input": {}
+      },
+      {
+       "type": "tool_use",
+       "id": "call_obj",
+       "name": "read_file",
+       "input": {}
+      },
+      {
+       "type": "tool_use",
+       "id": "call_bad",
+       "name": "read_file",
+       "input": {}
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "tool_result",
+       "tool_use_id": "call_pdf",
+       "content": [
+        {
+         "type": "text",
+         "text": "Loaded sample.pdf"
+        },
+        {
+         "type": "document",
+         "source": {
+          "type": "base64",
+          "media_type": "application/pdf",
+          "data": "JVBERi0xLjQK"
+         }
+        }
+       ]
+      },
+      {
+       "type": "tool_result",
+       "tool_use_id": "call_obj",
+       "content": {
+        "type": "document",
+        "source": {
+         "type": "base64",
+         "media_type": "application/pdf",
+         "data": "JVBERi0xLjQK"
+        }
+       }
+      },
+      {
+       "type": "tool_result",
+       "tool_use_id": "call_bad",
+       "content": [
+        {
+         "type": "document",
+         "source": {
+          "type": "base64",
+          "data": "JVBERi0xLjQK"
+         }
+        },
+        {
+         "type": "document",
+         "source": {
+          "type": "base64",
+          "media_type": "application/pdf"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "translatedRequest": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read them\"}]},{\"role\":\"model\",\"parts\":[{\"thoughtSignature\":\"skip_thought_signature_validator\",\"functionCall\":{\"name\":\"read_file\",\"args\":{},\"id\":\"call_pdf\"}},{\"thoughtSignature\":\"skip_thought_signature_validator\",\"functionCall\":{\"name\":\"read_file\",\"args\":{},\"id\":\"call_obj\"}},{\"thoughtSignature\":\"skip_thought_signature_validator\",\"functionCall\":{\"name\":\"read_file\",\"args\":{},\"id\":\"call_bad\"}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"read_file\",\"response\":{\"result\":{\"type\":\"text\",\"text\":\"Loaded sample.pdf\"}},\"id\":\"call_pdf\",\"parts\":[{\"inlineData\":{\"mimeType\":\"application/pdf\",\"data\":\"JVBERi0xLjQK\"}}]}},{\"functionResponse\":{\"name\":\"read_file\",\"response\":{\"result\":\"\"},\"id\":\"call_obj\",\"parts\":[{\"inlineData\":{\"mimeType\":\"application/pdf\",\"data\":\"JVBERi0xLjQK\"}}]}},{\"functionResponse\":{\"name\":\"read_file\",\"response\":{\"result\":\"\"},\"id\":\"call_bad\"}}]}],\"model\":\"gemini-3.1-pro-preview\",\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]}"
  }
 ]

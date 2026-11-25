@@ -131,5 +131,13 @@
     "stream": false,
     "request": {"model":"m","messages":[{"role":"user","content":"hi"}]},
     "responseBody": {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"responseId":"r"}
+  },
+  {
+    "name": "request: tool_result base64 documents go to functionResponse.parts (e1384430)",
+    "from": "claude",
+    "to": "gemini",
+    "model": "gemini-3.1-pro-preview",
+    "stream": false,
+    "request": {"model":"gemini-3.1-pro-preview","messages":[{"role":"user","content":"read them"},{"role":"assistant","content":[{"type":"tool_use","id":"call_pdf","name":"read_file","input":{}},{"type":"tool_use","id":"call_obj","name":"read_file","input":{}},{"type":"tool_use","id":"call_bad","name":"read_file","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_pdf","content":[{"type":"text","text":"Loaded sample.pdf"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]},{"type":"tool_result","tool_use_id":"call_obj","content":{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}},{"type":"tool_result","tool_use_id":"call_bad","content":[{"type":"document","source":{"type":"base64","data":"JVBERi0xLjQK"}},{"type":"document","source":{"type":"base64","media_type":"application/pdf"}}]}]}]}
   }
 ]

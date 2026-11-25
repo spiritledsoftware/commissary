@@ -40,13 +40,28 @@ export interface ClaudeToolResult extends ClaudeToolResultContent {
   readonly isError: boolean;
 }
 
-const isClaudeBase64Image = (block: Json | undefined): boolean =>
-  asString(get(block, "type")) === "image" && asString(get(block, "source.type")) === "base64";
+/** `isClaudeBase64Media`: a base64 image or document block (e1384430). */
+const isClaudeBase64Media = (block: Json | undefined): boolean => {
+  const type = asString(get(block, "type"));
 
+  return (
+    (type === "image" || type === "document") && asString(get(block, "source.type")) === "base64"
+  );
+};
+
+/**
+ * `claudeImageFromBlock`: the inline media of a base64 image or document block; undefined without data, or for a
+ * document without a media type, so no empty inline data part goes out.
+ */
 const claudeImageFromBlock = (block: Json): ClaudeToolResultImage | undefined => {
   const data = asString(get(block, "source.data"));
 
-  return data === "" ? undefined : { mimeType: asString(get(block, "source.media_type")), data };
+  if (data === "") return undefined;
+  const mimeType = asString(get(block, "source.media_type"));
+
+  if (asString(get(block, "type")) === "document" && mimeType === "") return undefined;
+
+  return { mimeType, data };
 };
 
 /** `ConvertClaudeToolResult`: a complete `tool_result` block, keeping its success/failure semantics (CLIProxyAPI 81de4b9c). */
@@ -55,7 +70,7 @@ export const convertClaudeToolResult = (block: Json | undefined): ClaudeToolResu
   isError: get(block, "is_error") === true,
 });
 
-/** `ConvertClaudeToolResultContent`: string / structured content plus separated base64 images. */
+/** `ConvertClaudeToolResultContent`: string / structured content plus separated base64 images and documents. */
 export const convertClaudeToolResultContent = (
   content: Json | undefined,
 ): ClaudeToolResultContent => {
@@ -66,7 +81,7 @@ export const convertClaudeToolResultContent = (
     const nonImage: Json[] = [];
 
     for (const block of content) {
-      if (isClaudeBase64Image(block)) {
+      if (isClaudeBase64Media(block)) {
         const image = claudeImageFromBlock(block);
 
         if (image !== undefined) images.push(image);
@@ -86,7 +101,7 @@ export const convertClaudeToolResultContent = (
   }
 
   if (isJsonObject(content)) {
-    if (isClaudeBase64Image(content)) {
+    if (isClaudeBase64Media(content)) {
       const image = claudeImageFromBlock(content);
 
       return { result: "", resultIsRaw: false, images: image === undefined ? [] : [image] };
