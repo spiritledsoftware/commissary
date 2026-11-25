@@ -526,6 +526,20 @@ describe("antigravity TOS_VIOLATION (CLIProxyAPI 5a351d95)", () => {
     });
   });
 
+  it("ends the credits round at the violation (Go tryAntigravityCreditsExecute)", async () => {
+    const outcome = await run(CREDITS, "claude-sonnet-4-5", (call) => {
+      if (!hasCredits(call)) return jsonResponse(quotaExhausted, { status: 429 });
+
+      return bearer(call) === "tok-a"
+        ? jsonResponse(tosViolation, { status: 403 })
+        : sseResponse([`data: ${JSON.stringify(reply)}\n\n`]);
+    });
+
+    // The credits round tries "a" first (both unknown, by id); its violation ends the round before "b".
+    expect(Result.isFailure(outcome.result) ? outcome.result.failure.status : undefined).toBe(403);
+    expect(outcome.calls.filter(hasCredits).map(bearer)).toEqual(["tok-a"]);
+  });
+
   it("ends a stream at the violation (Go isDirectStreamTerminalError)", async () => {
     const outcome = await run(
       CREDITS,

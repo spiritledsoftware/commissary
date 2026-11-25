@@ -579,7 +579,9 @@ export class CredentialPool {
 
     for (const model of cooled.models) marks.models.set(canonicalModelLookupKey(model), seq);
 
-    if (!credentialCooldownActive(next, now)) marks.credential = 0;
+    // A live credential-scoped lockout (`credentialRetryAfter`) keeps the credential's stamp too.
+    if (!credentialCooldownActive(next, now) && !((next.credentialRetryAfter ?? 0) > now))
+      marks.credential = 0;
 
     for (const key of marks.models.keys()) {
       const state = findModelState(next.modelStates, key);

@@ -895,6 +895,16 @@ export const conduct = <T, R>(
       poolAsked = false;
 
       if (credited.ok) return { ok: true, value: credited.value } satisfies ConductResult<T>;
+
+      // A credits round that ended at a stopping error (a TOS_VIOLATION, a validation challenge, a request fault or a
+      // stop rule) answers with it; one that only ran out answers with the normal rotation's error
+      // (`tryAntigravityCreditsExecuteCandidates`).
+      if (credited.stop)
+        return {
+          ok: false,
+          error: credited.error,
+          bootstrap: credited.bootstrap,
+        } satisfies ConductResult<T>;
     }
 
     if (poolCooldownMs === undefined && !poolAsked)

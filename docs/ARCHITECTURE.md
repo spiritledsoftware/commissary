@@ -3593,13 +3593,19 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     access token (a new token probes at once), and 403s 10/20/40/60 min tied to the credential (`forbidden`). Old records
     decode unchanged (the new fields are optional).
   - _Credential lockouts_ (`cooldown/mark-result.ts`, `selection/pick.ts`, CLIProxyAPI `8860264b`): a credential-scoped
-    failure other than a quota 429 records its deadline as the state's `credentialRetryAfter` (Go `credentialRetryAfter`;
-    a later deadline extends it, a success clears it, and so does a cooldown reset), besides cooling the model it was
-    reported for. `PickRequest.ignoreCooldown` lifts per-model and quota cooldowns only: the credits round skips a
-    credential whose `credentialRetryAfter` is still ahead, as Go's `findAllAntigravityCreditsCandidateAuths` does. Go
-    also tracks `nonAuthCredentialRetryAfter`, the same deadline minus failures a refresh can clear; the credits round
-    checks both, so the one field answers it. Normal selection does not read the field: Commissary cools the model
-    the failure was reported for, as before.
+    failure that is not a quota 429 (`isQuotaCooldownResultError`: a Cloudflare challenge 429 does lock out) records the
+    failure's own deadline as the state's `credentialRetryAfter` (Go `ownModelNonQuotaDeadline`/`ownAuthRetryDeadline`):
+    taken before an earlier, longer cooldown of the model or credential is merged in, so a 403 on a model already in a
+    5 h quota window locks the credential out for the 403's 30 min. A skipped credential cooldown records nothing, and a
+    later deadline extends the lockout. A success clears it unless it was dispatched before the lockout was recorded
+    (Go `retainCredentialRetry`, the pool's dispatch stamps) or a credential quota is running; so does a cooldown
+    reset. `PickRequest.ignoreCooldown` lifts per-model and quota cooldowns only: the credits round skips a credential
+    whose `credentialRetryAfter` is still ahead, as Go's `findAllAntigravityCreditsCandidateAuths` does. Go also tracks
+    `nonAuthCredentialRetryAfter`, the same deadline minus failures a refresh can clear; the credits round checks both,
+    so the one field answers it. Normal selection does not read the field: Commissary cools the model the failure was
+    reported for, as before. A credits round that ends at a stopping error (TOS_VIOLATION, validation challenge, request
+    fault, stop rule) answers with that error; one that only runs out answers with the normal rotation's
+    (`tryAntigravityCreditsExecuteCandidates`).
   - _Already holds_: `8e0641c9`, `a35e8be3` (the credits round runs through the conductor's normal retry and stop
     rules), `cdbda2f2`, `0861f9e1` (refreshes go through
     `withCredentialRefresh`, which persists, with the refresh protocol's own transport and user agent), `99a1c1ca` (the
