@@ -1,8 +1,10 @@
 /**
- * Go RE2 patterns and replacement templates over JavaScript `RegExp`, for the payload `replace` rules.
+ * Go RE2 patterns and replacement templates over JavaScript `RegExp`, for the payload `replace` rules and the
+ * `sensitive-patterns-replace` rules.
  *
  * Go source: Go's regexp and regexp/syntax packages, as internal/runtime/executor/helps/payload_replace.go
- * (replacePayloadTextDoc) uses them: `regexp.Compile`, `Regexp.ReplaceAllString` and `Regexp.Expand`.
+ * (replacePayloadTextDoc) and helps/cloak_obfuscate.go (collectPatternSpans) use them: `regexp.Compile`,
+ * `Regexp.ReplaceAllString`, `Regexp.FindAllStringSubmatchIndex` and `Regexp.Expand`.
  *
  * JavaScript has no RE2, so {@link compileGoRegex} translates the pattern into a `u`-mode `RegExp` with RE2's meaning:
  * `.` and the `(?m)` anchors treat only `\n` as a line break; `\s`, `\w`, `\d`, `\b` and the POSIX classes are ASCII;
@@ -539,7 +541,7 @@ export const compileGoRegex = (pattern: string): RegExp | undefined => {
 };
 
 /** `Regexp.Expand` over a JavaScript match: `$name`/`${name}` (number or group name), `$$`; malformed `$` is literal. */
-const expandGoTemplate = (template: string, match: RegExpExecArray): string => {
+export const expandGoTemplate = (template: string, match: RegExpExecArray): string => {
   let out = "";
   let i = 0;
 
@@ -579,6 +581,39 @@ const expandGoTemplate = (template: string, match: RegExpExecArray): string => {
     }
 
     i = dollar + 1 + (braced !== null ? braced[0].length : name.length);
+  }
+
+  return out;
+};
+
+/**
+ * `Regexp.FindAllStringSubmatchIndex(text, -1)`: every match of a {@link compileGoRegex} pattern at Go's search
+ * positions, so an empty match right after a match is skipped and an empty match advances one character.
+ */
+export const findAllGo = (re: RegExp, text: string): RegExpExecArray[] => {
+  const out: RegExpExecArray[] = [];
+  let pos = 0;
+  let prevMatchEnd = -1;
+
+  while (pos <= text.length) {
+    re.lastIndex = pos;
+    const match = re.exec(text);
+
+    if (match === null) break;
+    const end = match.index + match[0].length;
+    let accept = true;
+
+    if (end === pos) {
+      // An empty match: not right after the previous match, and the search moves on one character.
+      if (match.index === prevMatchEnd) accept = false;
+      pos += pos < text.length ? ((text.codePointAt(pos) ?? 0) > 0xffff ? 2 : 1) : 1;
+    } else {
+      pos = end;
+    }
+
+    prevMatchEnd = end;
+
+    if (accept) out.push(match);
   }
 
   return out;

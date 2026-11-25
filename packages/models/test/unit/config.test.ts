@@ -83,7 +83,14 @@ api-keys:
           weight: 5
         - api-key: sk-ant-2
           priority: 10
-          cloak: { mode: " always ", sensitive-words: [" a ", ""] }
+          cloak:
+            mode: " always "
+            sensitive-words: [" a ", ""]
+            sensitive-words-replace: { " Codex ": "Assistant", "  ": "x" }
+            sensitive-patterns-replace:
+              - { pattern: "[invalid", replacement: "x" }
+              - { pattern: " ", replacement: "x" }
+              - { pattern: 'secret-\\d+', replacement: "[redacted]" }
   codex:
     - name: no-url
       keys: [{ api-key: x }]
@@ -110,6 +117,12 @@ oauth:
   excluded-models:
     Gemini: ["Gemini-2.5-*", "gemini-2.5-*"]
     empty: []
+  providers:
+    antigravity:
+      sensitive-words-replace: { "Codex": "Assistant", " Codex ": "Other" }
+      sensitive-patterns-replace: [{ pattern: "(?<=x)y" }, { pattern: "^RFC" }]
+    devin:
+      sensitive-patterns-replace: [{ pattern: "a(b", replacement: "" }]
   request-scoped-errors:
     claude:
       - { status: 400, match: [" too long "], action: " Stop " }
@@ -241,10 +254,22 @@ oauth:
       assert.strictEqual(anthropic?.keys[0]?.["api-key"], "sk-ant-1");
       assert.strictEqual(anthropic?.keys[0]?.weight, 5);
       assert.strictEqual(anthropic?.keys[1]?.priority, 10);
+      // Replacement targets are trimmed and blank ones dropped; blank and invalid patterns are dropped (9a7e1e6b,
+      // 905e70c4).
       assert.deepStrictEqual(anthropic?.keys[1]?.cloak, {
         mode: "always",
         "sensitive-words": ["a"],
+        "sensitive-words-replace": { Codex: "Assistant" },
+        "sensitive-patterns-replace": [{ pattern: "secret-\\d+", replacement: "[redacted]" }],
       });
+      // The target written without surrounding space wins; look-behind is not RE2.
+      assert.deepStrictEqual(config.oauth.providers.antigravity["sensitive-words-replace"], {
+        Codex: "Assistant",
+      });
+      assert.deepStrictEqual(config.oauth.providers.antigravity["sensitive-patterns-replace"], [
+        { pattern: "^RFC" },
+      ]);
+      assert.deepStrictEqual(config.oauth.providers.devin["sensitive-patterns-replace"], []);
 
       // codex groups without base-url are dropped (config_normalization.go sanitizeCodexKeyEntries)
       assert.deepStrictEqual(

@@ -64,7 +64,6 @@ import {
   CloakError,
   generateBillingHeader,
   injectContextManagement,
-  obfuscateSensitiveWords,
   reconcileContextManagement,
   relocateSystemForCountTokens,
 } from "./cloaking.ts";
@@ -100,7 +99,9 @@ import {
   resolveWirePolicy,
   type FingerprintPolicy,
   type WireResolution,
+  cloakMatcher,
 } from "./credentials.ts";
+import { obfuscateSensitiveWords } from "../helps/cloak-obfuscate.ts";
 import { buildClaudeHeaders, cachedSessionId, defaultDeviceProfile } from "./headers.ts";
 import { type ClaudeUpstreamProfile, upstreamModelOf } from "./profile.ts";
 import { nativeToolSearchFor } from "./tool-search.ts";
@@ -781,8 +782,9 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     if (fingerprint.applyCLIIdentity && !minimalCloak)
       applyCLIIdentity(body, credential, providerKey, sessionId, fingerprint.synthesizeIdentity);
 
-    if (cloaked && !minimalCloak && settings.sensitiveWords.length > 0)
-      obfuscateSensitiveWords(body, settings.sensitiveWords);
+    const sensitive = cloaked && !minimalCloak ? cloakMatcher(settings) : undefined;
+
+    if (sensitive !== undefined) obfuscateSensitiveWords(body, sensitive);
 
     if (cchSigning) {
       const tags = extractBillingTags(body);
@@ -991,8 +993,9 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
       if (!strictMode && isArr(body.system)) assertTextOnlySystem(body.system);
       relocateSystemForCountTokens(body, strictMode, explicitCacheMode);
 
-      if (!minimalCloak && settings.sensitiveWords.length > 0)
-        obfuscateSensitiveWords(body, settings.sensitiveWords);
+      const sensitive = minimalCloak ? undefined : cloakMatcher(settings);
+
+      if (sensitive !== undefined) obfuscateSensitiveWords(body, sensitive);
     }
 
     enforceCacheControlLimit(body, 4);

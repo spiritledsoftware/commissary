@@ -14,6 +14,7 @@ import { Result, Schema } from "effect";
 import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from "@commissary/core";
 import { parseGoDuration } from "../config/accessors.ts";
 import { encodeConfig } from "../config/codec.ts";
+import { compileGoRegex } from "../config/payload/re2.ts";
 import { Config } from "../config/schema.ts";
 import { isJsonObject, type Json, type JsonObject, jsonEquals, setOwn } from "@commissary/json";
 import type { Revisions } from "@commissary/contract/config";
@@ -148,6 +149,47 @@ const CATALOGS = new Set(["models.catalog"]);
 const quoted = (value: Json): string =>
   `“${typeof value === "string" ? value : JSON.stringify(value)}”`;
 
+const PATTERN_RULES = new Set([
+  "oauth.providers.antigravity.sensitive-patterns-replace",
+  "oauth.providers.devin.sensitive-patterns-replace",
+]);
+
+const WORD_REPLACEMENTS = new Set([
+  "oauth.providers.antigravity.sensitive-words-replace",
+  "oauth.providers.devin.sensitive-words-replace",
+]);
+
+/** The first pattern of a `sensitive-patterns-replace` list that is blank or not a Go RE2 pattern. */
+const invalidPattern = (value: Json): string | undefined => {
+  if (!Array.isArray(value)) return undefined;
+
+  for (const rule of value) {
+    const pattern = isJsonObject(rule) ? rule["pattern"] : undefined;
+
+    if (typeof pattern !== "string") continue;
+
+    if (pattern.trim() === "") return "a pattern is empty";
+
+    if (compileGoRegex(pattern) === undefined)
+      return `${quoted(pattern)} is not a valid RE2 regular expression`;
+  }
+
+  return undefined;
+};
+
+/** The first target of a `sensitive-words-replace` mapping that is blank or has surrounding space. */
+const invalidTarget = (value: Json): string | undefined => {
+  if (!isJsonObject(value)) return undefined;
+
+  for (const target of Object.keys(value)) {
+    if (target.trim() === "") return "a word to replace is empty";
+
+    if (target !== target.trim()) return `${quoted(target)} has surrounding space`;
+  }
+
+  return undefined;
+};
+
 /**
  * A message when a typed value is not what Workers would apply as written (the semantic rules of each key). It names
  * the value and what it is not; the field's hint already says what is expected.
@@ -166,6 +208,10 @@ const valueRule = (key: string, value: Json, policy: OutboundPolicy): string | u
     return CATALOG_KEYWORDS.has(value) || Result.isSuccess(checkOutboundUrl(value, policy))
       ? undefined
       : OUTBOUND_REFUSED_MESSAGE;
+
+  if (PATTERN_RULES.has(key)) return invalidPattern(value);
+
+  if (WORD_REPLACEMENTS.has(key)) return invalidTarget(value);
 
   if (typeof value === "string" && key === "upstream.codex.stream-bootstrap-timeout") {
     const ok =

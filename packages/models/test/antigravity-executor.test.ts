@@ -130,8 +130,8 @@ describe("antigravity executor: non-stream", () => {
     // Non-Claude models lose maxOutputTokens; the payload rule (root `request`) still lands afterwards.
     expect(sent.request.generationConfig.maxOutputTokens).toBeUndefined();
     expect(sent.request.generationConfig.topK).toBe(7);
-    // Sensitive words of the system instruction are obfuscated with a zero-width space.
-    expect(sent.request.systemInstruction.parts[0].text).toBe("keep the s\u200Becret safe");
+    // Sensitive words of the system instruction are obfuscated with a combining grapheme joiner (U+034F).
+    expect(sent.request.systemInstruction.parts[0].text).toBe("keep the s\u034Fecret safe");
     expect(h.records[0]?.detail).toMatchObject({
       inputTokens: 10,
       outputTokens: 3,
@@ -296,7 +296,7 @@ describe("antigravity executor: Claude 5.5 structured output", () => {
       const sent = JSON.parse(h.calls[0]?.body ?? "{}");
       const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
       // The original system text (obfuscated) stays first; the schema instruction follows, complete.
-      expect(parts[0]?.text).toBe("keep the s\u200Becret safe");
+      expect(parts[0]?.text).toBe("keep the s\u034Fecret safe");
       expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
       expect(sent.request.generationConfig.responseSchema).toBeUndefined();
       expect(sent.request.generationConfig.responseJsonSchema).toBeUndefined();

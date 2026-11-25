@@ -1,12 +1,12 @@
 /**
  * Claude Code cloaking: billing header, identity system block, caller system relocation, current-date reminder,
- * context management, sensitive word obfuscation and fake user ids.
+ * context management and fake user ids (sensitive words: `../helps/cloak-obfuscate.ts`).
  *
  * Go source: internal/runtime/executor/claude_executor_cloaking.go (generateBillingHeader, computeFingerprint,
  * checkSystemInstructionsWithSigningModeAt, relocateClaudeSystemPromptForCountTokens,
  * insertClaudeMidConversationSystemBlocks, prependClaudeSystemReminderBlocksToFirstUserMessage,
  * injectClaudeCodeCurrentDateInternal, injectClaudeCodeContextManagement, applyCloakingInternal),
- * helps/cloak_obfuscate.go, helps/cloak_utils.go. The Fable/Opus-5.5 and system-placement reconcilers live in
+ * helps/cloak_utils.go. The Fable/Opus-5.5 and system-placement reconcilers live in
  * `reconcile.ts`.
  */
 import { createHash, randomBytes } from "node:crypto";
@@ -637,86 +637,6 @@ export const reconcileContextManagement = (
 
   if (!state.eligible || state.callerOwned || current !== undefined) return;
   body.context_management = CONTEXT_MANAGEMENT();
-};
-
-const ZERO_WIDTH_SPACE = "\u200B";
-
-export interface SensitiveWordMatcher {
-  /** `Matches`: the text contains a configured word. */
-  readonly matches: (text: string) => boolean;
-  /** `ObfuscateText`: inserts a zero-width space after the first character of every match. */
-  readonly obfuscate: (text: string) => string;
-}
-
-/**
- * `BuildSensitiveWordMatcher`: case-insensitive, longest word first, words of at least two characters;
- * `undefined` when no usable word is configured.
- */
-export const buildSensitiveWordMatcher = (
-  words: readonly string[],
-): SensitiveWordMatcher | undefined => {
-  const valid = words
-    .flatMap((word) => {
-      const trimmed = word.trim();
-
-      return Array.from(trimmed).length >= 2 && !trimmed.includes(ZERO_WIDTH_SPACE)
-        ? [trimmed]
-        : [];
-    })
-    .toSorted((a, b) => new TextEncoder().encode(b).length - new TextEncoder().encode(a).length);
-
-  if (valid.length === 0) return undefined;
-  const pattern = valid.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const regex = new RegExp(pattern, "giu");
-  const probe = new RegExp(pattern, "iu");
-
-  return {
-    matches: (text) => probe.test(text),
-    obfuscate: (text) =>
-      text.replace(regex, (word) => {
-        if (word.includes(ZERO_WIDTH_SPACE)) return word;
-        const first = Array.from(word)[0] ?? word;
-
-        return word.length <= first.length
-          ? word
-          : first + ZERO_WIDTH_SPACE + word.slice(first.length);
-      }),
-  };
-};
-
-/** `ObfuscateSensitiveWords` for system blocks and message text. */
-export const obfuscateSensitiveWords = (body: JsonObject, words: readonly string[]): void => {
-  const obfuscate = buildSensitiveWordMatcher(words)?.obfuscate;
-
-  if (obfuscate === undefined) return;
-  const system = body.system;
-
-  if (isArr(system)) {
-    for (const block of system) {
-      if (
-        isObj(block) &&
-        str(block.type) === "text" &&
-        !str(block.text).startsWith("x-anthropic-billing-header:")
-      ) {
-        block.text = obfuscate(str(block.text));
-      }
-    }
-  } else if (typeof system === "string" && !system.startsWith("x-anthropic-billing-header:")) {
-    body.system = obfuscate(system);
-  }
-
-  if (!isArr(body.messages)) return;
-
-  for (const message of body.messages) {
-    if (!isObj(message)) continue;
-
-    if (typeof message.content === "string") message.content = obfuscate(message.content);
-    else if (isArr(message.content)) {
-      for (const block of message.content) {
-        if (isObj(block) && str(block.type) === "text") block.text = obfuscate(str(block.text));
-      }
-    }
-  }
 };
 
 /** `generateFakeUserIDWithSessionID` (cloak without the CLI profile). */

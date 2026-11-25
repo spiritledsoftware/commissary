@@ -4,9 +4,14 @@
  * Go source: internal/runtime/executor/claude_executor_request.go (claudeCreds, isClaudeOAuthToken,
  * claudeCredentialUsesOAuth, isAnthropicUpstreamBase), internal/runtime/executor/helps/claude_upstream.go,
  * claude_fingerprint_policy.go (resolveClaudeFingerprintPolicy), claude_executor_cloaking.go (getCloakConfigFromAuth,
- * resolveClaudeWirePolicy), claude_signing.go (resolveClaudeKeyConfig).
+ * getCloakReplacementsFromAuth, getCloakPatternReplacementsFromAuth, resolveClaudeWirePolicy), claude_signing.go
+ * (resolveClaudeKeyConfig).
  */
+import { isJsonArray, isJsonObject, type Json, tryParseJson } from "@commissary/json";
+import type { SensitivePatternRule } from "@commissary/contract/provider-keys";
 import type { ClaudeCloakLevel } from "@commissary/contract/settings";
+import { normalizeSensitiveWordsReplace } from "../../config/normalize.ts";
+import { buildSensitiveWordMatcher, type SensitiveWordMatcher } from "../helps/cloak-obfuscate.ts";
 import type { ProviderKeyEntry, ProviderKeyGroup, Config } from "../../config/schema.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import type { ClaudeCodeDetection } from "./classify.ts";
@@ -181,8 +186,85 @@ export const isMinimalCloak = (policy: WirePolicy): boolean =>
 export interface CloakSettings {
   readonly strictMode: boolean;
   readonly sensitiveWords: ReadonlyArray<string>;
+  readonly sensitiveWordsReplace: Readonly<Record<string, string>>;
+  readonly sensitivePatternsReplace: ReadonlyArray<SensitivePatternRule>;
   readonly cacheUserID: boolean;
 }
+
+/** `claudeCloakSettings.buildSensitiveWordMatcher`: `undefined` when the credential configures nothing usable. */
+export const cloakMatcher = (settings: CloakSettings): SensitiveWordMatcher | undefined =>
+  buildSensitiveWordMatcher({
+    words: settings.sensitiveWords,
+    replacements: settings.sensitiveWordsReplace,
+    patterns: settings.sensitivePatternsReplace,
+  });
+
+/** The string values of a JSON object, normalised (`NormalizeSensitiveWordsReplace`). */
+const stringMapOf = (value: Json | undefined): Record<string, string> =>
+  isJsonObject(value)
+    ? normalizeSensitiveWordsReplace(
+        Object.fromEntries(
+          Object.entries(value).flatMap(([key, entry]) =>
+            typeof entry === "string" ? [[key, entry]] : [],
+          ),
+        ),
+      )
+    : {};
+
+/** The `{pattern, replacement}` objects of a JSON array whose pattern is text and not blank. */
+const patternRulesOf = (value: Json | undefined): SensitivePatternRule[] =>
+  isJsonArray(value)
+    ? value.flatMap((item): SensitivePatternRule[] => {
+        if (!isJsonObject(item) || typeof item["pattern"] !== "string") return [];
+        const pattern = item["pattern"];
+        const replacement = item["replacement"];
+
+        return pattern.trim() === ""
+          ? []
+          : [{ pattern, replacement: typeof replacement === "string" ? replacement : "" }];
+      })
+    : [];
+
+/** JSON text that starts with `open`, parsed; `undefined` otherwise. */
+const jsonTextOf = (raw: string, open: "{" | "["): Json | undefined => {
+  const trimmed = raw.trim();
+
+  return trimmed.startsWith(open) ? tryParseJson(trimmed) : undefined;
+};
+
+/**
+ * `getCloakReplacementsFromAuth`: the `cloak_sensitive_words_replace` attribute (a JSON object), else the metadata's
+ * object or JSON text.
+ */
+const cloakReplacementsOf = (credential: CredentialSnapshot): Record<string, string> => {
+  const key = "cloak_sensitive_words_replace";
+  const fromAttribute = stringMapOf(jsonTextOf(credential.attributes[key] ?? "", "{"));
+
+  if (Object.keys(fromAttribute).length > 0) return fromAttribute;
+  const metadata = credential.metadata[key];
+  const fromMetadata = stringMapOf(metadata);
+
+  if (Object.keys(fromMetadata).length > 0) return fromMetadata;
+
+  return typeof metadata === "string" ? stringMapOf(jsonTextOf(metadata, "{")) : {};
+};
+
+/**
+ * `getCloakPatternReplacementsFromAuth`: the `cloak_sensitive_patterns_replace` attribute (a JSON array of
+ * `{pattern, replacement}`), else the metadata's array or JSON text.
+ */
+const cloakPatternsOf = (credential: CredentialSnapshot): SensitivePatternRule[] => {
+  const key = "cloak_sensitive_patterns_replace";
+  const fromAttribute = patternRulesOf(jsonTextOf(credential.attributes[key] ?? "", "["));
+
+  if (fromAttribute.length > 0) return fromAttribute;
+  const metadata = credential.metadata[key];
+  const fromMetadata = patternRulesOf(metadata);
+
+  if (fromMetadata.length > 0) return fromMetadata;
+
+  return typeof metadata === "string" ? patternRulesOf(jsonTextOf(metadata, "[")) : [];
+};
 
 export interface WireResolution {
   readonly policy: WirePolicy;
@@ -201,12 +283,16 @@ export const resolveWirePolicy = (
   const attrStrict = lookupAttr(credential, "cloak_strict_mode").toLowerCase() === "true";
   const wordsText = lookupAttr(credential, "cloak_sensitive_words");
   const attrWords = wordsText === "" ? [] : wordsText.split(",").map((word) => word.trim());
+  const attrWordsReplace = cloakReplacementsOf(credential);
+  const attrPatternsReplace = cloakPatternsOf(credential);
   const attrCache = lookupAttr(credential, "cloak_cache_user_id").toLowerCase() === "true";
   const attrLevel = parseCloakLevel(lookupAttr(credential, "cloak_level"));
 
   let cloakMode = config.upstream.claude["disable-claude-cloak-mode"] ? "never" : "auto";
   let strictMode = attrStrict;
   let sensitiveWords: ReadonlyArray<string> = attrWords;
+  let sensitiveWordsReplace: Readonly<Record<string, string>> = attrWordsReplace;
+  let sensitivePatternsReplace: ReadonlyArray<SensitivePatternRule> = attrPatternsReplace;
   let cacheUserID = attrCache;
   let level: CloakLevel = attrLevel ?? config.upstream.claude["cloak-level"];
   let explicitMode = attrMode.trim().toLowerCase();
@@ -226,6 +312,12 @@ export const resolveWirePolicy = (
     if ((cloakCfg["sensitive-words"]?.length ?? 0) > 0)
       sensitiveWords = cloakCfg["sensitive-words"] ?? [];
 
+    if (Object.keys(cloakCfg["sensitive-words-replace"] ?? {}).length > 0)
+      sensitiveWordsReplace = cloakCfg["sensitive-words-replace"] ?? {};
+
+    if ((cloakCfg["sensitive-patterns-replace"]?.length ?? 0) > 0)
+      sensitivePatternsReplace = cloakCfg["sensitive-patterns-replace"] ?? [];
+
     if (cloakCfg["cache-user-id"] !== undefined) cacheUserID = cloakCfg["cache-user-id"];
 
     level = parseCloakLevel(cloakCfg.level ?? "") ?? level;
@@ -243,6 +335,8 @@ export const resolveWirePolicy = (
     attrMode !== "" ||
     attrStrict ||
     attrWords.length > 0 ||
+    Object.keys(attrWordsReplace).length > 0 ||
+    attrPatternsReplace.length > 0 ||
     attrCache;
 
   let cloak = (fp.profileClaudeCodeCLI || cloakConfigured) && !confirmedClaudeCode;
@@ -266,6 +360,12 @@ export const resolveWirePolicy = (
       explicitNever: mode === "never" && !uncloak,
       level,
     },
-    settings: { strictMode, sensitiveWords, cacheUserID },
+    settings: {
+      strictMode,
+      sensitiveWords,
+      sensitiveWordsReplace,
+      sensitivePatternsReplace,
+      cacheUserID,
+    },
   };
 };

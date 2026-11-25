@@ -19,6 +19,10 @@ import type {
   OpenAICompatGroup,
   RequestScopedErrorRule,
 } from "./schema.ts";
+import type {
+  SensitivePatternRule,
+  SensitiveWordsReplace,
+} from "@commissary/contract/provider-keys";
 import type { PayloadReplaceRule, PayloadRule } from "./payload/schema.ts";
 import { compileGoRegex } from "./payload/re2.ts";
 import { payloadReplaceRuleError, resolvePayloadReplacement } from "./payload/replace.ts";
@@ -136,6 +140,14 @@ const normalizeGroup = (group: ProviderKeyGroup): ProviderKeyGroup => {
               "sensitive-words": key.cloak["sensitive-words"]
                 ?.map((word) => word.trim())
                 .filter((word) => word !== ""),
+              "sensitive-words-replace":
+                key.cloak["sensitive-words-replace"] === undefined
+                  ? undefined
+                  : normalizeSensitiveWordsReplace(key.cloak["sensitive-words-replace"]),
+              "sensitive-patterns-replace":
+                key.cloak["sensitive-patterns-replace"] === undefined
+                  ? undefined
+                  : normalizeSensitivePatternsReplace(key.cloak["sensitive-patterns-replace"]),
             }),
           }),
     })),
@@ -475,11 +487,47 @@ const sanitizeReplaceRules = (rules: readonly PayloadReplaceRule[]): PayloadRepl
     return replacements.length === 0 ? [] : [{ ...rule, replacements }];
   });
 
+/**
+ * `NormalizeSensitiveWordsReplace`: trimmed targets, blank ones dropped; when two targets trim to the same text, the
+ * one written without surrounding space wins, else the first in sorted order.
+ */
+export const normalizeSensitiveWordsReplace = (
+  input: SensitiveWordsReplace,
+): SensitiveWordsReplace => {
+  const out: Record<string, string> = {};
+
+  for (const rawKey of Object.keys(input).toSorted()) {
+    const target = rawKey.trim();
+
+    if (target === "" || (Object.hasOwn(out, target) && rawKey !== target)) continue;
+    out[target] = input[rawKey] ?? "";
+  }
+
+  return out;
+};
+
+/** `NormalizeSensitivePatternsReplace`: drops the rules whose pattern is blank or is not a valid RE2 pattern. */
+export const normalizeSensitivePatternsReplace = (
+  rules: readonly SensitivePatternRule[],
+): SensitivePatternRule[] =>
+  rules.filter((rule) => rule.pattern.trim() !== "" && compileGoRegex(rule.pattern) !== undefined);
+
 const trimValues = <T extends Record<string, unknown>>(value: T): T =>
   // SAFETY: only string values are replaced (by their trimmed form), so every property keeps its type in T.
   Object.fromEntries(
     Object.entries(value).map(([k, v]) => [k, typeof v === "string" ? v.trim() : v]),
   ) as T;
+
+/** `SanitizeAntigravity` / `SanitizeDevin`: the replace settings of a provider section, normalised. */
+const sensitiveReplacements = (section: {
+  readonly "sensitive-words-replace": Readonly<Record<string, string>>;
+  readonly "sensitive-patterns-replace": readonly SensitivePatternRule[];
+}) => ({
+  "sensitive-words-replace": normalizeSensitiveWordsReplace(section["sensitive-words-replace"]),
+  "sensitive-patterns-replace": normalizeSensitivePatternsReplace(
+    section["sensitive-patterns-replace"],
+  ),
+});
 
 export const normalizeConfig = (config: Config): Config => {
   const usage = config.observability.usage;
@@ -562,6 +610,14 @@ export const normalizeConfig = (config: Config): Config => {
         ...config.oauth.providers,
         codex: {
           "header-defaults": trimValues({ ...config.oauth.providers.codex["header-defaults"] }),
+        },
+        antigravity: {
+          ...config.oauth.providers.antigravity,
+          ...sensitiveReplacements(config.oauth.providers.antigravity),
+        },
+        devin: {
+          ...config.oauth.providers.devin,
+          ...sensitiveReplacements(config.oauth.providers.devin),
         },
       },
     },

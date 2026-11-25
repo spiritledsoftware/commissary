@@ -27,7 +27,7 @@ import {
 } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
 import { type UsageDetail } from "../../usage/record.ts";
-import { buildSensitiveWordMatcher } from "../claude/cloaking.ts";
+import { buildSensitiveWordMatcher } from "../helps/cloak-obfuscate.ts";
 import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 import { ExecutionError } from "../errors.ts";
 import {
@@ -278,9 +278,13 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
 
     const turnIndex = yield* nextSessionTurnIndex(ids.sessionId, options.metadata.callerScope);
 
-    const matcher = buildSensitiveWordMatcher(
-      context.config.oauth.providers.devin["sensitive-words"],
-    );
+    const devinConfig = context.config.oauth.providers.devin;
+
+    const matcher = buildSensitiveWordMatcher({
+      words: devinConfig["sensitive-words"],
+      replacements: devinConfig["sensitive-words-replace"],
+      patterns: devinConfig["sensitive-patterns-replace"],
+    });
 
     // Ids the executor emitted encoded go back upstream in their own namespace (Go `RestoreDevinToolCallIDs`).
     restoreToolCallIds(turns.prompts);

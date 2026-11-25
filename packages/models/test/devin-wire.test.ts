@@ -6,7 +6,7 @@ import {
   ConnectFrameParser,
   inflateFrame,
 } from "../src/executor/devin/connect.ts";
-import { buildSensitiveWordMatcher } from "../src/executor/claude/cloaking.ts";
+import { buildSensitiveWordMatcher } from "../src/executor/helps/cloak-obfuscate.ts";
 import { devinLevelLookup } from "../src/executor/devin/catalog.ts";
 import { resolveDevinChatModelUid } from "../src/executor/devin/models.ts";
 import { devinPayloadView, finalizeDevinPayload } from "../src/executor/devin/payload.ts";
@@ -270,7 +270,10 @@ describe("system prompt sanitising (parity with SanitizeDevinSystemPrompt)", () 
   for (const expected of fixtures.systemPrompts) {
     it(expected.name, () => {
       expect(
-        sanitizeDevinSystemPrompt(expected.input, buildSensitiveWordMatcher(expected.words ?? [])),
+        sanitizeDevinSystemPrompt(
+          expected.input,
+          buildSensitiveWordMatcher({ words: expected.words ?? [] }),
+        ),
       ).toBe(expected.expected);
     });
   }
