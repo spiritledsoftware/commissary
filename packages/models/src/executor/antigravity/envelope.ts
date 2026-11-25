@@ -23,6 +23,7 @@ import {
   cleanJsonSchemaForAntigravityResponse,
   cleanJsonSchemaForAntigravityTool,
   lookupModelInfo,
+  normalizeJsonSchemaNumericConstraints,
 } from "@commissary/translation";
 import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 
@@ -194,7 +195,9 @@ const cleanNestedToolSchema = (
     ? cleanJsonSchemaForAntigravityClaudeTool
     : cleanJsonSchemaForAntigravityTool;
 
-  const wrapped: Json = { schema: structuredClone(schema) };
+  // Numeric protobuf types and string constraints are normalized first: the cleaner's own normalization does not reach
+  // under the wrapper key (Go 531aea15).
+  const wrapped: Json = { schema: structuredClone(normalizeJsonSchemaNumericConstraints(schema)) };
   const cleaned = clean(wrapped, useAntigravitySchema);
 
   return get(cleaned, "schema") ?? clean(structuredClone(schema), useAntigravitySchema);

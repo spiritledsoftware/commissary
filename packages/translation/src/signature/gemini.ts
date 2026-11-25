@@ -352,8 +352,12 @@ const SIGNATURE_PATHS = [
   "thought_signature",
   "functionCall.thoughtSignature",
   "functionCall.thought_signature",
+  "function_call.thoughtSignature",
+  "function_call.thought_signature",
   "functionResponse.thoughtSignature",
   "functionResponse.thought_signature",
+  "function_response.thoughtSignature",
+  "function_response.thought_signature",
   "extra_content.google.thought_signature",
 ] as const;
 
@@ -362,21 +366,40 @@ interface PartThoughtSignature {
   readonly has: boolean;
 }
 
+/**
+ * The first non-blank signature among {@link SIGNATURE_PATHS}; an empty, blank or null field does not shadow a later
+ * valid one, but still counts as present (`has`) so the sanitizer drops it (Go b82d3d4e).
+ */
 const partThoughtSignature = (part: Json): PartThoughtSignature => {
+  let foundEmpty = false;
+
   for (const path of SIGNATURE_PATHS) {
     const value = get(part, path);
 
-    if (value !== undefined) {
-      const found: PartThoughtSignature = { raw: asString(value), has: true };
+    if (value === undefined) continue;
+    const raw = asString(value);
+
+    if (raw.trim() !== "") {
+      const found: PartThoughtSignature = { raw, has: true };
 
       return found;
     }
+
+    foundEmpty = true;
   }
 
-  const missing: PartThoughtSignature = { raw: "", has: false };
+  const missing: PartThoughtSignature = { raw: "", has: foundEmpty };
 
   return missing;
 };
+
+/** A functionCall part in either casing (Go 7be2a678). */
+const hasFunctionCallPart = (part: Json): boolean =>
+  exists(part, "functionCall") || exists(part, "function_call");
+
+/** A functionResponse part in either casing (Go 7be2a678). */
+const hasFunctionResponsePart = (part: Json): boolean =>
+  exists(part, "functionResponse") || exists(part, "function_response");
 
 const hasNormalizedSignature = (part: Json, replay: string): boolean => {
   if (!isJsonObject(part) || part["thoughtSignature"] !== replay) return false;
@@ -465,13 +488,13 @@ const sanitizeThoughtSignatures = (
     for (const part of parts) {
       const { raw, has } = partThoughtSignature(part);
 
-      if (exists(part, "functionResponse")) {
+      if (hasFunctionResponsePart(part)) {
         if (has) deleteSignatureFields(part);
         continue;
       }
 
       if (!isModelTurn || hasServerToolBlock(part)) continue;
-      const hasFunctionCall = exists(part, "functionCall");
+      const hasFunctionCall = hasFunctionCallPart(part);
       const isFirstFunctionCall = hasFunctionCall && !firstFunctionCallSeen;
 
       // A text part, even an empty signature carrier, ends the parallel group: the Gemini API rejects an unsigned

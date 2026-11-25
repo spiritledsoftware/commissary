@@ -1739,7 +1739,7 @@ Deviations from Go (all deliberate, documented in code headers):
 - **Providers**: one engine (`executor/gemini/google.ts`) parameterised by a `GoogleVariant` (`targets.ts`): `gemini`
   (provider key, `x-goog-api-key`), `gemini-interactions` (same key, native `POST /v1beta/interactions` with the
   `Api-Revision` header) and `vertex` (provider key against the project-less host, or a service account against the regional
-  `projects/<id>/locations/<loc>` endpoint; Imagen models go through `:predict` with the request/response converters).
+  `projects/<id>/locations/<loc>` endpoint; Imagen models go through `:predict` with the request/response converters: a request is translated to Gemini first, then converted, a stream request reads the single JSON answer (at most 64 MiB) as one Gemini frame, and counting tokens of an Imagen model stays a Gemini `countTokens`, Go e049c336; unlike Go, the original body that payload rules read falls back to the request's own `predict` body when it has no prompt, and an error translating it is ignored where Go returns it, and a streamed answer over 64 MiB fails as a 502, where Go's plain error becomes a 500)
   Request shaping (`shaping.ts`: model/suffix handling, `maxOutputTokens` cap, content-turn splitting) and usage parsing
   (`usage.ts`: `usageMetadata`/Interactions usage with the v2 token breakdown - re-exported from `usage/parsers.ts` - and intermediate-usage filtering) follow the Go executors. Payload rules
   stay the last mutation of the body in every path (stream, count, Imagen, native Interactions).
@@ -1805,6 +1805,18 @@ Deviations from Go (all deliberate, documented in code headers):
   of gjson paths, and `{}` normalisation applies only to schemas that forbid additional properties. The Go streaming
   `partialArgs` conversion (`64316127`, Vertex `streamFunctionCallArguments`) is not ported: nothing in Commissary asks
   Vertex to stream function-call arguments.
+- **Zero-output terminations and 429 hints (SPI-1415, Go `cf07c78a`, `7e82d0d1`, `ed1c23f9`)**: a `gemini` or `vertex`
+  response that finishes with `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL` or `MALFORMED_RESPONSE` before any visible
+  output (non-blank text, a non-empty function call, media, code, grounding; `executor/helps/gemini-zero-output.ts`) fails
+  as a 502 with code `transient_transport`: the conductor moves on to another credential without cooling this one. A
+  stream withholds its leading contentless frames (never thoughts), so such a stream fails before its first payload and the
+  handler fails over before the response commits; only a Claude client that already got thoughts sees the `api_error`
+  event first. The Claude translator calls `MALFORMED_FUNCTION_CALL` an error only without visible output (partial text is
+  kept), and a translated malformed-call error is not cooled either. A 429's cooldown hint comes from `RetryInfo`, then
+  `ErrorInfo.quotaResetDelay`, then `Retry-After`, then an `after`/`retry in` duration in the message
+  (`executor/helps/google-retry.ts`, shared with Antigravity's `ParseRetryDelay`). Go also guards Antigravity and AI Studio;
+  Commissary's Antigravity executor does not use the guard yet. Go's filtering of pending mid-stream filter-block frames
+  (`aeed9715`) has nothing to apply to: Commissary never held back Gemini filter-block frames (Go `c3938b72`).
 - **Gemini requests (C8, Go `45501610`, `a2718314`, `ceb4397f`, `15d2148b`, `c888ff72`, `3ac38498`, `00b76771`, `55c05f70`,
   `81de4b9c`, `be864305`, `068fe153`, `4c46f0aa`, `f42f5871`, `234217d0`, `38706390`)**:
   - _Tools_: built-in tools (`google_search`, `code_execution`, `url_context`, Responses `web_search`) mixed with function

@@ -26,13 +26,18 @@ export const SIGNATURE_TEXT_HASH_LEN = 16;
 
 export const GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR = "skip_thought_signature_validator";
 
-/** `GetModelGroup`: gpt / claude / gemini share a cache bucket per family, other models their own. */
+/**
+ * `GetModelGroup`: gpt / claude / gemini share a cache bucket per family, matched case-insensitively (Go 0286e5d1);
+ * other models get a bucket of their own, keyed by the name as given.
+ */
 export const getModelGroup = (modelName: string): string => {
-  if (modelName.includes("gpt")) return "gpt";
+  const normalized = modelName.trim().toLowerCase();
 
-  if (modelName.includes("claude")) return "claude";
+  if (normalized.includes("gpt")) return "gpt";
 
-  if (modelName.includes("gemini")) return "gemini";
+  if (normalized.includes("claude")) return "claude";
+
+  if (normalized.includes("gemini")) return "gemini";
 
   return modelName;
 };

@@ -308,6 +308,139 @@ describe("vertex imagen", () => {
     expect(h.calls).toHaveLength(0);
   });
 
+  // Go e049c336 (gemini_vertex_imagen_conversion_test.go): every source format and both endpoints speak `predict`.
+  const imagenResponse = {
+    predictions: [{ bytesBase64Encoded: "aGVsbG8=", mimeType: "image/png" }],
+  };
+
+  const apiKey = () => credential("vertex", "vertex:apikey", { attributes: { api_key: "vk-1" } });
+
+  const serviceAccount = () =>
+    credential("vertex", "vertex:sa", {
+      kind: "oauth",
+      metadata: { ...saMetadata, location: "global", access_token: "ya29.cached" },
+    });
+
+  const imagenCases: ReadonlyArray<{
+    readonly name: string;
+    readonly cred: () => ReturnType<typeof credential>;
+    readonly path: string;
+    readonly request: Json;
+    readonly terminal: string;
+    readonly image: boolean;
+  }> = [
+    {
+      name: "a Gemini stream (provider key)",
+      cred: apiKey,
+      path: "/v1beta/models/imagen-4.0-generate-001:streamGenerateContent?alt=sse",
+      request: { contents: [{ role: "user", parts: [{ text: "a cat" }] }] },
+      terminal: '"finishReason":"STOP"',
+      image: true,
+    },
+    {
+      name: "a Gemini stream (service account)",
+      cred: serviceAccount,
+      path: "/v1beta/models/imagen-4.0-generate-001:streamGenerateContent?alt=sse",
+      request: { contents: [{ role: "user", parts: [{ text: "a cat" }] }] },
+      terminal: '"finishReason":"STOP"',
+      image: true,
+    },
+    {
+      name: "a non-stream OpenAI Responses request",
+      cred: apiKey,
+      path: "/v1/responses",
+      request: { model: "imagen-4.0-generate-001", input: "a cat" },
+      terminal: '"status":"completed"',
+      // The Responses translation drops inline images until SPI-1419 (Go image_generation_call items) lands.
+      image: false,
+    },
+    {
+      name: "an OpenAI chat stream",
+      cred: apiKey,
+      path: "/v1/chat/completions",
+      request: {
+        model: "imagen-4.0-generate-001",
+        stream: true,
+        messages: [{ role: "user", content: "a cat" }],
+      },
+      terminal: '"finish_reason":"stop"',
+      image: true,
+    },
+  ];
+
+  it.each(imagenCases)(
+    "translates $name to a predict request",
+    async ({ cred, path, request, terminal, image }) => {
+      const h = harness(() => jsonResponse(imagenResponse), cred());
+      afterAll(h.dispose);
+
+      const response = await h.call(path, postJson(request));
+      const text = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(h.calls).toHaveLength(1);
+      const url = new URL(h.calls[0]?.url ?? "");
+      expect(url.pathname.endsWith("/imagen-4.0-generate-001:predict")).toBe(true);
+      expect(url.search).toBe("");
+      expect(JSON.parse(h.calls[0]?.body ?? "{}")).toEqual({
+        instances: [{ prompt: "a cat" }],
+        parameters: { sampleCount: 1 },
+      });
+
+      if (image) expect(text).toContain("aGVsbG8=");
+
+      expect(text).toContain(terminal);
+    },
+  );
+
+  it("applies payload rules to the predict body last", async () => {
+    const ruled = await loadConfig(`
+requests:
+  payload:
+    override-raw:
+      - models: [{ name: "imagen-4.0-generate-001" }]
+        params:
+          parameters: '{"sampleCount":2}'
+`);
+
+    const h = makeGeminiHarness({
+      config: ruled,
+      respond: () => jsonResponse(imagenResponse),
+      credential: apiKey(),
+      models,
+    });
+
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1beta/models/imagen-4.0-generate-001:generateContent",
+      postJson({ contents: [{ role: "user", parts: [{ text: "original" }] }] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(h.calls[0]?.body ?? "{}")).toEqual({
+      instances: [{ prompt: "original" }],
+      parameters: { sampleCount: 2 },
+    });
+  });
+
+  it("counts an Imagen model's tokens as a Gemini request", async () => {
+    const h = harness(() => jsonResponse({ totalTokens: 3 }), apiKey());
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1beta/models/imagen-4.0-generate-001:countTokens",
+      postJson({ contents: [{ role: "model", parts: [{ text: "a cat" }] }] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.calls[0]?.url.endsWith("/imagen-4.0-generate-001:countTokens")).toBe(true);
+    // No leading user turn is inserted before the model turn (Go e049c336).
+    expect(JSON.parse(h.calls[0]?.body ?? "{}").contents).toEqual([
+      { role: "model", parts: [{ text: "a cat" }] },
+    ]);
+  });
+
   it("pure converters keep Go's fallbacks", () => {
     expect(
       convertToImagenRequest({ messages: [{ content: "" }, { content: "from messages" }] }),

@@ -37,6 +37,15 @@ import { Formats } from "@commissary/translation/formats";
 import { responseModelOf } from "../../usage/record.ts";
 import { ExecutionError, headersRecord, notImplemented } from "../errors.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
+import { parseGoogleRetryAfterMs } from "../helps/google-retry.ts";
+import {
+  translatedClaudeError,
+  type ZeroOutputAction,
+  zeroOutputError,
+  zeroOutputErrorMessage,
+  zeroOutputFinishReason,
+  ZeroOutputStreamGuard,
+} from "../helps/gemini-zero-output.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
@@ -128,13 +137,62 @@ const transportError = (error: HttpClientError.HttpClientError) =>
     cause: error,
   });
 
-const toExecutionError = (status: number, text: string, headers: Headers): ExecutionError =>
-  new ExecutionError({
+/**
+ * Go `newGeminiStatusErr` (ed1c23f9): an upstream status error, with the 429's `RetryInfo`, `Retry-After` or message
+ * delay as the cooldown hint.
+ */
+const toExecutionError = (
+  status: number,
+  text: string,
+  headers: Headers,
+  now: number,
+): ExecutionError => {
+  const retryAfterMs = parseGoogleRetryAfterMs(status, headers, text, now);
+
+  return new ExecutionError({
     status,
     message: text,
     headers: headersRecord(headers),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     // A rejected credential is credential-scoped: the conductor rotates/cools it down.
     ...(status === 401 ? { credentialScoped: true } : {}),
+  });
+};
+
+/** `vertexImagenMaxResponseBytes`: the bound of the single JSON response a streamed Imagen request reads (Go e049c336). */
+export const IMAGEN_MAX_RESPONSE_BYTES = 64 << 20;
+
+/** `readVertexImagenResponse`: the whole Imagen response, failing once it exceeds {@link IMAGEN_MAX_RESPONSE_BYTES}. */
+const readImagenResponse = (
+  body: Stream.Stream<Uint8Array, ExecutionError>,
+): Effect.Effect<string, ExecutionError> =>
+  Effect.suspend(() => {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+
+    return body.pipe(
+      Stream.runForEach((chunk) => {
+        size += chunk.byteLength;
+
+        if (size > IMAGEN_MAX_RESPONSE_BYTES)
+          return Effect.fail(
+            new ExecutionError({
+              status: 502,
+              message: `vertex imagen: response exceeds ${IMAGEN_MAX_RESPONSE_BYTES} bytes`,
+            }),
+          );
+        chunks.push(chunk);
+
+        return Effect.void;
+      }),
+      Effect.map(() => {
+        const decoder = new TextDecoder();
+
+        return (
+          chunks.map((chunk) => decoder.decode(chunk, { stream: true })).join("") + decoder.decode()
+        );
+      }),
+    );
   });
 
 /** `isImagenModel`. */
@@ -348,7 +406,12 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
         );
       }
 
-      return yield* toExecutionError(response.status, text, new Headers(response.headers));
+      return yield* toExecutionError(
+        response.status,
+        text,
+        new Headers(response.headers),
+        yield* Clock.currentTimeMillis,
+      );
     }
 
     return response;
@@ -413,13 +476,37 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;
     const stream = mode === "stream";
-    const imagen = variant.vertex && isImagenModel(baseModel);
+    // Go e049c336: an Imagen request is translated to Gemini first, then converted to the `predict` body; counting
+    // tokens of an Imagen model goes through the ordinary Gemini path.
+    const vertexImagen = variant.vertex && isImagenModel(baseModel);
+    const imagen = vertexImagen && mode !== "count";
+
+    const rewrite = {
+      headers: options.headers,
+      config: context.config,
+      isCompat: modelIsCompat(request),
+    };
+
+    const translateWithReplay = (body: Json) =>
+      translating(attempt, () =>
+        translateRequestForExecutor(
+          registry,
+          from,
+          to,
+          { format: from, model: baseModel, stream, body },
+          thinking.summary,
+          rewrite,
+        ),
+      );
 
     let body: Json;
     let original: Json | undefined;
 
     if (imagen) {
-      const imagenBody = convertToImagenRequest(request.payload);
+      const translated = translateWithReplay(request.payload);
+
+      if (translated.error !== undefined) return yield* requestError(translated);
+      const imagenBody = convertToImagenRequest(translated.body);
 
       if (imagenBody === undefined) {
         return yield* new ExecutionError({
@@ -430,10 +517,10 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       }
 
       body = imagenBody;
-      original = structuredClone(imagenBody);
-
-      if (options.originalRequest !== undefined)
-        original = convertToImagenRequest(options.originalRequest) ?? original;
+      original =
+        convertToImagenRequest(
+          translateWithReplay(options.originalRequest ?? request.payload).body,
+        ) ?? structuredClone(imagenBody);
     } else {
       if (from === Formats.OpenAIResponse) {
         // Cached text signatures of the assistant messages in the history, loaded in one round trip.
@@ -445,24 +532,6 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
         yield* attempt.replay.prefetch(baseModel, history);
       }
-
-      const rewrite = {
-        headers: options.headers,
-        config: context.config,
-        isCompat: modelIsCompat(request),
-      };
-
-      const translateWithReplay = (body: Json) =>
-        translating(attempt, () =>
-          translateRequestForExecutor(
-            registry,
-            from,
-            to,
-            { format: from, model: baseModel, stream, body },
-            thinking.summary,
-            rewrite,
-          ),
-        );
 
       original = translateWithReplay(options.originalRequest ?? request.payload).body;
       const translated = translateWithReplay(request.payload);
@@ -497,11 +566,16 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     // Vertex rejects a request ending with a thought-only model turn even behind an empty user turn (ceb4397f).
     const turns = { dropThoughtOnlyTail: variant.vertex };
 
-    if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents", turns);
-    else {
-      body = ensureGeminiLeadingUserContent(body, "contents");
+    // The `predict` body has no `contents`, and a Vertex count of an Imagen model keeps its leading model turn (Go
+    // e049c336).
+    if (!imagen) {
+      if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents", turns);
+      else {
+        if (mode === "generate" || !vertexImagen)
+          body = ensureGeminiLeadingUserContent(body, "contents");
 
-      if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
+        if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
+      }
     }
 
     let replayScope: ReplayScope = NO_REPLAY_SCOPE;
@@ -661,6 +735,19 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const response = yield* send(context, prepared);
     let text = yield* response.text.pipe(Effect.mapError(transportError));
 
+    // Go cf07c78a, 7e82d0d1: an abnormal finish without visible output answered nothing. It fails before the replay
+    // ledger is written, as a 502 that rotates the credential without cooling it.
+    const zeroOutput =
+      native || prepared.imagen ? undefined : zeroOutputFinishReason(tryParseJson(text));
+
+    if (zeroOutput !== undefined) {
+      const message = zeroOutputErrorMessage(responseFormatOf(options), zeroOutput);
+      context.usage.publish(parseGeminiUsageBody(tryParseJson(text)));
+      context.usage.fail(502, message);
+
+      return yield* zeroOutputError(message);
+    }
+
     // `cacheAntigravityReasoningReplayFromResponse`: the turn is published before the client sees its answer.
     if (prepared.replay !== undefined && variant.replayLedger !== undefined) {
       const completed = tryParseJson(text);
@@ -716,7 +803,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       context.usage.publish(usage);
       context.usage.fail(502, out);
 
-      return yield* new ExecutionError({ status: 502, message: out });
+      return yield* translatedClaudeError(out);
     }
 
     context.usage.publish(usage);
@@ -776,9 +863,14 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     // stream fails with it once the upstream is drained (the client already got the event; its framer does not repeat it).
     let streamError: string | undefined;
 
+    // Go cf07c78a: withholds leading contentless frames and fails an abnormal zero-output finish before them.
+    const guard = new ZeroOutputStreamGuard(responseFormat);
+
     const captureError = (chunks: ReadonlyArray<string>) => {
       if (responseFormat === Formats.Claude && streamError === undefined)
         streamError = claudeStreamErrorPayload(chunks);
+
+      if (chunks.some((chunk) => chunk !== "")) guard.markEmitted();
 
       return chunks;
     };
@@ -809,8 +901,75 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
         ),
       );
 
-    const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
+    // Go e049c336: Imagen answers one JSON body even on a stream request; converted to a Gemini response, it goes
+    // through the same frame handling as one stream line.
+    const lines = prepared.imagen
+      ? Stream.fromEffect(
+          Effect.gen(function* () {
+            const text = yield* readImagenResponse(
+              response.stream.pipe(Stream.mapError(transportError)),
+            );
+
+            return convertImagenToGeminiResponse(
+              text,
+              prepared.baseModel,
+              `${yield* Clock.currentTimeMillis}000000`,
+            );
+          }),
+        )
+      : splitLines(response.stream).pipe(Stream.mapError(transportError));
+
     let sawFinish = false;
+
+    /** The withheld frames, then `then`: a frame of `""` (one the usage filter emptied) is skipped. */
+    const emitAll = (
+      frames: ReadonlyArray<string>,
+      then: Stream.Stream<string, ExecutionError> = Stream.empty,
+    ): Stream.Stream<string, ExecutionError> =>
+      Stream.concat(
+        Stream.fromIterable(frames).pipe(
+          Stream.flatMap((frame) => (frame === "" ? Stream.empty : translated(frame))),
+        ),
+        then,
+      );
+
+    const failZeroOutput = (finishReason: string) =>
+      Stream.fail(zeroOutputError(zeroOutputErrorMessage(responseFormat, finishReason)));
+
+    /** Applies a guard decision; `frame` is the current (usage-filtered) payload, if any. */
+    const guarded = (
+      action: ZeroOutputAction,
+      frame: string | undefined,
+    ): Stream.Stream<string, ExecutionError> => {
+      switch (action.kind) {
+        case "continue":
+          return Stream.empty;
+        case "fail":
+          return failZeroOutput(action.finishReason);
+        case "emit-error-then-fail":
+          return emitAll(
+            [action.frame === "" ? "[DONE]" : action.frame],
+            failZeroOutput(action.finishReason),
+          );
+        case "emit":
+          return emitAll(frame === undefined ? action.flush : [...action.flush, frame]);
+      }
+    };
+
+    /** The end of a stream that did not fail: the truncation check, then the translators' `[DONE]`. */
+    const afterDrain = (): Stream.Stream<string, ExecutionError> => {
+      // Claude and OpenAI chat clients fail a truncated stream (Go 4f2e5270, 3f5d3a16): they would otherwise see a
+      // clean `message_stop` / `[DONE]`.
+      if ((responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish)
+        return Stream.fail(
+          new ExecutionError({
+            status: 502,
+            message: "upstream stream closed before finishReason",
+          }),
+        );
+
+      return translated("[DONE]");
+    };
 
     return Stream.concat(
       lines.pipe(
@@ -822,35 +981,30 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
           const usage = parseGeminiStreamUsage(line);
 
           if (usage !== undefined) context.usage.publish(usage);
+          const raw = jsonPayload(line);
           const filtered = variant.vertex ? line : filterSseUsageMetadata(line);
           const payload = jsonPayload(filtered);
 
           if (payload !== undefined && !sawFinish && hasFinishSignal(payload)) sawFinish = true;
 
-          if (payload === undefined) return Stream.empty;
-          const blocked = promptBlockMessage(tryParseJson(payload));
+          if (raw === undefined) return Stream.empty;
+          const rawRoot = tryParseJson(raw);
+          const blocked = promptBlockMessage(rawRoot);
 
           if (blocked !== undefined)
             return Stream.fail(new ExecutionError({ status: 502, message: blocked }));
 
-          return translated(payload);
+          // The guard reads the raw frame (with its usage); what goes out is the filtered one.
+          return guarded(guard.observe(payload ?? "", rawRoot), payload ?? "");
         }),
       ),
       Stream.suspend(() => {
-        if (streamError !== undefined)
-          return Stream.fail(new ExecutionError({ status: 502, message: streamError }));
+        if (streamError !== undefined) return Stream.fail(translatedClaudeError(streamError));
+        const final = guard.finalize();
 
-        // Claude and OpenAI chat clients fail a truncated stream (Go 4f2e5270, 3f5d3a16): they would otherwise see a
-        // clean `message_stop` / `[DONE]`.
-        if ((responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish)
-          return Stream.fail(
-            new ExecutionError({
-              status: 502,
-              message: "upstream stream closed before finishReason",
-            }),
-          );
+        if (final.kind !== "emit") return guarded(final, undefined);
 
-        return translated("[DONE]");
+        return emitAll(final.flush, Stream.suspend(afterDrain));
       }),
     );
   };
@@ -949,9 +1103,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     const chunks = (
       native
         ? interactionsStream(attempt, prepared, response)
-        : prepared.imagen
-          ? imagenStream(attempt, prepared, response)
-          : geminiStream(attempt, prepared, response)
+        : geminiStream(attempt, prepared, response)
     ).pipe(
       Stream.tapError((error) =>
         Effect.sync(() => context.usage.fail(error.status, error.message)),
@@ -960,28 +1112,6 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
     return { headers: new Headers(response.headers), chunks } satisfies StreamResult;
   });
-
-  /** Imagen has no streaming: the single response is converted and translated as one chunk. */
-  const imagenStream = (
-    attempt: Attempt,
-    prepared: PreparedRequest,
-    response: HttpClientResponse.HttpClientResponse,
-  ): Stream.Stream<string, ExecutionError> =>
-    Stream.fromEffect(response.text.pipe(Effect.mapError(transportError))).pipe(
-      Stream.flatMap((text) => {
-        const data = convertImagenToGeminiResponse(text, prepared.baseModel, `${Date.now()}000000`);
-        const ctx = responseContext(attempt, prepared);
-        const responseFormat = responseFormatOf(attempt.options);
-        const payload = jsonPayload(data) ?? data;
-
-        return Stream.fromIterable(
-          withModelInfoLookup(attempt.request.modelLookup, () => [
-            ...registry.translateStream(responseFormat, prepared.providerFormat, ctx, payload),
-            ...registry.translateStream(responseFormat, prepared.providerFormat, ctx, "[DONE]"),
-          ]),
-        );
-      }),
-    );
 
   const countTokens = Effect.fnUntraced(function* (
     context: ExecutionContext,

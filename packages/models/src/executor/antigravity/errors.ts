@@ -1,106 +1,16 @@
 /**
- * Antigravity upstream error handling: retry-delay parsing and the 429 decision table.
+ * Antigravity upstream error handling: the 429 decision table, on the retry delays of `helps/google-retry.ts`.
  *
- * Go source: internal/runtime/executor/helps/json_retry_helpers.go (`ParseRetryDelay`),
- * internal/runtime/executor/antigravity_executor_credits.go (`decideAntigravity429`, `newAntigravityStatusErr`,
+ * Go source: internal/runtime/executor/antigravity_executor_credits.go (`decideAntigravity429`, `newAntigravityStatusErr`,
  * `antigravityHasExplicitCreditsBalanceExhaustedReason`).
  */
 import { asString, get, isJsonArray, tryParseJson } from "@commissary/json";
 import { ExecutionError, headersRecord } from "../errors.ts";
+import { ERROR_INFO, parseGoogleRetryDelayMs } from "../helps/google-retry.ts";
 
 export const INSTANT_RETRY_THRESHOLD_MS = 3_000;
 
 export const SHORT_QUOTA_COOLDOWN_THRESHOLD_MS = 5 * 60_000;
-
-const RETRY_INFO = "type.googleapis.com/google.rpc.RetryInfo";
-
-const ERROR_INFO = "type.googleapis.com/google.rpc.ErrorInfo";
-
-const UNIT_MS = new Map([
-  ["ns", 1e-6],
-  ["us", 1e-3],
-  ["µs", 1e-3],
-  ["ms", 1],
-  ["s", 1000],
-  ["m", 60_000],
-  ["h", 3_600_000],
-]);
-
-/** Go `time.ParseDuration` for the unit set Google emits (`3.500s`, `1h2m3s`, `300ms`); `undefined` when invalid. */
-export const parseGoDuration = (text: string): number | undefined => {
-  const value = text.trim();
-
-  if (value === "" || value === "0") return value === "0" ? 0 : undefined;
-
-  let rest = value;
-  let sign = 1;
-
-  if (rest[0] === "-" || rest[0] === "+") {
-    if (rest[0] === "-") sign = -1;
-    rest = rest.slice(1);
-  }
-
-  if (rest === "") return undefined;
-  let total = 0;
-
-  while (rest !== "") {
-    const match = /^(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|ms|s|m|h)/.exec(rest);
-
-    if (match === null) return undefined;
-    const [, amount, unit] = match;
-    const factor = unit === undefined ? undefined : UNIT_MS.get(unit);
-
-    if (amount === undefined || factor === undefined) return undefined;
-    total += Number.parseFloat(amount) * factor;
-    rest = rest.slice(match[0].length);
-  }
-
-  return sign * total;
-};
-
-/** `ParseRetryDelay`: the retry delay in milliseconds of a Google API 429 body. */
-export const parseRetryDelayMs = (body: string): number | undefined => {
-  const root = tryParseJson(body);
-  const details = get(root, "error.details");
-
-  if (isJsonArray(details)) {
-    for (const detail of details) {
-      if (asString(get(detail, "@type")) !== RETRY_INFO) continue;
-      const retryDelay = asString(get(detail, "retryDelay"));
-
-      if (retryDelay === "") continue;
-
-      return parseGoDuration(retryDelay);
-    }
-
-    for (const detail of details) {
-      if (asString(get(detail, "@type")) !== ERROR_INFO) continue;
-      const quotaResetDelay = asString(get(detail, "metadata.quotaResetDelay"));
-
-      if (quotaResetDelay === "") continue;
-      const parsed = parseGoDuration(quotaResetDelay);
-
-      if (parsed !== undefined) return parsed;
-    }
-  }
-
-  const message = asString(get(root, "error.message"));
-
-  if (message !== "") {
-    const seconds = /after\s+(\d+)s\.?/.exec(message);
-
-    if (seconds?.[1] !== undefined) return Number.parseInt(seconds[1], 10) * 1000;
-    const human = /after\s+((?:\d+h)?(?:\d+m)?(?:\d+s)?)\.?/.exec(message.toLowerCase());
-
-    if (human !== null && human[1] !== undefined && human[1] !== "") {
-      const parsed = parseGoDuration(human[1]);
-
-      if (parsed !== undefined && parsed > 0) return parsed;
-    }
-  }
-
-  return undefined;
-};
 
 export type Antigravity429Kind =
   | "soft_retry"
@@ -117,7 +27,7 @@ export interface Antigravity429Decision {
 /** `decideAntigravity429`. */
 export const decideAntigravity429 = (body: string): Antigravity429Decision => {
   if (body === "") return { kind: "soft_retry", reason: "" };
-  const retryAfterMs = parseRetryDelayMs(body);
+  const retryAfterMs = parseGoogleRetryDelayMs(body);
 
   const withDelay = (kind: Antigravity429Kind, reason: string): Antigravity429Decision =>
     retryAfterMs === undefined ? { kind, reason } : { kind, retryAfterMs, reason };
@@ -180,7 +90,7 @@ export const antigravityStatusError = (
   body: string,
   headers: Headers,
 ): ExecutionError => {
-  const retryAfterMs = status === 429 ? parseRetryDelayMs(body) : undefined;
+  const retryAfterMs = status === 429 ? parseGoogleRetryDelayMs(body) : undefined;
 
   return new ExecutionError({
     status,
