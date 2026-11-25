@@ -40,7 +40,7 @@ export const responsesPartText = (
   for (const path of refusal ? ["refusal", "text", "content"] : ["text", "content", "refusal"]) {
     const value = get(part, path);
 
-    // SAFETY: only a JSON string counts (Go `value.Type == ojson.String`).
+    // Only a JSON string counts (Go `value.Type == ojson.String`).
     if (typeof value === "string" && value !== "") return value;
   }
 
