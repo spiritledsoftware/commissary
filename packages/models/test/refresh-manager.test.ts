@@ -485,10 +485,13 @@ describe("failure back-off", () => {
     );
 
     fixture.add("claude-a.json", claudeFile({ expired: iso(T0 - MIN) }));
-    bad(await fixture.manager.refreshNow("claude-a.json"));
+    // The failure carries the wait, so a request it fails can cool the credential for it (CLIProxyAPI 2f57a5a6).
+    expect(bad(await fixture.manager.refreshNow("claude-a.json")).error.retryAfterMs).toBe(30_000);
     expect(tokenCalls(fixture)).toHaveLength(1);
     fixture.clock.now = T0 + 10_000;
-    expect(bad(await fixture.manager.refreshNow("claude-a.json")).error.httpStatus).toBe(429);
+    const blocked = bad(await fixture.manager.refreshNow("claude-a.json")).error;
+    expect(blocked.httpStatus).toBe(429);
+    expect(blocked.retryAfterMs).toBe(20_000);
     expect(tokenCalls(fixture)).toHaveLength(1);
     throttled = false;
     fixture.clock.now = T0 + 31_000;

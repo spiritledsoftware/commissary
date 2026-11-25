@@ -3,7 +3,8 @@
  *
  * Go source: sdk/cliproxy/auth/conductor_refresh.go (`tryRefreshAfterUnauthorized`, which skips 401s that a configured
  * request-scoped error rule matched), conductor_execution.go
- * (`prepareRequestAuth`, `PrepareRequestAuth`; credentials.md §9.3-9.5). The token work lives in the ControlPlane
+ * (`prepareRequestAuth`, `PrepareRequestAuth`, `prepareRequestAuthInternal`: a credential no longer registered is not
+ * used; credentials.md §9.3-9.5). The token work lives in the ControlPlane
  * (`ensureFresh`, `refreshNow`: serialised per credential, persisted before returning); this module is the Worker side:
  *  - `ensureFresh` first for credentials whose snapshot cannot be used as is (Vertex without a minted token, Meta
  *    without a key, an OAuth token that is missing/expired, Antigravity within 5 minutes of expiry);
@@ -132,10 +133,22 @@ export const needsPreparation = (credential: CredentialSnapshot, now: number): b
 };
 
 /** Failures that mean "nothing to prepare" rather than a broken credential. */
-const BENIGN = new Set(["not_refreshable", "not_found"]);
+const BENIGN = new Set(["not_refreshable"]);
 
-const refreshError = (failure: Extract<RefreshResult, { ok: false }>): ExecutionError =>
-  new ExecutionError({
+const refreshError = (failure: Extract<RefreshResult, { ok: false }>): ExecutionError => {
+  // The credential was removed before or while it was prepared: its snapshot must not be used (CLIProxyAPI 0a34244e,
+  // `prepareRequestAuthInternal`). The request moves on to another credential.
+  if (failure.error.code === "not_found") {
+    return new ExecutionError({
+      status: 500,
+      code: "credential_removed",
+      message: "prepare auth: credential no longer registered",
+    });
+  }
+
+  const retryAfterMs = failure.error.retryAfterMs;
+
+  return new ExecutionError({
     status:
       failure.terminal || failure.error.httpStatus === 401
         ? 401
@@ -143,7 +156,10 @@ const refreshError = (failure: Extract<RefreshResult, { ok: false }>): Execution
     code: failure.error.code === "unauthorized" ? "unauthorized" : "refresh_failed",
     message: failure.error.message,
     ...(failure.terminal ? { terminalAuth: true } : {}),
+    // The upstream's wait goes with the failure like an execution error's (CLIProxyAPI 2f57a5a6).
+    ...(retryAfterMs === undefined || retryAfterMs <= 0 ? {} : { retryAfterMs }),
   });
+};
 
 export interface RefreshHooks {
   /**

@@ -504,13 +504,28 @@ export const conduct = <T, R>(
         let upstreamError: ExecutionError | undefined;
         let bootstrap = false;
 
-        const failed = (error: ExecutionError, stop: boolean): RoundOutcome<T> => ({
+        const failed = (
+          error: ExecutionError,
+          stop: boolean,
+        ): Extract<RoundOutcome<T>, { ok: false }> => ({
           ok: false,
           error,
           stop,
           upstream: upstreamError !== undefined && upstreamError === error,
           bootstrap,
           attempted,
+        });
+
+        /**
+         * The request ends at this error, so stream bootstrap retries do not replay it either (CLIProxyAPI df6c8ccb). Go's
+         * `isTerminalRequestStopError` covers stop rules and preserved terminal answers; this also takes request faults
+         * and `responses/compact` faults. That is wider than Go's predicate but the same in effect: Go returns those
+         * directly too, and `bootstrapEligible` already refuses their statuses (400, 422 and the other 4xx it does not
+         * list).
+         */
+        const stopped = (error: ExecutionError): RoundOutcome<T> => ({
+          ...failed(error, true),
+          bootstrap: false,
         });
 
         /** `preferredExecutionAttemptError`: the last error that actually reached an upstream wins. */
@@ -663,10 +678,10 @@ export const conduct = <T, R>(
             // An error that moved the request to another provider says nothing about the next retry round.
             if (!providerSpecific) upstreamError = error;
 
-            if (isStopAction(action)) return failed(error, true);
+            if (isStopAction(action)) return stopped(error);
 
             if (action === undefined && isCompactRequestFault(error, prepared.options.alt)) {
-              return failed(error, true);
+              return stopped(error);
             }
 
             if (providerSpecific) {
@@ -678,7 +693,7 @@ export const conduct = <T, R>(
               break;
             }
 
-            if (action === undefined && isRequestInvalid(error)) return failed(error, true);
+            if (action === undefined && isRequestInvalid(error)) return stopped(error);
 
             credentialError = error;
 

@@ -16,7 +16,7 @@ import { emptyState } from "../src/credentials/model.ts";
 import { RefreshManager } from "../src/credentials/refresh/index.ts";
 import { FakeAlarm } from "./support/refresh.ts";
 import { ExecutorRegistry, makeExecutorRegistry } from "../src/executor/registry.ts";
-import type { ProviderExecutor } from "../src/executor/types.ts";
+import type { ProviderExecutor, StreamResult } from "../src/executor/types.ts";
 import type { RefreshResult } from "../src/credentials/refresh/index.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import { executeCountTokens, executeNonStream, executeStream } from "../src/handlers/execute.ts";
@@ -938,6 +938,165 @@ describe("streaming", () => {
   );
 });
 
+const unsupportedCall = () =>
+  Effect.fail(new ExecutionError({ status: 501, message: "unsupported" }));
+
+/** An executor whose stream each credential (by label) answers through `open`; non-stream calls are unsupported. */
+const streamExecutor = (
+  open: (label: string) => Effect.Effect<StreamResult, ExecutionError>,
+): Layer.Layer<ExecutorRegistry> => {
+  const executor: ProviderExecutor = {
+    identifier: "openai-compatibility",
+    execute: unsupportedCall,
+    executeStream: (context) => open(context.credential.label ?? context.credential.id),
+    countTokens: unsupportedCall,
+  };
+
+  return Layer.succeed(ExecutorRegistry, ExecutorRegistry.of({ get: () => executor }));
+};
+
+const opened = (chunks: Stream.Stream<string, ExecutionError>, headers: HeadersInit = {}) =>
+  Effect.succeed<StreamResult>({ headers: new Headers(headers), chunks });
+
+describe("stream bootstrap (CLIProxyAPI ab971876, d52047a6, df6c8ccb)", () => {
+  it.effect("a stream of zero-payload chunks that ends is an empty_stream and fails over", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), () => jsonResponse({}), {
+        executors: streamExecutor((label) =>
+          label === "a"
+            ? opened(Stream.make("", ""))
+            : opened(Stream.make(chunk("hi"), "data: [DONE]\n\n")),
+        ),
+      });
+
+      const chunks = yield* collect(run);
+      assert.isTrue(chunks.some((text) => text.includes('"content":"hi"')));
+      assert.deepStrictEqual(
+        run.records.map((record) => record.failed),
+        [true, false],
+      );
+      assert.notStrictEqual(run.records[0]?.authId, run.records[1]?.authId);
+    }),
+  );
+
+  it.effect("a failure before the first payload keeps the headers the stream opened with", () =>
+    Effect.gen(function* () {
+      const headers = { "x-upstream-trace": "t1" };
+
+      const failing = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() =>
+          opened(Stream.fail(new ExecutionError({ status: 502, message: "bad gateway" })), headers),
+        ),
+      });
+
+      const error = yield* failure(collect(failing));
+      assert.strictEqual(error.status, 502);
+      assert.strictEqual(error.headers?.["x-upstream-trace"], "t1");
+
+      const empty = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() => opened(Stream.empty, headers)),
+      });
+
+      const emptyError = yield* failure(collect(empty));
+      assert.strictEqual(emptyError.code, "empty_stream");
+      assert.strictEqual(emptyError.headers?.["x-upstream-trace"], "t1");
+    }),
+  );
+
+  it.effect("the stream's headers replace the error's own, as Go's outer wrapper's do", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() =>
+          opened(
+            Stream.fail(
+              new ExecutionError({ status: 502, message: "bad", headers: { "x-own": "1" } }),
+            ),
+            { "x-upstream-trace": "t1" },
+          ),
+        ),
+      });
+
+      const error = yield* failure(collect(run));
+      assert.deepStrictEqual(error.headers, { "x-upstream-trace": "t1" });
+    }),
+  );
+
+  it.effect("a direct answer keeps its own headers and gets the stream's beside them", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a")), () => jsonResponse({}), {
+        executors: streamExecutor(() =>
+          opened(
+            Stream.fail(
+              new ExecutionError({
+                status: 400,
+                message: "{}",
+                direct: true,
+                requestScoped: true,
+                headers: { "x-own": "1" },
+              }),
+            ),
+            { "x-upstream-trace": "t1" },
+          ),
+        ),
+      });
+
+      const error = yield* failure(collect(run));
+      assert.deepStrictEqual(error.headers, { "x-own": "1" });
+      assert.deepStrictEqual(error.streamHeaders, { "x-upstream-trace": "t1" });
+    }),
+  );
+
+  it.effect("a stop rule ends the request: bootstrap-retries do not replay it", () =>
+    Effect.gen(function* () {
+      const stopRule = `request-scoped-errors:\n        - { status: 429, match: ["slow down"], action: stop }`;
+      let opens = 0;
+
+      const run = yield* setup(
+        config(
+          group("a", `disable-cooling: true\n      ${stopRule}`),
+          "requests:\n  streaming:\n    bootstrap-retries: 2",
+        ),
+        () => jsonResponse({}),
+        {
+          executors: streamExecutor(() => {
+            opens += 1;
+
+            return opened(Stream.fail(new ExecutionError({ status: 429, message: "slow down" })));
+          }),
+        },
+      );
+
+      const error = yield* failure(collect(run));
+      assert.strictEqual(error.status, 429);
+      assert.strictEqual(opens, 1);
+    }),
+  );
+
+  it.effect("without a stop rule the same bootstrap failure is replayed (control)", () =>
+    Effect.gen(function* () {
+      let opens = 0;
+
+      const run = yield* setup(
+        config(
+          group("a", "disable-cooling: true"),
+          "requests:\n  streaming:\n    bootstrap-retries: 2",
+        ),
+        () => jsonResponse({}),
+        {
+          executors: streamExecutor(() => {
+            opens += 1;
+
+            return opened(Stream.fail(new ExecutionError({ status: 429, message: "slow down" })));
+          }),
+        },
+      );
+
+      yield* failure(collect(run));
+      assert.strictEqual(opens, 3);
+    }),
+  );
+});
+
 describe("incomplete compat streams keep out of cooldown (CLIProxyAPI f013eb66)", () => {
   const responsesStream = {
     entryProtocol: Formats.OpenAIResponse,
@@ -1214,7 +1373,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
         const seen: string[] = [];
         const counts = { refresh: [] as Array<string | undefined>, ensure: 0 };
 
-        const failure = (terminal: boolean) => (): RefreshResult => ({
+        const refreshFailure = (terminal: boolean) => (): RefreshResult => ({
           ok: false,
           error: { code: "unauthorized", message: "invalid_grant", httpStatus: 400 },
           terminal,
@@ -1223,12 +1382,12 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
         const soft = yield* setup("", () => jsonResponse({}), {
           providers,
           executors: tokenExecutor(seen),
-          refresher: refresherFor(counts, failure(false)),
+          refresher: refresherFor(counts, refreshFailure(false)),
           prepare: (harness) =>
             harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
         });
 
-        const error = yield* failure_(soft.exec(executeNonStream(chatInput("claude-x"))));
+        const error = yield* failure(soft.exec(executeNonStream(chatInput("claude-x"))));
         assert.strictEqual(error.status, 401);
         assert.isUndefined(error.terminalAuth);
         assert.deepStrictEqual(seen, ["old"]);
@@ -1237,12 +1396,12 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
         const hard = yield* setup("", () => jsonResponse({}), {
           providers,
           executors: tokenExecutor([]),
-          refresher: refresherFor(counts, failure(true)),
+          refresher: refresherFor(counts, refreshFailure(true)),
           prepare: (harness) =>
             harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
         });
 
-        const terminal = yield* failure_(hard.exec(executeNonStream(chatInput("claude-x"))));
+        const terminal = yield* failure(hard.exec(executeNonStream(chatInput("claude-x"))));
         assert.strictEqual(terminal.terminalAuth, true);
       }),
   );
@@ -1266,7 +1425,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
           harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
       });
 
-      const error = yield* failure_(same.exec(executeNonStream(chatInput("claude-x"))));
+      const error = yield* failure(same.exec(executeNonStream(chatInput("claude-x"))));
       assert.strictEqual(error.status, 401);
       assert.deepStrictEqual(seen, ["old"]);
       assert.strictEqual(counts.refresh.length, 1);
@@ -1292,7 +1451,7 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
           harness.pool.upsert("claude-a.json", AUTH_FILE, { mergeExisting: false }),
       });
 
-      yield* failure_(other.exec(executeNonStream(chatInput("claude-x"))));
+      yield* failure(other.exec(executeNonStream(chatInput("claude-x"))));
       assert.deepStrictEqual(fresh.refresh, []);
     }),
   );
@@ -1370,15 +1529,77 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
           ),
       });
 
-      const error = yield* failure_(run.exec(executeNonStream(chatInput("claude-x"))));
+      const error = yield* failure(run.exec(executeNonStream(chatInput("claude-x"))));
       assert.strictEqual(error.status, 503);
       assert.deepStrictEqual(seen, []);
       assert.strictEqual(counts.ensure, 1);
     }),
   );
-});
 
-const failure_ = <A>(effect: Effect.Effect<A, ExecutionError>) => Effect.flip(effect);
+  it.effect(
+    "a credential removed before it could be prepared is not used (CLIProxyAPI 0a34244e)",
+    () =>
+      Effect.gen(function* () {
+        const seen: string[] = [];
+        const counts = { refresh: [] as Array<string | undefined>, ensure: 0 };
+
+        const run = yield* setup("", () => jsonResponse({}), {
+          providers,
+          executors: tokenExecutor(seen),
+          refresher: refresherFor(counts, () => ({
+            ok: false,
+            error: { code: "not_found", message: "credential was removed during refresh" },
+            terminal: false,
+          })),
+          prepare: (harness) =>
+            harness.pool.upsert(
+              "claude-a.json",
+              { type: "claude", email: "a@x.com", refresh_token: "r" },
+              { mergeExisting: false },
+            ),
+        });
+
+        const error = yield* failure(run.exec(executeNonStream(chatInput("claude-x"))));
+        assert.strictEqual(error.code, "credential_removed");
+        assert.strictEqual(error.status, 500);
+        assert.deepStrictEqual(seen, []);
+        assert.strictEqual(counts.ensure, 1);
+      }),
+  );
+
+  it.effect(
+    "a prepare failure the upstream asked to wait for carries its Retry-After (CLIProxyAPI 2f57a5a6)",
+    () =>
+      Effect.gen(function* () {
+        const counts = { refresh: [] as Array<string | undefined>, ensure: 0 };
+
+        const run = yield* setup("", () => jsonResponse({}), {
+          providers,
+          executors: tokenExecutor([]),
+          refresher: refresherFor(counts, () => ({
+            ok: false,
+            error: {
+              code: "refresh_failed",
+              message: "rate limited",
+              httpStatus: 429,
+              retryAfterMs: 120_000,
+            },
+            terminal: false,
+          })),
+          prepare: (harness) =>
+            harness.pool.upsert(
+              "claude-a.json",
+              { type: "claude", email: "a@x.com", refresh_token: "r" },
+              { mergeExisting: false },
+            ),
+        });
+
+        const error = yield* failure(run.exec(executeNonStream(chatInput("claude-x"))));
+        assert.strictEqual(error.status, 429);
+        assert.strictEqual(error.retryAfterMs, 120_000);
+      }),
+  );
+});
 
 describe("Devin quota exhaustion (CLIProxyAPI b946d54e)", () => {
   const HOUR = 3_600_000;

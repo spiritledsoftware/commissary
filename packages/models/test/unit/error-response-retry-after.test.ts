@@ -28,3 +28,45 @@ describe("errorResponse Retry-After precedence", () => {
     expect(response.headers["retry-after"]).toBe("999");
   });
 });
+
+// CLIProxyAPI df6c8ccb (`writeDirectErrorResponse`): a direct answer gets the safe Retry-After when its own headers lack
+// one, and the headers of the stream it failed in with passthrough-headers (its own headers win).
+const direct = (extra: Partial<ConstructorParameters<typeof ExecutionError>[0]>) =>
+  error({ direct: true, headers: { "x-own": "1", "x-both": "own" }, ...extra });
+
+describe("errorResponse of a direct answer", () => {
+  it("adds the safe Retry-After unless the answer has its own", () => {
+    const added = errorResponse("openai", direct({ safeHeaders: { "retry-after": "7" } }), {
+      passthroughHeaders: false,
+    });
+
+    expect(added.headers["retry-after"]).toBe("7");
+    expect(added.headers["x-own"]).toBe("1");
+
+    const own = errorResponse(
+      "openai",
+      direct({
+        headers: { "Retry-After": "999" },
+        safeHeaders: { "retry-after": "7" },
+      }),
+      { passthroughHeaders: false },
+    );
+
+    expect(own.headers["retry-after"]).toBe("999");
+  });
+
+  it("adds the stream's headers only with passthrough-headers, below its own and a trusted Retry-After", () => {
+    const failed = direct({
+      streamHeaders: { "x-stream": "s", "x-both": "stream", "retry-after": "50" },
+      safeHeaders: { "retry-after": "7" },
+    });
+
+    const passed = errorResponse("openai", failed, { passthroughHeaders: true });
+    expect(passed.headers["x-stream"]).toBe("s");
+    expect(passed.headers["x-both"]).toBe("own");
+    expect(passed.headers["retry-after"]).toBe("7");
+
+    const kept = errorResponse("openai", failed, { passthroughHeaders: false });
+    expect(kept.headers["x-stream"]).toBeUndefined();
+  });
+});
