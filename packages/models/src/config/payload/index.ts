@@ -11,18 +11,10 @@ export { type HeaderInput, matchModelPattern, payloadModelCandidates } from "./m
 export { buildPayloadPath, resolvePayloadRulePaths } from "./paths.ts";
 
 export {
-  applyPayloadReplaceRule,
-  compileGoRegex,
-  payloadReplaceRuleError,
-  resolvePayloadReplacement,
-} from "./replace.ts";
-
-export {
   PayloadConfig,
   PayloadFilterRule,
   PayloadModelRule,
   PayloadReplaceRule,
   PayloadReplacement,
-  PayloadReplaceTarget,
   PayloadRule,
 } from "./schema.ts";

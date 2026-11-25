@@ -47,22 +47,32 @@ export const PayloadFilterRule = Schema.Struct({
 
 export type PayloadFilterRule = typeof PayloadFilterRule.Type;
 
+export const INVALID_REPLACEMENT_ERROR =
+  "payload replacement must contain either one string mapping or pattern and replacement";
+
+/** The shape of a replacement entry: one key (a literal), exactly `pattern` and `replacement` (a regex), or neither. */
+export const payloadReplacementKind = (
+  entry: Readonly<Record<string, string>>,
+): "literal" | "regex" | undefined => {
+  const keys = Object.keys(entry);
+
+  if (keys.length === 1) return "literal";
+
+  return keys.length === 2 && Object.hasOwn(entry, "pattern") && Object.hasOwn(entry, "replacement")
+    ? "regex"
+    : undefined;
+};
+
 /**
  * One replacement step: a literal `{ "from": "to" }` (exactly one key) or a Go RE2 regex
  * `{ pattern, replacement }` (exactly those two keys). Other shapes fail to decode, as they fail Go's config load.
  * An empty destination or replacement deletes the matched text.
  */
 export const PayloadReplacement = Schema.Record(Schema.String, Schema.String).check(
-  Schema.makeFilter((entry: Readonly<Record<string, string>>) => {
-    const keys = Object.keys(entry);
-
-    if (keys.length === 1) return true;
-
-    if (keys.length === 2 && Object.hasOwn(entry, "pattern") && Object.hasOwn(entry, "replacement"))
-      return true;
-
-    return "payload replacement must contain either one string mapping or pattern and replacement";
-  }),
+  Schema.makeFilter(
+    (entry: Readonly<Record<string, string>>) =>
+      payloadReplacementKind(entry) !== undefined || INVALID_REPLACEMENT_ERROR,
+  ),
 );
 
 export type PayloadReplacement = typeof PayloadReplacement.Type;

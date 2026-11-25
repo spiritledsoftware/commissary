@@ -6,10 +6,7 @@
  * (visitPayloadReplacePath). A rule targets either one role's messages by one-based position (the protocol decides
  * where text lives) or explicit gjson paths to existing strings.
  *
- * Go compiles the patterns as RE2; JavaScript has no RE2, so {@link compileGoRegex} translates the RE2 syntax that
- * differs (leading flag groups, `(?P<name>`, `\A`, `\z`, `\pL`, POSIX classes, escaped punctuation) and rejects what it
- * cannot express. Replacement templates expand like Go's `Regexp.Expand` (`$1`, `${1}`, `$name`, `$$`), and empty
- * matches next to a previous match are skipped like Go's `ReplaceAllString`.
+ * Regex entries run through `re2.ts` (Go RE2 patterns and templates over JavaScript `RegExp`).
  */
 import {
   asBool,
@@ -22,7 +19,13 @@ import {
   type JsonObject,
   wildcardMatch,
 } from "@commissary/json";
-import type { PayloadReplaceRule, PayloadReplacement } from "./schema.ts";
+import { compileGoRegex, replaceAllGo } from "./re2.ts";
+import {
+  type PayloadReplaceRule,
+  type PayloadReplacement,
+  payloadReplacementKind,
+  INVALID_REPLACEMENT_ERROR,
+} from "./schema.ts";
 import {
   buildPayloadPath,
   parsePayloadQueryPathPart,
@@ -42,25 +45,24 @@ interface ResolvedReplacement {
 export const resolvePayloadReplacement = (
   entry: PayloadReplacement,
 ): ResolvedReplacement | string => {
-  const keys = Object.keys(entry);
+  const kind = payloadReplacementKind(entry);
 
-  if (keys.length === 1) {
-    // SAFETY: keys has exactly one element.
-    const from = keys[0] as string;
+  if (kind === undefined) return INVALID_REPLACEMENT_ERROR;
 
-    if (from === "") return "replacement source must not be empty";
+  if (kind === "regex")
+    // SAFETY: a regex entry has exactly the keys `pattern` and `replacement`.
+    return {
+      source: entry["pattern"] as string,
+      replacement: entry["replacement"] as string,
+      isRegex: true,
+    };
 
-    // SAFETY: from is an own key of entry.
-    return { source: from, replacement: entry[from] as string, isRegex: false };
-  }
+  // SAFETY: a literal entry has exactly one key.
+  const [from, to] = Object.entries(entry)[0] as [string, string];
 
-  const pattern = entry["pattern"];
-  const replacement = entry["replacement"];
-
-  if (keys.length === 2 && pattern !== undefined && replacement !== undefined)
-    return { source: pattern, replacement, isRegex: true };
-
-  return "each replacement must contain either one string mapping or pattern and replacement";
+  return from === ""
+    ? "replacement source must not be empty"
+    : { source: from, replacement: to, isRegex: false };
 };
 
 /** `PayloadReplaceRule.Validate`: the reason the rule is unusable, or `undefined`. Regexes are checked per entry. */
@@ -102,244 +104,6 @@ export const payloadReplaceRuleError = (rule: PayloadReplaceRule): string | unde
   return undefined;
 };
 
-// --- Go RE2 -> JavaScript ---------------------------------------------------------------------------------------
-
-/** RE2's ASCII POSIX classes (`[[:alpha:]]`), as JavaScript class contents. */
-const POSIX_CLASSES = new Map([
-  ["alnum", "0-9A-Za-z"],
-  ["alpha", "A-Za-z"],
-  ["ascii", "\\x00-\\x7F"],
-  ["blank", "\\t "],
-  ["cntrl", "\\x00-\\x1F\\x7F"],
-  ["digit", "0-9"],
-  ["graph", "!-~"],
-  ["lower", "a-z"],
-  ["print", " -~"],
-  ["punct", "!-\\/:-@\\[-`{-~"],
-  ["space", "\\t\\n\\v\\f\\r "],
-  ["upper", "A-Z"],
-  ["word", "0-9A-Za-z_"],
-  ["xdigit", "0-9A-Fa-f"],
-]);
-
-/** Characters JavaScript's `u` mode accepts escaped outside a class (`SyntaxCharacter` and `/`). */
-const JS_ESCAPABLE = new Set("^$\\.*+?()[]{}|/");
-
-const hexEscape = (ch: string): string =>
-  `\\x${(ch.codePointAt(0) ?? 0).toString(16).padStart(2, "0")}`;
-
-/**
- * Translates a Go RE2 pattern to a JavaScript `RegExp` (global, Unicode). `undefined` when the pattern is empty,
- * invalid, or uses RE2 syntax with no JavaScript translation (mid-pattern flag groups, `U`, `\Q…\E`, `\C`, negated POSIX
- * classes). JavaScript accepts some syntax RE2 rejects (look-around, backreferences); such patterns run here.
- */
-export const compileGoRegex = (pattern: string): RegExp | undefined => {
-  if (pattern === "") return undefined;
-  let flags = "";
-  let i = 0;
-
-  // Leading `(?flags)` groups set the flags of the whole pattern.
-  for (;;) {
-    const leading = /^\(\?([a-zA-Z]*)\)/.exec(pattern.slice(i));
-
-    if (leading === null) break;
-    // SAFETY: the regex has one capture group.
-    const groupFlags = leading[1] as string;
-
-    for (const flag of groupFlags) {
-      if (flag !== "i" && flag !== "m" && flag !== "s") return undefined;
-
-      if (!flags.includes(flag)) flags += flag;
-    }
-
-    i += leading[0].length;
-  }
-
-  let out = "";
-  let inClass = false;
-
-  while (i < pattern.length) {
-    const ch = pattern.charAt(i);
-
-    if (ch === "\\") {
-      const next = pattern.charAt(i + 1);
-
-      if (next === "") return undefined;
-
-      if (next === "z") {
-        out += "(?![\\s\\S])";
-        i += 2;
-        continue;
-      }
-
-      if (next === "A") {
-        out += "(?<![\\s\\S])";
-        i += 2;
-        continue;
-      }
-
-      if (next === "Q" || next === "C") return undefined;
-
-      // RE2 `\x{10FFFF}` is JavaScript `\u{10FFFF}`.
-      if (next === "x" && pattern.charAt(i + 2) === "{") {
-        out += "\\u";
-        i += 2;
-        continue;
-      }
-
-      if ((next === "p" || next === "P") && /[A-Za-z]/.test(pattern.charAt(i + 2))) {
-        out += `\\${next}{${pattern.charAt(i + 2)}}`;
-        i += 3;
-        continue;
-      }
-
-      if (/[!-/:-@[-`{-~]/.test(next) && !(JS_ESCAPABLE.has(next) || (inClass && next === "-"))) {
-        out += hexEscape(next);
-        i += 2;
-        continue;
-      }
-
-      out += ch + next;
-      i += 2;
-      continue;
-    }
-
-    if (inClass) {
-      if (ch === "[" && pattern.charAt(i + 1) === ":") {
-        const close = pattern.indexOf(":]", i + 2);
-
-        if (close < 0) return undefined;
-        const name = pattern.slice(i + 2, close);
-        const expansion = POSIX_CLASSES.get(name);
-
-        if (expansion === undefined) return undefined;
-        out += expansion;
-        i = close + 2;
-        continue;
-      }
-
-      if (ch === "]") inClass = false;
-      out += ch;
-      i++;
-      continue;
-    }
-
-    if (ch === "[") {
-      inClass = true;
-      out += ch;
-      i++;
-
-      // A leading `^` and a leading `]` belong to the class.
-      if (pattern.charAt(i) === "^") {
-        out += "^";
-        i++;
-      }
-
-      if (pattern.charAt(i) === "]") {
-        out += "\\]";
-        i++;
-      }
-
-      continue;
-    }
-
-    if (ch === "(" && pattern.charAt(i + 1) === "?") {
-      if (pattern.startsWith("(?P<", i)) {
-        out += "(?<";
-        i += 4;
-        continue;
-      }
-
-      // A flag group after the start applies to the rest of its group in RE2; JavaScript has no such form.
-      if (/^\(\?[a-zA-Z-]*\)/.test(pattern.slice(i))) return undefined;
-    }
-
-    out += ch;
-    i++;
-  }
-
-  try {
-    return new RegExp(out, `gu${flags}`);
-  } catch {
-    return undefined;
-  }
-};
-
-/** `Regexp.Expand` over a JavaScript match: `$name`/`${name}` (number or group name), `$$`; malformed `$` is literal. */
-const expandGoTemplate = (template: string, match: RegExpExecArray): string => {
-  let out = "";
-  let i = 0;
-
-  while (i < template.length) {
-    const dollar = template.indexOf("$", i);
-
-    if (dollar < 0) {
-      out += template.slice(i);
-      break;
-    }
-
-    out += template.slice(i, dollar);
-    const rest = template.slice(dollar + 1);
-
-    if (rest.startsWith("$")) {
-      out += "$";
-      i = dollar + 2;
-      continue;
-    }
-
-    const braced = /^\{([A-Za-z0-9_]+)\}/.exec(rest);
-    const bare = braced === null ? /^[A-Za-z0-9_]+/.exec(rest) : null;
-    const name = braced !== null ? braced[1] : bare?.[0];
-
-    if (name === undefined) {
-      out += "$";
-      i = dollar + 1;
-      continue;
-    }
-
-    if (/^\d+$/.test(name)) {
-      const index = Number(name);
-
-      out += index < match.length ? (match[index] ?? "") : "";
-    } else {
-      out += match.groups?.[name] ?? "";
-    }
-
-    i = dollar + 1 + (braced !== null ? braced[0].length : name.length);
-  }
-
-  return out;
-};
-
-/** `Regexp.ReplaceAllString`: Go's search positions, so an empty match right after a match is not replaced. */
-const replaceAllGo = (re: RegExp, text: string, template: string): string => {
-  let out = "";
-  let lastMatchEnd = 0;
-  let searchPos = 0;
-
-  while (searchPos <= text.length) {
-    re.lastIndex = searchPos;
-    const match = re.exec(text);
-
-    if (match === null) break;
-    const start = match.index;
-    const end = start + match[0].length;
-    out += text.slice(lastMatchEnd, start);
-
-    if (end > lastMatchEnd || start === 0) out += expandGoTemplate(template, match);
-    lastMatchEnd = end;
-
-    const width =
-      searchPos < text.length ? ((text.codePointAt(searchPos) ?? 0) > 0xffff ? 2 : 1) : 0;
-
-    if (searchPos + width > end) searchPos += width;
-    else if (searchPos + 1 > end) searchPos++;
-    else searchPos = end;
-  }
-
-  return out + text.slice(lastMatchEnd);
-};
-
 interface Step {
   readonly from: string;
   readonly to: string;
@@ -359,10 +123,6 @@ const compileSteps = (rule: PayloadReplaceRule): Step[] =>
 
     return re === undefined ? [] : [{ from: resolved.source, to: resolved.replacement, re }];
   });
-
-/** Whether a `pattern` compiles; the config sanitiser drops the entries that do not. */
-export const isValidPayloadRegex = (pattern: string): boolean =>
-  compileGoRegex(pattern) !== undefined;
 
 // --- Targets --------------------------------------------------------------------------------------------------------
 

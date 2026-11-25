@@ -255,7 +255,7 @@ requests:
           - "remove this phrase": ""
           - pattern: '(?i)\\bhero\\b'
             replacement: ""
-          - pattern: "(?U)lazy"
+          - pattern: "lazy(?=x)"
             replacement: "x"
       - models: [{ name: "*" }]
         target: { paths: ['tools.#(type=="function")#.description'] }

@@ -5677,6 +5677,570 @@
   "touched": []
  },
  {
+  "name": "replace regex RE2 semantics",
+  "config": {
+   "requests": {
+    "payload": {
+     "replace": [
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         1
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "a.b",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         2
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?s)a.b",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         3
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?m)^x|x$",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         4
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\s+",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         5
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "[\\S]+",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         6
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\p{Greek}+|\\pN|\\P{Latin}",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         7
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\w",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         8
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\W",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         9
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)k\\b",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         10
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)[[:^lower:]]",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         11
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\12|\\0|\\101",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         12
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\Qa.b\\E+",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         13
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "a{2}|{x}|]",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         14
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(a(?i)b|c)C",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         15
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?U)a+|(?U:b+?)",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         16
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "a(?=b)",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         17
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(a)\\1",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         18
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "\\pL",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         19
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "(?i)\\P{Lu}",
+         "replacement": "#"
+        }
+       ]
+      },
+      {
+       "models": [
+        {
+         "name": "*"
+        }
+       ],
+       "target": {
+        "role": "user",
+        "positions": [
+         20
+        ]
+       },
+       "replacements": [
+        {
+         "pattern": "^*x|\\b+y",
+         "replacement": "#"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "request": {
+   "model": "m",
+   "protocol": "openai"
+  },
+  "payload": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "a\rb a\u2028b a\nb"
+    },
+    {
+     "role": "user",
+     "content": "a\rb a\nb"
+    },
+    {
+     "role": "user",
+     "content": "ax\rxa\u2029xa\nx"
+    },
+    {
+     "role": "user",
+     "content": "a\u00a0b c\u2003d\te"
+    },
+    {
+     "role": "user",
+     "content": "a\u00a0b c"
+    },
+    {
+     "role": "user",
+     "content": "\u03b1\u03b2\u03b3 x 1 \u0436"
+    },
+    {
+     "role": "user",
+     "content": "\u017f\u212a k!"
+    },
+    {
+     "role": "user",
+     "content": "\u017f\u212a k!"
+    },
+    {
+     "role": "user",
+     "content": "k\u212a k\u017f k"
+    },
+    {
+     "role": "user",
+     "content": "aA\u017f1"
+    },
+    {
+     "role": "user",
+     "content": "\n\u0000A"
+    },
+    {
+     "role": "user",
+     "content": "a.bbb axb"
+    },
+    {
+     "role": "user",
+     "content": "aa {x} ] a"
+    },
+    {
+     "role": "user",
+     "content": "aBC cC Cc"
+    },
+    {
+     "role": "user",
+     "content": "aaa bbb"
+    },
+    {
+     "role": "user",
+     "content": "ab"
+    },
+    {
+     "role": "user",
+     "content": "aa"
+    },
+    {
+     "role": "user",
+     "content": "\u00e9"
+    },
+    {
+     "role": "user",
+     "content": "aA\u017f s*"
+    },
+    {
+     "role": "user",
+     "content": "xa y"
+    }
+   ]
+  },
+  "out": {
+   "messages": [
+    {
+     "content": "# # a\nb",
+     "role": "user"
+    },
+    {
+     "content": "# #",
+     "role": "user"
+    },
+    {
+     "content": "ax\rxa\u2029xa\n#",
+     "role": "user"
+    },
+    {
+     "content": "a b#c d#e",
+     "role": "user"
+    },
+    {
+     "content": "# #",
+     "role": "user"
+    },
+    {
+     "content": "##x####",
+     "role": "user"
+    },
+    {
+     "content": "## #!",
+     "role": "user"
+    },
+    {
+     "content": "ſK#k#",
+     "role": "user"
+    },
+    {
+     "content": "#K #ſ #",
+     "role": "user"
+    },
+    {
+     "content": "aAſ#",
+     "role": "user"
+    },
+    {
+     "content": "###",
+     "role": "user"
+    },
+    {
+     "content": "# axb",
+     "role": "user"
+    },
+    {
+     "content": "# # # a",
+     "role": "user"
+    },
+    {
+     "content": "# # Cc",
+     "role": "user"
+    },
+    {
+     "content": "### #",
+     "role": "user"
+    },
+    {
+     "content": "ab",
+     "role": "user"
+    },
+    {
+     "content": "aa",
+     "role": "user"
+    },
+    {
+     "content": "#",
+     "role": "user"
+    },
+    {
+     "content": "aAſ#s#",
+     "role": "user"
+    },
+    {
+     "content": "#a #",
+     "role": "user"
+    }
+   ]
+  },
+  "touched": []
+ },
+ {
   "name": "replace invalid regex entry is skipped",
   "config": {
    "requests": {

@@ -2,7 +2,8 @@
  * Post-decode normalisation of a decoded {@link Config}.
  *
  * Go source: internal/config/config_load.go (clamps), config_normalization.go (Sanitize*), config_validation.go
- * (SanitizePayloadRules, including the replace rules). Applied once when a document is imported/stored so readers see canonical values.
+ * (SanitizePayloadRules, including the replace rules). Applied once when a document is imported/stored so readers see
+ * canonical values.
  * Workers additions (no Go counterpart): OpenCode keys without a secret are dropped, and a model entry's `protocol`
  * (OpenCode-only) is dropped in every other provider section.
  */
@@ -19,11 +20,8 @@ import type {
   RequestScopedErrorRule,
 } from "./schema.ts";
 import type { PayloadReplaceRule, PayloadRule } from "./payload/schema.ts";
-import {
-  compileGoRegex,
-  payloadReplaceRuleError,
-  resolvePayloadReplacement,
-} from "./payload/replace.ts";
+import { compileGoRegex } from "./payload/re2.ts";
+import { payloadReplaceRuleError, resolvePayloadReplacement } from "./payload/replace.ts";
 import { isSystemOneProvider } from "../executor/systemone/providers.ts";
 
 const DEFAULT_META_BASE_URL = "https://api.meta.ai/v1";

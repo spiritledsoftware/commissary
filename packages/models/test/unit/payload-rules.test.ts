@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import { asString, exists, get, type Json } from "@commissary/json";
 import {
   applyPayloadRules,
-  compileGoRegex,
   type DisableImageGenerationMode,
   matchModelPattern,
   PayloadConfig,
@@ -12,6 +11,7 @@ import {
   payloadModelCandidates,
   resolvePayloadRulePaths,
 } from "../../src/config/payload/index.ts";
+import { compileGoRegex, replaceAllGo } from "../../src/config/payload/re2.ts";
 import fixtures from "../fixtures/payload-rules.json";
 
 const decodePayload = Schema.decodeUnknownSync(PayloadConfig);
@@ -507,14 +507,48 @@ describe("payload rules engine details", () => {
 });
 
 describe("payload replace rules", () => {
-  it("translates RE2 syntax to JavaScript and rejects what has no translation", () => {
-    expect(compileGoRegex("(?is)a.b")?.flags).toBe("gisu");
-    expect(compileGoRegex("(?P<word>\\w+)")?.source).toBe("(?<word>\\w+)");
-    expect(compileGoRegex("[[:upper:][:digit:]]")?.test("Q")).toBe(true);
-    expect(compileGoRegex("\\x{1F600}")?.test("😀")).toBe(true);
-    expect(compileGoRegex("a\\#b")?.test("a#b")).toBe(true);
+  it("translates RE2 syntax to JavaScript with RE2's meaning", () => {
+    const replace = (pattern: string, text: string, template = "#"): string | undefined => {
+      const re = compileGoRegex(pattern);
 
-    for (const pattern of ["", "(", "a(?i)b", "(?U)a", "\\Qa.b\\E", "[[:^alpha:]]", "[[:nope:]]"])
+      return re === undefined ? undefined : replaceAllGo(re, text, template);
+    };
+
+    // `.` and the (?m) anchors know only `\n`; (?s) makes `.` match it too.
+    expect(replace(".", "a\r\u2028\n")).toBe("###\n");
+    expect(replace("(?s).", "a\n")).toBe("##");
+    expect(replace("(?m)^x|x$", "ax\rxa\u2029xa\nx")).toBe("ax\rxa\u2029xa\n#");
+    // ASCII classes, octal, \Q…\E, scripts and POSIX classes, negated ones too.
+    expect(replace("\\s", " \t\u00a0\v")).toBe("##\u00a0\v");
+    expect(replace("[\\S]", " \u00a0")).toBe(" #");
+    expect(replace("(?i)\\W", "sſK!")).toBe("sſK#");
+    expect(replace("(?i)[[:^lower:]]", "aAſ1")).toBe("aAſ#");
+    expect(replace("\\12|\\0", "\n\u0000")).toBe("##");
+    expect(replace("\\Qa.b\\E+", "a.bbb axb")).toBe("# axb");
+    expect(replace("\\p{Greek}+|\\pN", "αβ 1")).toBe("# #");
+    expect(replace("a{2}|{x}", "aa {x} a")).toBe("# # a");
+    // Scoped flags: (?i) holds across `|` to the end of its group; (?U) swaps greedy and lazy.
+    expect(replace("(a(?i)b|c)C", "aBC cC Cc")).toBe("# # Cc");
+    expect(replace("(?U)a+", "aaa")).toBe("###");
+    expect(replace("(?U)a+?", "aaa")).toBe("#");
+    expect(replace("(?i:K)\\b", "k\u212a")).toBe("#\u212a");
+
+    // Syntax RE2 rejects.
+    for (const pattern of [
+      "",
+      "(",
+      ")",
+      "a(?=b)",
+      "(?<!a)b",
+      "(a)\\1",
+      "\\k<a>",
+      "a**",
+      "a{1001}",
+      "(?)",
+      "(?i-)",
+      "\\8",
+      "[[:nope:]]",
+    ])
       expect(compileGoRegex(pattern)).toBeUndefined();
   });
 
