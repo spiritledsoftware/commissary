@@ -1470,4 +1470,24 @@ describe("directive-only system turns", () => {
     // Nothing was inserted: the caller owns every turn.
     expect(captureSystemPlacement(before, before, true).insertedRaw).toEqual([]);
   });
+  // Go: claude_executor_test.go (f73b8132).
+  it("keeps the caller system top level from the advisor tool declaration on, in both phases", () => {
+    const advisor = { type: "advisor_20260301", name: "advisor", model: "claude-opus-5-5" };
+    const declared = (): JsonObject => ({ ...withTail(USER("next")), tools: [advisor] });
+
+    const messages = declared();
+    applySystemInstructions(messages, instructions(false));
+    expect(roles(messages)).toEqual(["user", "user"]);
+    expect(JSON.stringify(messages.system)).toContain("caller guidance");
+
+    const count = declared();
+    relocateSystemForCountTokens(count, false, false);
+    expect(roles(count)).toEqual(["user", "user"]);
+    expect(count.system).toMatchObject([{ type: "text", text: "caller guidance" }]);
+
+    // Without the advisor the guidance moves into the conversation.
+    const plain = withTail(USER("next"));
+    applySystemInstructions(plain, instructions(false));
+    expect(roles(plain)).toContain("system");
+  });
 });
