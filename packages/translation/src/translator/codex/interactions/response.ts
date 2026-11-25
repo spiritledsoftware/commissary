@@ -72,11 +72,17 @@ const itemCallId = (item: Json | undefined): string => {
   return callId !== "" ? callId : asString(get(item, "id")).trim();
 };
 
+/** `codexContentText`: the first non-empty string of `text`, `content`, `refusal` (`refusal` first on a refusal part). */
 const contentText = (content: Json | undefined): string => {
-  for (const path of ["text", "content"]) {
+  const paths =
+    asString(get(content, "type")) === "refusal"
+      ? ["refusal", "text", "content"]
+      : ["text", "content", "refusal"];
+
+  for (const path of paths) {
     const value = get(content, path);
 
-    if (typeof value === "string") return value;
+    if (typeof value === "string" && value !== "") return value;
   }
 
   return "";
@@ -333,7 +339,10 @@ const appendItemDone = (st: StreamState, item: Json | undefined): string[] => {
 
   switch (asString(get(item, "type"))) {
     case "message": {
-      if (st.hasOutputText) return appendStepStop(out, st);
+      const hadOutputText = st.hasOutputText;
+      st.hasOutputText = false;
+
+      if (hadOutputText) return appendStepStop(out, st);
       const content = get(item, "content");
 
       if (isJsonArray(content)) {
@@ -471,6 +480,8 @@ export const convertCodexResponseToInteractions = (
 
       switch (asString(get(item, "type"))) {
         case "message":
+          st.hasOutputText = false;
+
           return ensureStep(out, st, "model_output", item);
         case "reasoning":
           return ensureStep(out, st, "thought", item);
@@ -485,11 +496,14 @@ export const convertCodexResponseToInteractions = (
       return out;
     }
 
-    case "response.output_text.delta": {
+    case "response.output_text.delta":
+    case "response.refusal.delta": {
       let out = appendCreated([], st, get(root, "response"));
       out = ensureStep(out, st, "model_output", undefined);
-      st.hasOutputText = true;
-      out.push(textDelta(st, asString(get(root, "delta"))));
+      const delta = asString(get(root, "delta"));
+
+      if (delta !== "") st.hasOutputText = true;
+      out.push(textDelta(st, delta));
 
       return out;
     }

@@ -49,6 +49,8 @@ export interface ConvertCliToOpenAIParams {
   currentToolCall: ToolCallStreamState | undefined;
   readonly citationKeys: Set<string>;
   emittedTextRunes: number;
+  /** The current message item streamed a non-empty text or refusal delta (Go `HasMessageTextDelta`). */
+  hasMessageTextDelta: boolean;
   readonly lastImageByItemId: Map<string, string>;
   reverseNames: Map<string, string> | undefined;
 }
@@ -63,9 +65,35 @@ const newParams = (model: string): ConvertCliToOpenAIParams => ({
   currentToolCall: undefined,
   citationKeys: new Set(),
   emittedTextRunes: 0,
+  hasMessageTextDelta: false,
   lastImageByItemId: new Map(),
   reverseNames: undefined,
 });
+
+/** A content part's text; a `refusal` part reads `refusal` first, then `text` (Go ca459712). */
+const partText = (part: Json): string => {
+  if (asString(get(part, "type")) === "refusal") {
+    const refusal = asString(get(part, "refusal"));
+
+    if (refusal !== "") return refusal;
+  }
+
+  return asString(get(part, "text"));
+};
+
+/** The joined `output_text` and `refusal` parts of a message item's content. */
+const messageText = (content: Json | undefined): string => {
+  if (!isJsonArray(content)) return "";
+  let text = "";
+
+  for (const part of content) {
+    const partType = asString(get(part, "type"));
+
+    if (partType === "output_text" || partType === "refusal") text += partText(part);
+  }
+
+  return text;
+};
 
 const runeCount = (text: string): number => {
   let count = 0;
@@ -401,6 +429,7 @@ export const convertCodexResponseToOpenAI = (
     p.responseId = asString(get(root, "response.id"));
     p.createdAt = asInt(get(root, "response.created_at"));
     p.model = asString(get(root, "response.model"));
+    p.hasMessageTextDelta = false;
 
     return [];
   }
@@ -438,7 +467,7 @@ export const convertCodexResponseToOpenAI = (
   ) {
     template = set(template, "choices.0.delta.role", "assistant");
     template = set(template, "choices.0.delta.reasoning_content", "\n\n");
-  } else if (dataType === "response.output_text.delta") {
+  } else if (dataType === "response.output_text.delta" || dataType === "response.refusal.delta") {
     const deltaValue = get(root, "delta");
 
     if (deltaValue !== undefined) {
@@ -446,6 +475,8 @@ export const convertCodexResponseToOpenAI = (
       template = set(template, "choices.0.delta.role", "assistant");
       template = set(template, "choices.0.delta.content", delta);
       p.emittedTextRunes += runeCount(delta);
+
+      if (delta !== "") p.hasMessageTextDelta = true;
     }
   } else if (
     dataType === "response.output_text.annotation.added" ||
@@ -497,6 +528,12 @@ export const convertCodexResponseToOpenAI = (
     template = set(template, "choices.0.native_finish_reason", nativeFinishReason);
   } else if (dataType === "response.output_item.added") {
     const item = get(root, "item");
+
+    if (item !== undefined && asString(get(item, "type")) === "message") {
+      p.hasMessageTextDelta = false;
+
+      return [];
+    }
 
     if (item === undefined || !isToolCallType(asString(get(item, "type")))) return [];
     p.functionCallIndex++;
@@ -577,15 +614,25 @@ export const convertCodexResponseToOpenAI = (
     const itemType = asString(get(item, "type"));
 
     if (itemType === "message") {
+      // A message whose text never streamed (Go ca459712: unstreamed output, refusals) is emitted whole here.
+      const fallbackText = p.hasMessageTextDelta ? "" : messageText(get(item, "content"));
+      p.hasMessageTextDelta = false;
+
       const citations = buildUrlCitations(
         annotationsFromEvent(root),
         p.emittedTextRunes,
         p.citationKeys,
       );
 
-      if (citations.length === 0) return [];
+      if (fallbackText === "" && citations.length === 0) return [];
       template = set(template, "choices.0.delta.role", "assistant");
-      template = set(template, "choices.0.delta.annotations", citations);
+
+      if (fallbackText !== "") {
+        template = set(template, "choices.0.delta.content", fallbackText);
+        p.emittedTextRunes += runeCount(fallbackText);
+      }
+
+      if (citations.length > 0) template = set(template, "choices.0.delta.annotations", citations);
 
       return [JSON.stringify(template)];
     }
@@ -763,8 +810,10 @@ export const convertCodexResponseToOpenAINonStream = (
           if (!isJsonArray(content)) break;
 
           for (const part of content) {
-            if (asString(get(part, "type")) !== "output_text") continue;
-            const text = asString(get(part, "text"));
+            const partType = asString(get(part, "type"));
+
+            if (partType !== "output_text" && partType !== "refusal") continue;
+            const text = partText(part);
             contentText += text;
             messageAnnotations.push(
               ...buildUrlCitations(

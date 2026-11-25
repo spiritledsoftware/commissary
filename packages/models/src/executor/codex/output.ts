@@ -99,6 +99,7 @@ export const normalizeCodexCompletion = (event: JsonObject): JsonObject => {
 export const hasMeaningfulOutputDelta = (event: Json | undefined): boolean => {
   switch (asString(get(event, "type"))) {
     case "response.output_text.delta":
+    case "response.refusal.delta":
     case "response.reasoning_text.delta":
     case "response.reasoning_summary_text.delta":
     case "response.function_call_arguments.delta": {
