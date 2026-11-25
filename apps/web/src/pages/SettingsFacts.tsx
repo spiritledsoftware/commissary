@@ -38,6 +38,7 @@ const PAYLOAD_KINDS: ReadonlyArray<readonly [keyof SettingsView["payload"], stri
   ["default-raw", "Default, raw JSON", "The same, with a raw JSON value."],
   ["override", "Override", "Set a parameter, replacing what the client sent."],
   ["override-raw", "Override, raw JSON", "The same, with a raw JSON value."],
+  ["replace", "Replace", "Rewrite text in messages or fields, literally or by pattern."],
   ["filter", "Filter", "Remove a parameter from the request."],
 ];
 

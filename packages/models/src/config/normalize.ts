@@ -2,7 +2,7 @@
  * Post-decode normalisation of a decoded {@link Config}.
  *
  * Go source: internal/config/config_load.go (clamps), config_normalization.go (Sanitize*), config_validation.go
- * (SanitizePayloadRules). Applied once when a document is imported/stored so readers see canonical values.
+ * (SanitizePayloadRules, including the replace rules). Applied once when a document is imported/stored so readers see canonical values.
  * Workers additions (no Go counterpart): OpenCode keys without a secret are dropped, and a model entry's `protocol`
  * (OpenCode-only) is dropped in every other provider section.
  */
@@ -18,7 +18,12 @@ import type {
   OpenAICompatGroup,
   RequestScopedErrorRule,
 } from "./schema.ts";
-import type { PayloadRule } from "./payload/schema.ts";
+import type { PayloadReplaceRule, PayloadRule } from "./payload/schema.ts";
+import {
+  compileGoRegex,
+  payloadReplaceRuleError,
+  resolvePayloadReplacement,
+} from "./payload/replace.ts";
 import { isSystemOneProvider } from "../executor/systemone/providers.ts";
 
 const DEFAULT_META_BASE_URL = "https://api.meta.ai/v1";
@@ -451,6 +456,26 @@ const sanitizeRawRules = (rules: readonly PayloadRule[]): PayloadRule[] =>
     );
   });
 
+/**
+ * Drops invalid replace rules, and the regex entries of a valid one that do not compile; a rule left without entries
+ * goes too (config_validation.go SanitizePayloadRules).
+ */
+const sanitizeReplaceRules = (rules: readonly PayloadReplaceRule[]): PayloadReplaceRule[] =>
+  rules.flatMap((rule): PayloadReplaceRule[] => {
+    if (payloadReplaceRuleError(rule) !== undefined) return [];
+
+    const replacements = (rule.replacements ?? []).filter((entry) => {
+      const resolved = resolvePayloadReplacement(entry);
+
+      return (
+        typeof resolved !== "string" &&
+        (!resolved.isRegex || compileGoRegex(resolved.source) !== undefined)
+      );
+    });
+
+    return replacements.length === 0 ? [] : [{ ...rule, replacements }];
+  });
+
 const trimValues = <T extends Record<string, unknown>>(value: T): T =>
   // SAFETY: only string values are replaced (by their trimmed form), so every property keeps its type in T.
   Object.fromEntries(
@@ -487,6 +512,7 @@ export const normalizeConfig = (config: Config): Config => {
         ...payload,
         "default-raw": sanitizeRawRules(payload["default-raw"]),
         "override-raw": sanitizeRawRules(payload["override-raw"]),
+        replace: sanitizeReplaceRules(payload.replace),
       },
     },
     upstream: {

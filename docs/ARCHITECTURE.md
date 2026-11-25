@@ -441,6 +441,15 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
   it mutates `payload` in place (callers pass a freshly built body and a distinct `original`). The Codex tool-schema
   integer normalisation that Go performs inside the same function lives in `executor/helps/payload.ts` (`finalizePayload`: normalise
   for Codex clients targeting non-Codex executors, then `applyPayloadRules`); executors call `finalizePayload`.
+  `replace` rules (`payload/replace.ts`) run after the overrides and before `filter`: ordered literal or regex replacements in
+  the existing strings of one role's messages (`system`, `developer`, `user`, by one-based position or `all`; a top-level
+  `system`/`instructions`/`systemInstruction` counts as the first system message) or of explicit `paths`. Difference from
+  Go: JavaScript has no RE2, so a pattern is translated (leading `(?ims)` flags, `(?P<name>`, `\A`, `\z`, `\pL`, POSIX
+  classes) and one with no translation (a flag group after the start, `(?U)`, `\Q…\E`) is dropped like an invalid one;
+  JavaScript's `\s` also matches Unicode spaces, and syntax RE2 rejects (look-around, backreferences) runs. Templates
+  expand like Go's (`$1`, `${name}`, `$$`). Path targets follow queries, `#` projections, key globs and `@this`; modifiers
+  and pipes select nothing (Go: computed values are not fields). An invalid rule is dropped when the config is stored. The
+  panel shows the number of replace rules with the other kinds; a config import sets them.
 - **Config normalisation** follows the Go `Sanitize*` functions on the _flattened_ list: gemini/interactions keys are
   deduplicated across all groups of a family (key, base URL, proxy, prefix, order-independent headers; entry values override
   the group's), vertex keys by `api-key|base-url` (keys without api-key and models without name or alias are dropped), and

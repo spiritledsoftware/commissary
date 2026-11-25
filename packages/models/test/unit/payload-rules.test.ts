@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { asString, exists, get, type Json } from "@commissary/json";
 import {
   applyPayloadRules,
+  compileGoRegex,
   type DisableImageGenerationMode,
   matchModelPattern,
   PayloadConfig,
@@ -502,5 +503,46 @@ describe("payload rules engine details", () => {
     ]);
     expect(resolvePayloadRulePaths(body, " plain.path ")).toEqual(["plain.path"]);
     expect(resolvePayloadRulePaths(body, "  ")).toEqual([]);
+  });
+});
+
+describe("payload replace rules", () => {
+  it("translates RE2 syntax to JavaScript and rejects what has no translation", () => {
+    expect(compileGoRegex("(?is)a.b")?.flags).toBe("gisu");
+    expect(compileGoRegex("(?P<word>\\w+)")?.source).toBe("(?<word>\\w+)");
+    expect(compileGoRegex("[[:upper:][:digit:]]")?.test("Q")).toBe(true);
+    expect(compileGoRegex("\\x{1F600}")?.test("😀")).toBe(true);
+    expect(compileGoRegex("a\\#b")?.test("a#b")).toBe(true);
+
+    for (const pattern of ["", "(", "a(?i)b", "(?U)a", "\\Qa.b\\E", "[[:^alpha:]]", "[[:nope:]]"])
+      expect(compileGoRegex(pattern)).toBeUndefined();
+  });
+
+  it("rewrites a role's text in place and reports the written paths", () => {
+    const payload: Json = {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hello hero" }] },
+        { role: "user", content: "hero again" },
+      ],
+    };
+
+    const result = applyPayloadRules(
+      makeConfig({
+        replace: [
+          {
+            models: [{ name: "*" }],
+            target: { role: "user", all: true },
+            replacements: [{ pattern: "h(er)o", replacement: "${1}!" }],
+          },
+        ],
+      }),
+      { model: "m", protocol: "claude", trackedPaths: ["messages.0", "messages.1.content"] },
+      payload,
+    );
+
+    expect(result.payload).toBe(payload);
+    expect(get(payload, "messages.0.content.0.text")).toBe("hello er!");
+    expect(get(payload, "messages.1.content")).toBe("er! again");
+    expect([...result.touched].toSorted()).toEqual(["messages.0", "messages.1.content"]);
   });
 });
