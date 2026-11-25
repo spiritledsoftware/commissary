@@ -857,6 +857,12 @@ Core contracts every provider slice implements (Go references in each module hea
   520-526 (Go `7dd360d9`, `deacbf21`); a WebSocket error frame without a status but with headers gets the status its
   error implies. Commissary has no SIWC route, refresh journal or nil credential, so Go `d71e9dcd`, `1f5bf2a5` and
   `335b6987` have no counterpart.
+- **Responses `include`** (`helps/codex-include.ts`, Go `7f22743a`): the Responses -> Codex translator keeps
+  `reasoning.encrypted_content` first, then the Codex-verified `web_search_call.action.sources`, `web_search_call.results` and
+  `output.encrypted_content` in that order. A provider key whose base URL is not the ChatGPT Codex backend (an OpenAI Responses
+  endpoint; Go also counts SIWC, which Commissary lacks) gets every official includable the client asked for once one of them is
+  platform-only. Meta, xAI and OpenCode, which share the translator, drop `output.encrypted_content` and `web_search_call.results`
+  again (OpenCode has no Go counterpart; it keeps the list it had before).
 - **Reasoning replay** (`replay.ts`): Claude-format callers get cached encrypted reasoning/tool calls re-inserted by
   anchor matching. The store is an interface; the default keeps one entry per model in the `SessionState` DO of the session
   (TTL 1 h, appends are compare-and-swap read-modify-writes, session keys are isolated per caller scope), with a per-isolate

@@ -24,6 +24,7 @@ import {
   sanitizeReasoningEncryptedContent,
 } from "./responses-signature.ts";
 import { ApplyPatchResponsesState, normalizeApplyPatchResponses } from "./apply-patch-responses.ts";
+import { CODEX_ONLY_INCLUDES, stripResponsesIncludeValues } from "./codex-include.ts";
 import { finalizePayload } from "./payload.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
@@ -103,17 +104,26 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     });
   }
 
+  // The shared Responses -> Codex translator keeps include values only Codex accepts (Go 7f22743a, Meta; OpenCode keeps
+  // the same include list it had before).
+  const stripCodexOnly = (value: Json): Json =>
+    from === Formats.OpenAIResponse
+      ? stripResponsesIncludeValues(value, CODEX_ONLY_INCLUDES)
+      : value;
+
   // The translators saw the signature target; the body is sent under the base model.
-  const original = setIfDifferent(
-    options.originalRequest === undefined || options.originalRequest === request.payload
-      ? cloneJson(translated.body)
-      : translate(options.originalRequest).body,
-    "model",
-    baseModel,
+  const original = stripCodexOnly(
+    setIfDifferent(
+      options.originalRequest === undefined || options.originalRequest === request.payload
+        ? cloneJson(translated.body)
+        : translate(options.originalRequest).body,
+      "model",
+      baseModel,
+    ),
   );
 
   let body = yield* thinking.apply({
-    body: translated.body,
+    body: stripCodexOnly(translated.body),
     model: request.model,
     from,
     to,

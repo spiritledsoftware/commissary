@@ -27,28 +27,59 @@ const setRequiredBool = (body: JsonObject, path: string, value: boolean): void =
 
 const REASONING = "reasoning.encrypted_content";
 
-const SOURCES = "web_search_call.action.sources";
+/** The Codex-verified optional include values the translator keeps, in canonical order (Go 7f22743a). */
+const OPTIONAL_INCLUDES = [
+  "web_search_call.action.sources",
+  "web_search_call.results",
+  "output.encrypted_content",
+] as const;
 
-/** `setCodexRequiredInclude`. */
+/**
+ * `setCodexRequiredInclude`: `reasoning.encrypted_content` first, then the requested Codex-verified optional values in
+ * canonical order; everything else is dropped. A body already in that form is left alone.
+ */
 const setRequiredInclude = (body: JsonObject): void => {
   const current = get(body, "include");
-  let includeSources = false;
+  const present = OPTIONAL_INCLUDES.map(() => false);
+  let hasOptional = false;
 
   if (isJsonArray(current)) {
-    includeSources = current.some((value) => value === SOURCES);
+    let hasReasoning = false;
+    let canonical = current.length > 0 && current[0] === REASONING;
+    let lastOptional = -1;
 
-    if (!includeSources && current.length === 1 && current[0] === REASONING) return;
+    for (const [index, value] of current.entries()) {
+      if (typeof value !== "string") {
+        canonical = false;
+        continue;
+      }
 
-    if (
-      includeSources &&
-      current.length === 2 &&
-      current[0] === REASONING &&
-      current[1] === SOURCES
-    )
-      return;
+      if (value === REASONING) {
+        if (index !== 0 || hasReasoning) canonical = false;
+        hasReasoning = true;
+        continue;
+      }
+
+      const optional = OPTIONAL_INCLUDES.findIndex((allowed) => allowed === value);
+
+      if (optional < 0) {
+        canonical = false;
+        continue;
+      }
+
+      if (present[optional] === true || optional <= lastOptional) canonical = false;
+      present[optional] = true;
+      hasOptional = true;
+      lastOptional = optional;
+    }
+
+    if (canonical && hasReasoning) return;
   }
 
-  set(body, "include", includeSources ? [REASONING, SOURCES] : [REASONING]);
+  set(body, "include", [
+    REASONING,
+    ...(hasOptional ? OPTIONAL_INCLUDES.filter((_, index) => present[index] === true) : []),
+  ]);
 };
 
 const stripPromptCacheBreakpointFromParts = (parts: Json[]): void => {

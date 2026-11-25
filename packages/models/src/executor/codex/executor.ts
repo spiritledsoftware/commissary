@@ -54,6 +54,10 @@ import {
   localCompactionStream,
   rejectSyntheticPreviousResponseId,
 } from "../helps/compaction.ts";
+import {
+  isChatGPTCodexBackendBaseUrl,
+  preserveCodexOpenAIResponsesInclude,
+} from "../helps/codex-include.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { translateRequestForExecutor } from "../helps/translate.ts";
 import { buildResponsesUsageJson, countCodexInputTokens } from "../helps/token-count.ts";
@@ -367,6 +371,21 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     if (pair instanceof ExecutionError) return yield* pair;
     const { translated, original } = pair;
+
+    // A non-ChatGPT OpenAI Responses upstream (a codex-api-key endpoint) gets every official include value the client
+    // asked for (Go 7f22743a `shouldPreserveFullCodexOpenAIInclude`; Commissary has no SIWC route).
+    if (
+      !mode.compact &&
+      codexUsesProviderKey(context.credential) &&
+      !isChatGPTCodexBackendBaseUrl(codexBaseUrl(context.credential))
+    ) {
+      original.body = preserveCodexOpenAIResponsesInclude(
+        original.body,
+        options.originalRequest ?? request.payload,
+        from,
+      );
+      translated.body = preserveCodexOpenAIResponsesInclude(translated.body, request.payload, from);
+    }
 
     const nativeOutput = isNativeCodexRequest(
       request.payload,

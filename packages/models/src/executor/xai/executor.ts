@@ -51,6 +51,7 @@ import {
 import { codexWebsocketsEnabled } from "../codex/websocket.ts";
 import { claudeCodeExecutionScope } from "../codex/replay.ts";
 import { normalizeCodexInstructions, setIfDifferent } from "../codex/request.ts";
+import { CODEX_ONLY_INCLUDES, stripResponsesIncludeValues } from "../helps/codex-include.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { buildResponsesUsageJson, countXaiInputTokens } from "../helps/token-count.ts";
 import { providerSessionUuid, uuidV5Oid } from "../helps/uuid.ts";
@@ -321,16 +322,26 @@ export const makeXaiExecutor = (executorOptions: XaiExecutorOptions = {}): Provi
             rewrite,
           );
 
-    const originalTranslated = setIfDifferent(
-      preserveOutputControls(originalEnvelope.body, original, from),
-      "model",
-      baseModel,
+    // The shared Responses -> Codex translator keeps include values only Codex accepts (Go 7f22743a).
+    const stripCodexOnly = (value: Json): Json =>
+      to === Formats.Codex && from === Formats.OpenAIResponse
+        ? stripResponsesIncludeValues(value, CODEX_ONLY_INCLUDES)
+        : value;
+
+    const originalTranslated = stripCodexOnly(
+      setIfDifferent(
+        preserveOutputControls(originalEnvelope.body, original, from),
+        "model",
+        baseModel,
+      ),
     );
 
-    let body = setIfDifferent(
-      preserveOutputControls(translated.body, request.payload, from),
-      "model",
-      baseModel,
+    let body = stripCodexOnly(
+      setIfDifferent(
+        preserveOutputControls(translated.body, request.payload, from),
+        "model",
+        baseModel,
+      ),
     );
 
     body = yield* thinking.apply({
