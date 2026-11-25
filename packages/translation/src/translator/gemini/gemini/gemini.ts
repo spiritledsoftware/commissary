@@ -55,16 +55,61 @@ const normalizeTools = (body: Json): void => {
       if (!isJsonObject(declaration)) continue;
       const parameters = declaration["parameters"];
       const parametersJsonSchema = declaration["parametersJsonSchema"];
+      const snakeParametersJsonSchema = declaration["parameters_json_schema"];
 
-      // String-encoded numeric constraints become numbers: the JSON Schema carrier needs them as such.
+      // String-encoded numeric constraints become numbers and numeric protobuf types become type names: the JSON
+      // Schema carrier needs them as such.
       if (parameters !== undefined) {
         declaration["parametersJsonSchema"] = normalizeJsonSchemaNumericConstraints(parameters);
         delete declaration["parameters"];
       } else if (parametersJsonSchema !== undefined) {
         declaration["parametersJsonSchema"] =
           normalizeJsonSchemaNumericConstraints(parametersJsonSchema);
+      } else if (snakeParametersJsonSchema !== undefined) {
+        declaration["parameters_json_schema"] =
+          normalizeJsonSchemaNumericConstraints(snakeParametersJsonSchema);
       }
     }
+  }
+};
+
+/**
+ * The response schema of each generation config casing moves to the JSON Schema carrier, normalized: the protobuf
+ * `responseSchema` (either casing) becomes the config's own casing of `responseJsonSchema`, and an existing JSON Schema
+ * carrier is normalized in place (Go 531aea15).
+ */
+const RESPONSE_SCHEMA_KEYS = [
+  {
+    container: "generationConfig",
+    proto: ["responseSchema", "response_schema"],
+    json: ["responseJsonSchema", "response_json_schema"],
+  },
+  {
+    container: "generation_config",
+    proto: ["response_schema", "responseSchema"],
+    json: ["response_json_schema", "responseJsonSchema"],
+  },
+] as const;
+
+const normalizeResponseSchemas = (body: Json): void => {
+  for (const { container, proto, json } of RESPONSE_SCHEMA_KEYS) {
+    const config = get(body, container);
+
+    if (!isJsonObject(config)) continue;
+    const protoKey = proto.find((key) => config[key] !== undefined);
+    const protoSchema = protoKey === undefined ? undefined : config[protoKey];
+
+    if (protoKey !== undefined && protoSchema !== undefined) {
+      config[json[0]] = normalizeJsonSchemaNumericConstraints(protoSchema);
+      delete config[protoKey];
+      continue;
+    }
+
+    const jsonKey = json.find((key) => config[key] !== undefined);
+    const jsonSchema = jsonKey === undefined ? undefined : config[jsonKey];
+
+    if (jsonKey !== undefined && jsonSchema !== undefined)
+      config[jsonKey] = normalizeJsonSchemaNumericConstraints(jsonSchema);
   }
 };
 
@@ -142,25 +187,7 @@ export const convertGeminiRequestToGemini = (
 
   sanitizeGeminiRequestThoughtSignatures(body, "contents");
 
-  const responseSchema = get(body, "generationConfig.responseSchema");
-
-  if (responseSchema !== undefined) {
-    set(
-      body,
-      "generationConfig.responseJsonSchema",
-      normalizeJsonSchemaNumericConstraints(responseSchema),
-    );
-    del(body, "generationConfig.responseSchema");
-  } else {
-    const responseJsonSchema = get(body, "generationConfig.responseJsonSchema");
-
-    if (responseJsonSchema !== undefined)
-      set(
-        body,
-        "generationConfig.responseJsonSchema",
-        normalizeJsonSchemaNumericConstraints(responseJsonSchema),
-      );
-  }
+  normalizeResponseSchemas(body);
 
   backfillEmptyFunctionResponseNames(body);
 

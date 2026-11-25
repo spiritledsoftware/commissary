@@ -22,6 +22,7 @@ import {
   PLACEHOLDER_REASON_DESCRIPTION,
 } from "../gemini/util/json-schema.ts";
 import { sanitizeFunctionName } from "../gemini/util/claude.ts";
+import { normalizeJsonSchemaNumericConstraints } from "./schema.ts";
 import { inlineToolAdditionDefinitions } from "./claude-tool-addition.ts";
 import {
   canonicalToolName,
@@ -1031,7 +1032,10 @@ const placeholderInjected = (
   if (!injected && topLevel && originalInfo.forbidsDynamic) {
     for (const translated of translatedSchemas) {
       const recleaned = prop(
-        cleanJsonSchemaForAntigravity({ schema: structuredClone(translated) }),
+        // Normalized before wrapping, as the executor does: under the wrapper key the schema is not reached (Go 531aea15).
+        cleanJsonSchemaForAntigravity({
+          schema: structuredClone(normalizeJsonSchemaNumericConstraints(translated)),
+        }),
         "schema",
       );
 

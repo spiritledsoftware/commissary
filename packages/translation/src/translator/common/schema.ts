@@ -2,7 +2,8 @@
  * JSON Schema keyword tables and regex-escape checks shared by translators.
  *
  * Go source: internal/util/claude_schema.go (SchemaMapKeywords, SchemaValueKeywords,
- * HasUnsupportedUnicodePropertyEscape) and internal/util/gemini_schema.go (NormalizeJSONSchemaNumericConstraints).
+ * HasUnsupportedUnicodePropertyEscape) and internal/util/gemini_schema.go (NormalizeJSONSchemaNumericConstraints,
+ * protoSchemaTypeName).
  */
 import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissary/json";
 
@@ -80,6 +81,24 @@ const INT64_MAX = 9223372036854775807n;
 const parseSchemaNonNegativeInt = (raw: string): number | undefined =>
   /^(?:0|[1-9]\d*)$/.test(raw) && BigInt(raw) <= INT64_MAX ? Number(raw) : undefined;
 
+/** Google's protobuf `Schema.Type` enum values, which its JSON form can emit as numbers (Go 531aea15). */
+const PROTO_SCHEMA_TYPE_NAMES: ReadonlyArray<string> = [
+  "",
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "array",
+  "object",
+  "null",
+];
+
+/** `protoSchemaTypeName`: the JSON Schema type name of a numeric protobuf `Schema.Type` (1..7), else `undefined`. */
+export const protoSchemaTypeName = (value: Json | undefined): string | undefined =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 7
+    ? PROTO_SCHEMA_TYPE_NAMES[value]
+    : undefined;
+
 const subschema = (value: Json): Json =>
   isJsonObject(value) ? normalizeNumericConstraintsNode(value) : value;
 
@@ -92,7 +111,11 @@ const normalizeNumericConstraintsNode = (node: JsonObject): JsonObject => {
   };
 
   for (const [key, value] of Object.entries(node)) {
-    if (NUMERIC_CONSTRAINT_KEYWORDS.has(key)) {
+    if (key === "type") {
+      const typeName = protoSchemaTypeName(value);
+
+      if (typeName !== undefined) replace(key, typeName);
+    } else if (NUMERIC_CONSTRAINT_KEYWORDS.has(key)) {
       const parsed = typeof value === "string" ? parseSchemaNonNegativeInt(value) : undefined;
 
       if (parsed !== undefined) replace(key, parsed);
@@ -128,9 +151,10 @@ const normalizeNumericConstraintsNode = (node: JsonObject): JsonObject => {
 
 /**
  * `NormalizeJSONSchemaNumericConstraints`: converts string-encoded integers on the numeric constraint keywords
- * (`minLength`, `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties`) to JSON numbers. Google's
- * protobuf Schema carries these int64 fields as strings, whereas a standard JSON Schema carrier such as
- * `parametersJsonSchema` needs numbers. Only schema and subschema containers are visited, so string literals
+ * (`minLength`, `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties`) to JSON numbers, and numeric
+ * protobuf `Schema.Type` enums (1..7) on `type` to lowercase type names (Go 531aea15). Google's protobuf Schema can
+ * carry these int64 fields as strings and its types as integers, whereas a standard JSON Schema carrier such as
+ * `parametersJsonSchema` needs numbers and type names. Only schema and subschema containers are visited, so string literals
  * (`enum`, `default`, `examples`) and non-schema metadata (`x-*`, unknown keys, property names) stay untouched.
  * Returns `schema` itself when nothing changes; never mutates it.
  */

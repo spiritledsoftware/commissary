@@ -262,6 +262,38 @@ describe("envelope", () => {
   });
 });
 
+// CLIProxyAPI 531aea15: numeric protobuf Schema.Type enums are decoded before the tool schema is nested under the
+// cleaner's wrapper key, where the cleaner's own normalization does not reach.
+describe("numeric protobuf schema types in tool schemas", () => {
+  it("decodes them before nested cleaning, so array items and placeholders survive", () => {
+    const payload: Json = {
+      request: {
+        tools: [
+          {
+            functionDeclarations: [
+              {
+                name: "t",
+                parametersJsonSchema: {
+                  type: 6,
+                  properties: { tags: { type: 5, items: { type: 1 } }, emptyObj: { type: 6 } },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    sanitizeRequestSchemas(payload, { useAntigravitySchema: true, isClaudeModel: true });
+    const parameters = "request.tools.0.functionDeclarations.0.parameters";
+
+    expect(get(payload, `${parameters}.type`)).toBe("object");
+    expect(get(payload, `${parameters}.properties.tags.type`)).toBe("array");
+    expect(get(payload, `${parameters}.properties.tags.items.type`)).toBe("string");
+    expect(get(payload, `${parameters}.properties.emptyObj.properties.reason.type`)).toBe("string");
+  });
+});
+
 const payloadOf = (request: Json): Json => ({ request: structuredClone(request) });
 
 /** The system instruction's text parts joined, as a prompt. */

@@ -9,7 +9,10 @@
  * back to `AUTO`, and the request builder must not restore `VALIDATED` afterwards (`constrainRequestPayload`).
  */
 import { asString, del, get, isJsonArray, isJsonObject, type Json, set } from "@commissary/json";
-import { buildClaudeStructuredOutputInstruction } from "@commissary/translation";
+import {
+  buildClaudeStructuredOutputInstruction,
+  normalizeJsonSchemaNumericConstraints,
+} from "@commissary/translation";
 import { isClaude55Model } from "../helps/claude-55-model.ts";
 
 const CONTAINERS = ["request.generationConfig", "request.generation_config"] as const;
@@ -52,8 +55,14 @@ export const prepareClaudeStructuredOutput = (model: string, payload: Json): boo
   }
 
   if (schema === undefined) return false;
-  // The untouched schema wrapped as a format, not as format settings themselves.
-  const instruction = buildClaudeStructuredOutputInstruction({ type: "json_schema", schema });
+
+  // The schema wrapped as a format, not as format settings themselves; protobuf-encoded numeric constraints and types
+  // are normalized first (Go 531aea15).
+  const instruction = buildClaudeStructuredOutputInstruction({
+    type: "json_schema",
+    schema: normalizeJsonSchemaNumericConstraints(schema),
+  });
+
   const request = get(payload, "request");
 
   if (!isJsonObject(request)) return false;

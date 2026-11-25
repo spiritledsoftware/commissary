@@ -7,8 +7,7 @@
  * a parsed document (`Doc`) using the gjson/sjson engine of `@commissary/json`. Pass one single schema, never a request.
  *
  * Differences: hint texts embed `JSON.stringify` of objects/arrays (Go keeps the original raw text). Local reference
- * inlining lives in `common/schema-refs.ts` (shared with the executors); a property literally named `const` is not
- * converted to an `enum` of its parent (Go would fabricate `properties.enum`).
+ * inlining lives in `common/schema-refs.ts` (shared with the executors).
  */
 import {
   asString,
@@ -19,6 +18,7 @@ import {
   type Json,
   type JsonObject,
   set,
+  stableStringify,
 } from "@commissary/json";
 import {
   inlineLocalRefsForClean,
@@ -27,7 +27,7 @@ import {
   refName,
   SCHEMA_NAME_MAP_KEYWORDS,
 } from "../../common/schema-refs.ts";
-import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
+import { normalizeJsonSchemaNumericConstraints, protoSchemaTypeName } from "../../common/schema.ts";
 
 export const PLACEHOLDER_REASON_DESCRIPTION = "Brief explanation of why you are calling this tool";
 
@@ -285,6 +285,9 @@ const isKnownKeywordOrExtension = (key: string): boolean =>
 
 const isNonObjectDeclaredType = (t: Json | undefined): boolean => {
   if (typeof t === "string") return t !== "" && t.toLowerCase() !== "object";
+  const protoType = protoSchemaTypeName(t);
+
+  if (protoType !== undefined) return protoType !== "object";
 
   if (isJsonArray(t)) {
     if (t.some((item) => typeof item === "string" && item.toLowerCase() === "object")) return false;
@@ -297,6 +300,8 @@ const isNonObjectDeclaredType = (t: Json | undefined): boolean => {
 
 const isArrayDeclaredType = (t: Json | undefined): boolean => {
   if (typeof t === "string") return t.toLowerCase() === "array";
+
+  if (typeof t === "number") return protoSchemaTypeName(t) === "array";
 
   return (
     isJsonArray(t) && t.some((item) => typeof item === "string" && item.toLowerCase() === "array")
@@ -626,12 +631,17 @@ const convertRefsToHints = (doc: Doc, preserveSiblings: boolean): void => {
 
 // --- enum / const / constraints ------------------------------------------------------------------------------------
 
+// Each pass skips a keyword-named entry of a name map: a property called `const`, `enum` or `additionalProperties` is
+// an author-defined parameter, not a keyword of its parent (Go cad3ae5d).
 const convertConstToEnum = (doc: Doc): void => {
   for (const p of findPaths(doc, "const")) {
+    const parentPath = trimSuffix(p, ".const");
+
+    if (isPropertyDefinition(parentPath)) continue;
     const value = getAt(doc, p);
 
-    if (value === undefined || isPropertyDefinition(trimSuffix(p, ".const"))) continue;
-    const enumPath = `${trimSuffix(p, ".const")}.enum`;
+    if (value === undefined) continue;
+    const enumPath = joinPath(parentPath, "enum");
 
     if (getAt(doc, enumPath) === undefined) setAt(doc, enumPath, [value]);
   }
@@ -639,27 +649,35 @@ const convertConstToEnum = (doc: Doc): void => {
 
 const convertEnumValuesToStrings = (doc: Doc, forceStringType: boolean): void => {
   for (const p of findPaths(doc, "enum")) {
+    const parentPath = trimSuffix(p, ".enum");
+
+    if (isPropertyDefinition(parentPath)) continue;
     const arr = getAt(doc, p);
 
     if (!isJsonArray(arr)) continue;
     setAt(doc, p, arr.map(asString));
 
-    if (forceStringType) setAt(doc, joinPath(trimSuffix(p, ".enum"), "type"), "string");
+    if (forceStringType) setAt(doc, joinPath(parentPath, "type"), "string");
   }
 };
 
 const addEnumHints = (doc: Doc): void => {
   for (const p of findPaths(doc, "enum")) {
+    const parentPath = trimSuffix(p, ".enum");
+
+    if (isPropertyDefinition(parentPath)) continue;
     const arr = getAt(doc, p);
 
     if (!isJsonArray(arr) || arr.length <= 1 || arr.length > 10) continue;
-    appendHint(doc, trimSuffix(p, ".enum"), `Allowed: ${arr.map(asString).join(", ")}`);
+    appendHint(doc, parentPath, `Allowed: ${arr.map(asString).join(", ")}`);
   }
 };
 
 const dropIgnoredEnumsToHints = (doc: Doc, options: CleanOptions): void => {
   for (const path of findPaths(doc, "enum")) {
     const parentPath = trimSuffix(path, ".enum");
+
+    if (isPropertyDefinition(parentPath)) continue;
 
     const shouldDrop =
       options.dropAllEnums === true ||
@@ -679,8 +697,10 @@ const dropIgnoredEnumsToHints = (doc: Doc, options: CleanOptions): void => {
 
 const addAdditionalPropertiesHints = (doc: Doc): void => {
   for (const p of findPaths(doc, "additionalProperties")) {
-    if (getAt(doc, p) === false)
-      appendHint(doc, trimSuffix(p, ".additionalProperties"), "No extra properties allowed");
+    const parentPath = trimSuffix(p, ".additionalProperties");
+
+    if (!isPropertyDefinition(parentPath) && getAt(doc, p) === false)
+      appendHint(doc, parentPath, "No extra properties allowed");
   }
 };
 
@@ -1341,12 +1361,105 @@ const cleanupRequiredFields = (doc: Doc): void => {
   }
 };
 
+/** The single Schema that replaces tuple or non-object `items`: Gemini's `{"type":"string"}` placeholder, or `{}`. */
+const defaultArrayItemsSchema = (addMissing: boolean): JsonObject =>
+  addMissing ? { type: "string" } : {};
+
+/** Drops repeated tuple branches, compared with their keys sorted. */
+const deduplicateSchemaBranches = (items: Json[]): Json[] => {
+  if (items.length <= 1) return items;
+  const seen = new Set<string>();
+
+  return items.filter((item) => {
+    const key = stableStringify(item);
+
+    if (seen.has(key)) return false;
+    seen.add(key);
+
+    return true;
+  });
+};
+
 /**
- * Normalizes native Schema arrays (a node declaring `items` is an array; `items` of a non-array is dropped) and, with
- * `addMissing`, gives array-typed nodes that still lack `items` after reference inlining the `{"type":"string"}`
- * placeholder Gemini requires. A node still holding a `$ref` is left alone.
+ * `normalizeNonObjectArrayItemsDoc`: the protobuf Schema's `items` is always one Schema object, so a Draft-07 tuple
+ * (`items: [...]`) becomes one Schema (its only distinct branch, an `anyOf` of its branches, or, where multi-branch
+ * unions flatten, the strongest branch with an `Accepts:` hint) and `items: true`/`false`/a scalar becomes the default
+ * items Schema, `false` leaving a hint on the array (Go c9e6e2e3).
  */
-const sanitizeArrayItems = (doc: Doc, addMissing: boolean): void => {
+const normalizeNonObjectArrayItems = (
+  doc: Doc,
+  parentPath: string,
+  itemsPath: string,
+  items: Json,
+  options: CleanOptions,
+): void => {
+  const addMissing = options.addMissingArrayItems === true;
+
+  if (isJsonArray(items)) {
+    const partitioned = partitionUnionBranches(items, undefined);
+    const nonNull = deduplicateSchemaBranches(partitioned.nonNull);
+    const { hasNull } = partitioned;
+    const preserveNullable = options.removeGeminiMetadata !== true;
+
+    const withNullable = (node: JsonObject): JsonObject =>
+      hasNull && preserveNullable ? { ...node, nullable: true } : node;
+
+    if (nonNull.length === 0) {
+      const fallback = withNullable(defaultArrayItemsSchema(addMissing));
+      setAt(doc, itemsPath, hasNull ? appendHintRaw(fallback, "(nullable)") : fallback);
+
+      return;
+    }
+
+    if (nonNull.length >= 2 && options.flattenMultiBranchUnions !== true) {
+      const union = withNullable({ anyOf: nonNull });
+      setAt(doc, itemsPath, hasNull ? appendHintRaw(union, "(nullable)") : union);
+
+      return;
+    }
+
+    const { types } = selectBest(hasNull ? [...nonNull, { type: "null" }] : nonNull);
+    const { bestIdx } = selectBest(nonNull);
+    const best = nonNull[bestIdx] ?? nonNull[0];
+    let selected: Json = isJsonObject(best) ? withNullable(best) : (best ?? {});
+    const uniqueTypes = [...new Set(types)];
+
+    if (uniqueTypes.length > 1)
+      selected = appendHintRaw(selected, `Accepts: ${uniqueTypes.join(" | ")}`);
+    else if (hasNull) selected = appendHintRaw(selected, "(nullable)");
+    setAt(doc, itemsPath, selected);
+
+    return;
+  }
+
+  if (items === true) {
+    setAt(doc, itemsPath, {});
+
+    return;
+  }
+
+  if (items === false) {
+    const prefixItems = getAt(doc, joinPath(parentPath, "prefixItems"));
+
+    appendHint(
+      doc,
+      parentPath,
+      isJsonArray(prefixItems) && prefixItems.length > 0
+        ? "No additional items allowed"
+        : "No items allowed",
+    );
+  }
+
+  setAt(doc, itemsPath, defaultArrayItemsSchema(addMissing));
+};
+
+/**
+ * Normalizes native Schema arrays (a node declaring `items` is an array; `items` of a non-array is dropped; tuple and
+ * non-object `items` become one Schema, except on the standard JSON Schema carrier) and, with `addMissingArrayItems`,
+ * gives array-typed nodes that still lack `items` after reference inlining the `{"type":"string"}` placeholder Gemini
+ * requires. A node still holding a `$ref` is left alone.
+ */
+const sanitizeArrayItems = (doc: Doc, options: CleanOptions): void => {
   const paths = findPaths(doc, "items");
   sortByDepth(paths);
 
@@ -1358,10 +1471,19 @@ const sanitizeArrayItems = (doc: Doc, addMissing: boolean): void => {
     const t = asString(getAt(doc, typePath));
 
     if (t === "") setAt(doc, typePath, "array");
-    else if (t.toLowerCase() !== "array") delAt(doc, p);
+    else if (t.toLowerCase() !== "array") {
+      delAt(doc, p);
+      continue;
+    }
+
+    if (options.preserveStandardConstraints === true) continue;
+    const items = getAt(doc, p);
+
+    if (items === undefined || isJsonObject(items)) continue;
+    normalizeNonObjectArrayItems(doc, parentPath, p, items, options);
   }
 
-  if (!addMissing) return;
+  if (options.addMissingArrayItems !== true) return;
   const typePaths = findPaths(doc, "type");
   sortByDepth(typePaths);
 
@@ -1404,7 +1526,8 @@ const addEmptySchemaPlaceholder = (doc: Doc): void => {
   sortByDepth(paths);
 
   for (const p of paths) {
-    if (asString(getAt(doc, p)) !== "object") continue;
+    // An uppercase protobuf `OBJECT` is an object too (Go be39c4d5).
+    if (asString(getAt(doc, p)).toLowerCase() !== "object") continue;
     const parentPath = trimSuffix(p, ".type");
     const propsPath = joinPath(parentPath, "properties");
     const props = getAt(doc, propsPath);
@@ -1502,7 +1625,7 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
   if (!preserveConjunctions) {
     cleanupRequiredFields(doc);
     sanitizeObjectProperties(doc);
-    sanitizeArrayItems(doc, options.addMissingArrayItems === true);
+    sanitizeArrayItems(doc, options);
   }
 
   if (options.addPlaceholder === true) addEmptySchemaPlaceholder(doc);
