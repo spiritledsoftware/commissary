@@ -1098,6 +1098,10 @@ request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
   `resp_prewarm_<uuid>`). After a turn that ran on a credential with `websockets` (Codex/xAI) the socket pins that credential and later
   frames pass through (`previous_response_id` kept, state upstream); a model change drops the pin. A continuation that needs the live
   upstream socket but cannot have it closes the client with 1012 "upstream requires HTTP replay" (the client replays full input).
+  A full `response.create` passed through on the pinned credential that fails with a 401, a 429 or a quota/cooldown error
+  before any frame reached the client fails over in place (CLIProxyAPI a8c9c8a4): the pin, upstream mode and compaction
+  marker are dropped and the turn is planned again locally with the failed credential excluded from the pick
+  (`ExecutionInput.excludedIds`), when the picker has another credential; otherwise the error reaches the client as before.
 - **A client socket outlives its upstream socket** (CLIProxyAPI f73e66ac; also for xAI). Once the create frame was
   handed to the upstream socket of a session, a transport loss (close 1006 or a socket `error`; any other close code and
   the idle deadline stay `transient_transport`) fails the request with a request-scoped 502 `upstream_websocket_lost`:
