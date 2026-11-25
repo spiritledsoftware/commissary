@@ -30,6 +30,7 @@ import {
   hasOnlyResponsesWebSearchTools,
 } from "../../gemini/openai/responses/web-search.ts";
 import { convertOpenAIResponsesRequestToGemini } from "../../gemini/openai/responses/request.ts";
+import { normalizeAntigravityRequest } from "../common/request-format.ts";
 import { convertGeminiRequestToAntigravity } from "../gemini/request.ts";
 
 export const ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION =
@@ -290,6 +291,7 @@ export const convertOpenAIResponsesRequestEnvelopeToAntigravity = (
     set(out, "requestType", "web_search");
     ensureWebSearchTool(out, includedDomains);
     ensureWebSearchSystemInstruction(out);
+    normalizeAntigravityRequest(out);
     const body = enableThinkingSummary(input, out);
 
     return {

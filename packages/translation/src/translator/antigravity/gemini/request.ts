@@ -27,6 +27,10 @@ import {
   sanitizeGeminiSystemInstruction,
 } from "../../gemini/common/signature.ts";
 import { mapSanitizedFunctionName, sanitizedFunctionNameMap } from "../../common/tool-names.ts";
+import {
+  normalizeAntigravityMediaFields,
+  normalizeAntigravityRequest,
+} from "../common/request-format.ts";
 
 const DECLARATION_KEYS = ["functionDeclarations", "function_declarations"] as const;
 
@@ -134,9 +138,19 @@ const attachInlineData = (response: Json, images: ReadonlyArray<JsonObject>): Js
   return target;
 };
 
-/** `collectFunctionResponsesWithSiblingInlineData`. */
-const collectFunctionResponses = (parts: Json | undefined): Json[] => {
+/**
+ * `collectFunctionResponsesWithSiblingInlineData`: the turn's function responses, with each sibling inline image moved
+ * onto the nearest preceding response (leading images onto the first), and the turn's other parts, kept beside them.
+ */
+/** A user turn's parts split into its function responses and everything else. */
+interface CollectedFunctionResponses {
+  readonly responses: Json[];
+  readonly others: Json[];
+}
+
+const collectFunctionResponses = (parts: Json | undefined): CollectedFunctionResponses => {
   const responses: Json[] = [];
+  const others: Json[] = [];
   let leadingImages: JsonObject[] = [];
   let current = -1;
   const items = isJsonArray(parts) ? parts : isJsonObject(parts) ? Object.values(parts) : [];
@@ -157,7 +171,10 @@ const collectFunctionResponses = (parts: Json | undefined): Json[] => {
 
     const image = normalizeInlineDataPart(part);
 
-    if (image === undefined) continue;
+    if (image === undefined) {
+      others.push(part);
+      continue;
+    }
 
     if (current >= 0)
       // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
@@ -165,7 +182,7 @@ const collectFunctionResponses = (parts: Json | undefined): Json[] => {
     else leadingImages.push(image);
   }
 
-  return responses;
+  return { responses, others };
 };
 
 /** `parseFunctionResponseRaw` for an object part: backfills an empty name with the matching call name. */
@@ -222,6 +239,14 @@ const fixCliToolResponse = (root: Json): void => {
   const out: Json[] = [];
   const pendingGroups: FunctionCallGroup[] = [];
   let collected: Json[] = [];
+  // Turns that follow a tool call wait until its responses are in, so the responses stay next to their call
+  // (CLIProxyAPI 9ac1cd7d).
+  let deferred: Json[] = [];
+
+  const flushDeferred = (): void => {
+    out.push(...deferred);
+    deferred = [];
+  };
 
   const appendResponses = (responses: Json[], callNames: string[]): void => {
     const parts = responses.map((response, index) =>
@@ -229,11 +254,18 @@ const fixCliToolResponse = (root: Json): void => {
     );
 
     if (parts.length > 0) out.push({ parts, role: "function" });
+
+    if (pendingGroups.length === 0) flushDeferred();
+  };
+
+  const appendOther = (content: Json): void => {
+    if (pendingGroups.length > 0) deferred.push(content);
+    else out.push(content);
   };
 
   for (const value of items) {
     const parts = get(value, "parts");
-    const responses = collectFunctionResponses(parts);
+    const { responses, others } = collectFunctionResponses(parts);
 
     if (responses.length > 0) {
       collected.push(...responses);
@@ -253,6 +285,10 @@ const fixCliToolResponse = (root: Json): void => {
       // Responses left over in this turn have no preceding functionCall group to match and must not leak into later
       // model turns.
       if (pendingGroups.length === 0) collected = [];
+
+      // The turn's other parts (text beside the tool results) stay, as a user turn of their own (CLIProxyAPI ae88b00c).
+      if (others.length > 0 && isJsonObject(value))
+        appendOther({ ...clone(value), role: "user", parts: others.map(clone) });
 
       continue;
     }
@@ -275,7 +311,7 @@ const fixCliToolResponse = (root: Json): void => {
       if (callNames.length > 0)
         pendingGroups.push({ responsesNeeded: callNames.length, callIds, callNames });
     } else {
-      out.push(value);
+      appendOther(value);
     }
   }
 
@@ -286,6 +322,8 @@ const fixCliToolResponse = (root: Json): void => {
       appendResponses(groupResponses, group.callNames);
     }
   }
+
+  flushDeferred();
 
   set(root, "request.contents", out);
 };
@@ -667,5 +705,8 @@ export const convertGeminiRequestToAntigravity = (
     sanitizeAntigravityClaudeGeminiRequestSignatures(root);
   else sanitizeGeminiRequestThoughtSignatures(root, "request.contents");
 
-  return attachDefaultSafetySettings(root, "request.safetySettings");
+  normalizeAntigravityMediaFields(get(root, "request"));
+  attachDefaultSafetySettings(root, "request.safetySettings");
+
+  return normalizeAntigravityRequest(root);
 };

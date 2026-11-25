@@ -24,6 +24,7 @@ import {
   getCachedSignature,
   hasValidSignature,
   signatureCacheEnabled,
+  signatureCacheScoped,
 } from "../../../signature/cache.ts";
 import {
   compatibleSignatureForProvider,
@@ -36,7 +37,17 @@ import {
   alignClaudeToolResults,
   claudeMessageSystemReminderText,
 } from "../../common/claude-messages.ts";
+import {
+  claudeDocumentTextBlock,
+  expandClaudeContentDocument,
+} from "../../common/claude-documents.ts";
 import { countSendableGeminiParts, UserTurnDrops } from "../../common/parts.ts";
+import {
+  claudeMaxTokens,
+  claudeOutputJsonSchema,
+  claudeStopSequences,
+} from "../../common/request.ts";
+import { normalizeAntigravityRequest } from "../common/request-format.ts";
 import {
   mergeAdjacentGeminiContents,
   mergeAdjacentGeminiUserContents,
@@ -92,7 +103,8 @@ const resolveCacheModeSignature = (
   if (rawSignature !== "")
     return resolveProviderCompatibleSignature(target, rawSignature, "unknown");
 
-  if (thinkingText !== "") {
+  // Recovery needs the attempt's own cache: an unscoped call recovers nothing (CLIProxyAPI 85225381).
+  if (thinkingText !== "" && signatureCacheScoped()) {
     const cached = getCachedSignature(modelName, thinkingText);
 
     if (cached !== "") {
@@ -319,6 +331,17 @@ const buildFunctionResponse = (
         continue;
       }
 
+      // A base64 document (a PDF) travels like an image (CLIProxyAPI e1384430).
+      const document =
+        asString(get(item, "type")) === "document"
+          ? claudeBase64InlineData(get(item, "source"))
+          : undefined;
+
+      if (document !== undefined) {
+        images.push(document);
+        continue;
+      }
+
       nonImage.push(item);
     }
 
@@ -335,6 +358,15 @@ const buildFunctionResponse = (
       // SAFETY: the surrounding check confirmed `source.type` is "base64", so `source` exists.
       set(functionResponse, "parts", [inlineDataPartOf(get(result, "source") as Json)]);
       set(functionResponse, resultPath, "");
+    } else if (asString(result["type"]) === "document") {
+      const document = claudeBase64InlineData(get(result, "source"));
+
+      if (document !== undefined) {
+        set(functionResponse, "parts", [document]);
+        set(functionResponse, resultPath, "");
+      } else {
+        setGeminiFunctionResponseResult(functionResponse, resultPath, result);
+      }
     } else {
       setGeminiFunctionResponseResult(functionResponse, resultPath, result);
     }
@@ -633,7 +665,8 @@ export const convertClaudeRequestToAntigravity = (
             if (functionId !== "" && originalFunctionName !== "")
               toolNameById.set(functionId, originalFunctionName);
 
-            let argsValue: Json | undefined;
+            // A missing input is a parameterless call (CLIProxyAPI bb8be964).
+            let argsValue: Json = {};
 
             if (isJsonObject(args)) argsValue = args;
             else if (args !== undefined) {
@@ -644,39 +677,37 @@ export const convertClaudeRequestToAntigravity = (
               else argsValue = args;
             }
 
-            if (argsValue !== undefined) {
-              const part: JsonObject = {};
-              let signature = resolveToolUseThoughtSignature(modelName, contentResult, true);
+            const part: JsonObject = {};
+            let signature = resolveToolUseThoughtSignature(modelName, contentResult, true);
 
-              if (pendingDetachedSignature !== "") {
-                const pendingMatchesTool =
-                  pendingDetachedTargetKind === "" ||
-                  pendingDetachedTargetKind === CarrierKind.Any ||
-                  pendingDetachedTargetKind === CarrierKind.Function;
+            if (pendingDetachedSignature !== "") {
+              const pendingMatchesTool =
+                pendingDetachedTargetKind === "" ||
+                pendingDetachedTargetKind === CarrierKind.Any ||
+                pendingDetachedTargetKind === CarrierKind.Function;
 
-                if (
-                  pendingMatchesTool &&
-                  (signature === "" || signature === GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR)
-                ) {
-                  signature = pendingDetachedSignature;
-                } else {
-                  appendDetachedCarrier(pendingDetachedSignature);
-                }
-
-                clearPending();
+              if (
+                pendingMatchesTool &&
+                (signature === "" || signature === GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR)
+              ) {
+                signature = pendingDetachedSignature;
+              } else {
+                appendDetachedCarrier(pendingDetachedSignature);
               }
 
-              if (signature !== "") part["thoughtSignature"] = signature;
-              const functionCall: JsonObject = {};
-
-              if (functionId !== "") functionCall["id"] = functionId;
-              functionCall["name"] = functionName;
-              functionCall["args"] = argsValue;
-              part["functionCall"] = functionCall;
-              partItems.push(part);
-
-              if (originalRole === "assistant") pendingToolUseIds.push(functionId);
+              clearPending();
             }
+
+            if (signature !== "") part["thoughtSignature"] = signature;
+            const functionCall: JsonObject = {};
+
+            if (functionId !== "") functionCall["id"] = functionId;
+            functionCall["name"] = functionName;
+            functionCall["args"] = argsValue;
+            part["functionCall"] = functionCall;
+            partItems.push(part);
+
+            if (originalRole === "assistant") pendingToolUseIds.push(functionId);
           } else if (type === "tool_result") {
             const toolCallId = asString(get(contentResult, "tool_use_id"));
 
@@ -711,6 +742,44 @@ export const convertClaudeRequestToAntigravity = (
               drops.drop("image");
             }
           } else if (type === "document" || type === "container_upload") {
+            if (type === "document") {
+              // A text document, or one of content blocks, becomes text (and images) (CLIProxyAPI e21cf8a5).
+              const emitText = (text: string): void => {
+                const part: JsonObject = { text };
+
+                if (pendingDetachedSignature !== "") {
+                  if (
+                    pendingDetachedTargetKind === "" ||
+                    pendingDetachedTargetKind === CarrierKind.Any ||
+                    pendingDetachedTargetKind === CarrierKind.Text
+                  )
+                    part["thoughtSignature"] = pendingDetachedSignature;
+                  else appendDetachedCarrier(pendingDetachedSignature);
+                  clearPending();
+                }
+
+                partItems.push(part);
+              };
+
+              const docText = claudeDocumentTextBlock(contentResult);
+
+              if (docText !== undefined) {
+                emitText(docText);
+                continue;
+              }
+
+              if (
+                expandClaudeContentDocument(
+                  contentResult,
+                  emitText,
+                  (image) => claudeBase64InlineData(get(image, "source")),
+                  (part) => partItems.push(part),
+                  originalRole === "user" ? () => drops.drop("image") : undefined,
+                )
+              )
+                continue;
+            }
+
             const part = claudeBase64InlineData(get(contentResult, "source"));
 
             if (part !== undefined) partItems.push(part);
@@ -942,15 +1011,27 @@ export const convertClaudeRequestToAntigravity = (
   const topK = numeric("top_k");
 
   if (topK !== undefined) set(out, "request.generationConfig.topK", topK);
-  const maxTokens = numeric("max_tokens");
+  // Claude's generation constraints carry over (CLIProxyAPI ac415c08, 62c419e0).
+  const maxTokens = claudeMaxTokens(get(root, "max_tokens"));
 
   if (maxTokens !== undefined) set(out, "request.generationConfig.maxOutputTokens", maxTokens);
+  const stopSequences = claudeStopSequences(get(root, "stop_sequences"));
+
+  if (stopSequences !== undefined)
+    set(out, "request.generationConfig.stopSequences", stopSequences);
+  const schema = claudeOutputJsonSchema(get(root, "output_config.format"));
+
+  if (schema !== undefined) {
+    set(out, "request.generationConfig.responseMimeType", "application/json");
+    set(out, "request.generationConfig.responseSchema", structuredClone(schema));
+  }
 
   attachDefaultSafetySettings(out, "request.safetySettings");
 
   if (isGeminiTarget) sanitizeGeminiRequestThoughtSignatures(out, "request.contents");
   else sanitizeGeminiSystemInstruction(out, "request.contents");
 
+  normalizeAntigravityRequest(out);
   const refusal = drops.err(out);
 
   if (refusal !== undefined) throw refusal;

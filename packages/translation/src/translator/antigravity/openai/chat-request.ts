@@ -26,13 +26,20 @@ import { attachDefaultSafetySettings } from "../../gemini/common/safety.ts";
 import { renameKey } from "../../gemini/gemini/gemini.ts";
 import { mapSanitizedFunctionName, sanitizedFunctionNameMap } from "../../common/tool-names.ts";
 import { sanitizeAntigravityClaudeGeminiRequestSignatures } from "../gemini/request.ts";
+import { contentHasGeminiFunctionResponse } from "../../gemini/common/contents.ts";
+import { lookupModelInfo } from "../../model-info.ts";
+import { type RequestEnvelope, TranslationError } from "../../registry.ts";
+import { parseSuffix, type ThinkingModelInfo } from "../../../thinking/index.ts";
+import { ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION } from "../claude/web-search.ts";
+import { normalizeAntigravityRequest } from "../common/request-format.ts";
 
 const FUNCTION_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 
 const textPart = (text: string): JsonObject => ({ text });
 
-const inlineDataPart = (mimeType: string, data: string, snakeCase: boolean): JsonObject => ({
-  inlineData: snakeCase ? { mime_type: mimeType, data } : { mimeType, data },
+/** Antigravity reads camelCase media fields only (CLIProxyAPI 08098d24). */
+const inlineDataPart = (mimeType: string, data: string): JsonObject => ({
+  inlineData: { mimeType, data },
 });
 
 const contentNode = (role: string, parts: Json[]): JsonObject => ({ role, parts });
@@ -208,6 +215,14 @@ const convertMessages = (
 ): void => {
   const systemParts: Json[] = [];
   const contentItems: Json[] = [];
+  // Whether each content may join a preceding tool-response turn: only real user turns may.
+  const canMerge: boolean[] = [];
+
+  const appendContent = (content: Json, mergeable: boolean): void => {
+    contentItems.push(content);
+    canMerge.push(mergeable);
+  };
+
   let hasEncounteredConversation = false;
 
   for (let i = 0; i < messages.length; i++) {
@@ -249,8 +264,7 @@ const convertMessages = (
               // Only a base64 data URL can be inlined; a remote URL has no equivalent here.
               const file = normalizeOpenAIFileData("", "", asString(get(item, "image_url.url")));
 
-              if (file !== undefined)
-                partItems.push(inlineDataPart(file.mimeType, file.data, false));
+              if (file !== undefined) partItems.push(inlineDataPart(file.mimeType, file.data));
               else drops.drop("image_url");
               break;
             }
@@ -258,8 +272,7 @@ const convertMessages = (
             case "video_url": {
               const file = normalizeOpenAIFileData("", "", asString(get(item, "video_url.url")));
 
-              if (file !== undefined)
-                partItems.push(inlineDataPart(file.mimeType, file.data, false));
+              if (file !== undefined) partItems.push(inlineDataPart(file.mimeType, file.data));
               else drops.drop("video_url");
               break;
             }
@@ -271,8 +284,7 @@ const convertMessages = (
                 asString(get(item, "file.file_data")),
               );
 
-              if (file !== undefined)
-                partItems.push(inlineDataPart(file.mimeType, file.data, false));
+              if (file !== undefined) partItems.push(inlineDataPart(file.mimeType, file.data));
               else drops.drop("file");
               break;
             }
@@ -282,11 +294,7 @@ const convertMessages = (
 
               if (data !== "") {
                 partItems.push(
-                  inlineDataPart(
-                    audioMimeType(asString(get(item, "input_audio.format"))),
-                    data,
-                    true,
-                  ),
+                  inlineDataPart(audioMimeType(asString(get(item, "input_audio.format"))), data),
                 );
               } else drops.drop("input_audio");
               break;
@@ -298,7 +306,7 @@ const convertMessages = (
       // Whitespace-only text is forwarded but never keeps an emptied turn alive.
       drops.endTurn(countSendableGeminiParts(partItems));
 
-      if (partItems.length > 0) contentItems.push(contentNode("user", partItems));
+      if (partItems.length > 0) appendContent(contentNode("user", partItems), role === "user");
     } else if (role === "assistant") {
       hasEncounteredConversation = true;
       const partItems: Json[] = [];
@@ -319,20 +327,10 @@ const convertMessages = (
             }
 
             case "image_url": {
-              const imageUrl = asString(get(item, "image_url.url"));
+              // A data URL parses like a user's, parameters and all (CLIProxyAPI 3307446a).
+              const file = normalizeOpenAIFileData("", "", asString(get(item, "image_url.url")));
 
-              if (imageUrl.length > 5) {
-                const rest = imageUrl.slice(5);
-                const semicolon = rest.indexOf(";");
-
-                if (semicolon >= 0) {
-                  const mime = rest.slice(0, semicolon);
-                  const tail = rest.slice(semicolon + 1);
-
-                  if (tail.length > 7) partItems.push(inlineDataPart(mime, tail.slice(7), false));
-                }
-              }
-
+              if (file !== undefined) partItems.push(inlineDataPart(file.mimeType, file.data));
               break;
             }
           }
@@ -377,7 +375,7 @@ const convertMessages = (
           calls.push({ rawId, id: functionId, name: functionName });
         }
 
-        if (partItems.length > 0) contentItems.push(contentNode("model", partItems));
+        if (partItems.length > 0) appendContent(contentNode("model", partItems), false);
 
         // Tool responses scoped to this assistant turn.
         const turnResponses = new Map<string, string>();
@@ -406,16 +404,58 @@ const convertMessages = (
           });
         }
 
-        if (responseParts.length > 0) contentItems.push(contentNode("user", responseParts));
+        if (responseParts.length > 0) appendContent(contentNode("user", responseParts), false);
       } else if (partItems.length > 0) {
-        contentItems.push(contentNode("model", partItems));
+        appendContent(contentNode("model", partItems), false);
       }
     }
   }
 
   if (systemParts.length > 0)
     set(out, "request.systemInstruction", contentNode("user", systemParts));
-  set(out, "request.contents", contentItems);
+  set(out, "request.contents", mergeToolResponseUserContents(contentItems, canMerge));
+};
+
+/**
+ * `mergeAntigravityOpenAIToolResponseUserContents`: user turns that follow a tool-response turn join it, so the
+ * responses and the user's follow-up go upstream as one user turn (CLIProxyAPI 9ac1cd7d).
+ */
+const mergeToolResponseUserContents = (
+  contents: ReadonlyArray<Json>,
+  canMerge: ReadonlyArray<boolean>,
+): Json[] => {
+  if (contents.length <= 1) return [...contents];
+  const merged: Json[] = [];
+
+  for (let i = 0; i < contents.length; i++) {
+    // SAFETY: the index is in bounds (loop bound); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
+    const content = contents[i] as Json;
+
+    if (asString(get(content, "role")) !== "user" || !contentHasGeminiFunctionResponse(content)) {
+      merged.push(content);
+      continue;
+    }
+
+    let j = i + 1;
+
+    while (j < contents.length && canMerge[j] === true) j++;
+
+    if (j === i + 1) {
+      merged.push(content);
+      continue;
+    }
+
+    const parts = contents.slice(i, j).flatMap((current) => {
+      const currentParts = get(current, "parts");
+
+      return isJsonArray(currentParts) ? currentParts : [];
+    });
+
+    merged.push({ ...(isJsonObject(content) ? content : {}), parts });
+    i = j - 1;
+  }
+
+  return merged;
 };
 
 const convertTools = (
@@ -424,7 +464,6 @@ const convertTools = (
   nameMap: ReadonlyMap<string, string> | undefined,
 ): void => {
   const functionDeclarations: Json[] = [];
-  const googleSearchNodes: Json[] = [];
   const codeExecutionNodes: Json[] = [];
   const urlContextNodes: Json[] = [];
 
@@ -453,10 +492,8 @@ const convertTools = (
       }
     }
 
-    const googleSearch = get(t, "google_search");
-
-    if (googleSearch !== undefined)
-      googleSearchNodes.push({ googleSearch: structuredClone(googleSearch) });
+    // Google Search runs only in a dedicated web search request (`buildWebSearchRequest`): beside chat tools it is
+    // dropped, while code execution and URL context stay (CLIProxyAPI 28134004, d3d2817d).
     const codeExecution = get(t, "code_execution");
 
     if (codeExecution !== undefined)
@@ -469,26 +506,22 @@ const convertTools = (
   const deduplicated = deduplicateFunctionDeclarations(functionDeclarations);
   const hasFunction = deduplicated.length > 0;
 
-  if (
-    hasFunction ||
-    googleSearchNodes.length > 0 ||
-    codeExecutionNodes.length > 0 ||
-    urlContextNodes.length > 0
-  ) {
-    const items: Json[] = [];
+  const items: Json[] = [];
 
-    if (hasFunction) items.push({ functionDeclarations: deduplicated });
-    items.push(...googleSearchNodes, ...codeExecutionNodes, ...urlContextNodes);
-    set(out, "request.tools", items);
-  }
+  if (hasFunction) items.push({ functionDeclarations: deduplicated });
+  items.push(...codeExecutionNodes, ...urlContextNodes);
+
+  if (items.length > 0) set(out, "request.tools", items);
 };
 
-/** `ConvertOpenAIRequestToAntigravity`. */
-export const convertOpenAIRequestToAntigravity = (
-  modelName: string,
-  raw: Json,
-  _stream: boolean,
-): Json => {
+/** `convertOpenAIRequestToAntigravityChat`: the body, and the drops that may refuse it. */
+/** The converted chat request and the user parts it had to drop. */
+interface ConvertedChat {
+  readonly body: Json;
+  readonly drops: UserTurnDrops;
+}
+
+const convertChat = (modelName: string, raw: Json): ConvertedChat => {
   const drops = new UserTurnDrops();
   const nameMap = sanitizedFunctionNameMap(raw);
   const out: Json = { project: "", request: { contents: [] }, model: modelName };
@@ -610,10 +643,134 @@ export const convertOpenAIRequestToAntigravity = (
 
   if (modelName.toLowerCase().includes("claude"))
     sanitizeAntigravityClaudeGeminiRequestSignatures(compatible);
-  const result = attachDefaultSafetySettings(compatible, "request.safetySettings");
-  const refusal = drops.err(result);
+
+  const body = normalizeAntigravityRequest(
+    attachDefaultSafetySettings(compatible, "request.safetySettings"),
+  );
+
+  return { body, drops };
+};
+
+/** `antigravitySupportsNativeOpenAIWebSearch`: the envelope's model info first, then the Antigravity registry record. */
+const supportsNativeWebSearch = (
+  model: string,
+  modelInfo: ThinkingModelInfo | undefined,
+): boolean => {
+  const explicit = modelInfo?.nativeCapabilities?.webSearch;
+
+  if (typeof explicit === "boolean") return explicit;
+  const base = parseSuffix(model.trim()).modelName.trim();
+
+  if (base === "") return false;
+  const local = lookupModelInfo(base, "antigravity");
+
+  if (local === undefined) return modelInfo?.supportsWebSearch === true;
+
+  if (local.nativeCapabilities?.webSearch === false) return false;
+
+  return local.supportsWebSearch === true || modelInfo?.supportsWebSearch === true;
+};
+
+/** `hasOnlyAntigravityOpenAIWebSearchTools`: one tool, a bare `google_search`. */
+const hasOnlyWebSearchTools = (raw: Json): boolean => {
+  const tools = get(raw, "tools");
+
+  if (!isJsonArray(tools) || tools.length !== 1) return false;
+  const tool = tools[0];
+
+  return (
+    exists(tool, "google_search") &&
+    asString(get(tool, "type")) !== "function" &&
+    !exists(tool, "code_execution") &&
+    !exists(tool, "url_context")
+  );
+};
+
+/** `allowsAntigravityOpenAIWebSearch`. */
+const allowsWebSearch = (raw: Json): boolean => {
+  const toolChoice = get(raw, "tool_choice");
+
+  if (toolChoice === undefined) return true;
+  const allowed = ["", "auto", "required", "any"];
+
+  if (typeof toolChoice === "string") return allowed.includes(toolChoice.trim().toLowerCase());
+
+  if (!isJsonObject(toolChoice)) return false;
+  const type = asString(toolChoice["type"]).trim().toLowerCase();
+
+  return allowed.includes(type) || type === "google_search";
+};
+
+/** `buildAntigravityOpenAIWebSearchRequest`: the chat request as a dedicated web search request. */
+const buildWebSearchRequest = (body: Json, raw: Json): Json => {
+  set(body, "requestType", "web_search");
+  set(body, "request.generationConfig.candidateCount", 1);
+  const existing = get(body, "request.systemInstruction.parts");
+
+  set(
+    body,
+    "request.systemInstruction",
+    contentNode("user", [
+      ...(isJsonArray(existing) ? existing : []),
+      textPart(ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION),
+    ]),
+  );
+  const googleSearch: JsonObject = { enhancedContent: { imageSearch: { maxResultCount: 5 } } };
+  const source = get(raw, "tools.0.google_search");
+
+  if (isJsonObject(source))
+    for (const [key, value] of Object.entries(source)) googleSearch[key] = structuredClone(value);
+  set(body, "request.tools", [{ googleSearch }]);
+  del(body, "request.toolConfig.functionCallingConfig");
+  const toolConfig = get(body, "request.toolConfig");
+
+  if (isJsonObject(toolConfig) && Object.keys(toolConfig).length === 0)
+    del(body, "request.toolConfig");
+
+  return normalizeAntigravityRequest(body);
+};
+
+/**
+ * `ConvertOpenAIRequestToAntigravity`: a search-only request on a model with native search becomes a web search
+ * request (CLIProxyAPI 28134004).
+ */
+export const convertOpenAIRequestToAntigravity = (
+  modelName: string,
+  raw: Json,
+  _stream: boolean,
+  modelInfo?: ThinkingModelInfo,
+): Json => {
+  const webSearch =
+    hasOnlyWebSearchTools(raw) &&
+    supportsNativeWebSearch(modelName, modelInfo) &&
+    allowsWebSearch(raw);
+
+  const converted = convertChat(modelName, raw);
+  const body = webSearch ? buildWebSearchRequest(converted.body, raw) : converted.body;
+  const refusal = converted.drops.err(body);
 
   if (refusal !== undefined) throw refusal;
 
-  return result;
+  return body;
+};
+
+/** `ConvertOpenAIRequestEnvelopeToAntigravity`: the request with the envelope's model capabilities. */
+export const convertOpenAIRequestEnvelopeToAntigravity = (
+  envelope: RequestEnvelope,
+): RequestEnvelope => {
+  try {
+    return {
+      ...envelope,
+      body: convertOpenAIRequestToAntigravity(
+        envelope.model,
+        envelope.body,
+        envelope.stream,
+        envelope.modelInfo,
+      ),
+    };
+  } catch (error) {
+    if (error instanceof TranslationError)
+      return { ...envelope, ...(error.body !== undefined ? { body: error.body } : {}), error };
+    throw error;
+  }
 };
