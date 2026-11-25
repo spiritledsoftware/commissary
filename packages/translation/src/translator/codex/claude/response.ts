@@ -728,6 +728,8 @@ const mapStopReasonToClaude = (stopReason: string, hasToolCall: boolean): string
 // Stream
 // ---------------------------------------------------------------------------------------------------------------
 
+// Mirrors the policy block table of `@commissary/models` (`packages/models/src/http/upstream-error.ts`, `POLICY_BLOCKS`),
+// which translation cannot import: keep the codes and messages in step.
 const POLICY_BLOCK_CODES = new Set([
   "cyber_policy",
   "cyber_policy_violation",

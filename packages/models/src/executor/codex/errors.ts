@@ -23,6 +23,7 @@ import { ExecutionError } from "../errors.ts";
 import { parseRetryAfterMs } from "../helps/retry-after.ts";
 import {
   annotateImageGenerationError,
+  policyBlockMessage,
   statusFromErrorTypeAndCode,
 } from "../../http/upstream-error.ts";
 
@@ -354,23 +355,6 @@ export const codexResponseEventType = (event: Json | undefined): string => {
   return str(event, "code") !== "" && str(event, "message") !== "" ? "error" : "";
 };
 
-/** `codexPolicyFallbackMessage` (Go 1f76e479): the message of a policy block that names only its code. */
-export const codexPolicyFallbackMessage = (code: string): string => {
-  switch (code.trim().toLowerCase()) {
-    case "bio_policy":
-      return "This content was flagged for possible biological risk.";
-    case "cyber_policy":
-    case "cyber_policy_violation":
-      return "This request has been flagged for possible cybersecurity risk.";
-    case "misalignment_policy_violation":
-      return "This request was blocked due to a misalignment policy violation.";
-    case "invalid_prompt":
-      return "Invalid request.";
-    default:
-      return code;
-  }
-};
-
 const terminalErrorBody = (event: Json | undefined, path: string): JsonObject | undefined => {
   const errorResult = get(event, path);
 
@@ -394,7 +378,7 @@ const terminalErrorBody = (event: Json | undefined, path: string): JsonObject | 
   if (str(body, "error.message") === "") {
     const code = str(body, "error.code");
 
-    if (code !== "") body = set(body, "error.message", codexPolicyFallbackMessage(code));
+    if (code !== "") body = set(body, "error.message", policyBlockMessage(code) ?? code);
   }
 
   if (str(body, "error.message") === "") {
@@ -429,7 +413,7 @@ export const codexTopLevelErrorBody = (event: Json | undefined): JsonObject | un
   if (param !== "") body = set(body, "error.param", param);
 
   if (str(body, "error.message") === "") {
-    if (code !== "") body = set(body, "error.message", codexPolicyFallbackMessage(code));
+    if (code !== "") body = set(body, "error.message", policyBlockMessage(code) ?? code);
     else if (type !== "") body = set(body, "error.message", type);
   }
 

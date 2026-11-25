@@ -31,6 +31,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import { statusText } from "../../http/status.ts";
+import { policyBlockMessage } from "../../http/upstream-error.ts";
 import { responseModelOf } from "../../usage/record.ts";
 import { isResponsesTokenEvent } from "../../usage/ttft.ts";
 import { ErrorCode } from "../../credentials/cooldown/classify.ts";
@@ -57,7 +58,6 @@ import {
   codexEmptyIncompleteStreamError,
   codexErrorEventHeaders,
   codexErrorIsContextLength,
-  codexPolicyFallbackMessage,
   codexResponseEventType,
   codexStatusErrorClassification,
   codexTerminalFailure,
@@ -200,7 +200,7 @@ const websocketErrorBody = (event: Json | undefined, status: number): JsonObject
       const code = asString(node["code"]).trim();
       const type = asString(node["type"]).trim();
 
-      if (code !== "") node["message"] = codexPolicyFallbackMessage(code);
+      if (code !== "") node["message"] = policyBlockMessage(code) ?? code;
       else if (type !== "") node["message"] = type;
       else node["message"] = statusText(status);
     }

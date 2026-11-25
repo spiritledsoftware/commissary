@@ -18,6 +18,7 @@ import {
 import { statusText } from "./status.ts";
 import { safeRetryAfter } from "../executor/errors.ts";
 import { formatDurationSeconds } from "./duration.ts";
+import { ERROR_EVENT_TYPES, policyBlockMessage } from "./upstream-error.ts";
 
 type JsonRecord = JsonObject;
 
@@ -282,23 +283,6 @@ const responsesErrorClass = (status: number): ResponsesErrorClass => {
   }
 };
 
-/** `openAIResponsesPolicyFallbackMessage` (Go 1f76e479): the official copy of a policy block, "" for other codes. */
-const policyFallbackMessage = (code: string): string => {
-  switch (code.trim().toLowerCase()) {
-    case "bio_policy":
-      return "This content was flagged for possible biological risk.";
-    case "cyber_policy":
-    case "cyber_policy_violation":
-      return "This request has been flagged for possible cybersecurity risk.";
-    case "misalignment_policy_violation":
-      return "This request was blocked due to a misalignment policy violation.";
-    case "invalid_prompt":
-      return "Invalid request.";
-    default:
-      return "";
-  }
-};
-
 /** gjson `String()` of an error code: a string as is, any other value as its JSON text. */
 const codeText = (code: Json): string =>
   (typeof code === "string" ? code : JSON.stringify(code)).trim();
@@ -316,7 +300,7 @@ const withNestedErrorCode = (error: JsonObject): JsonObject => {
     if (code !== "") {
       if (nonBlank(error["message"]) !== undefined) return error;
 
-      return { ...error, message: policyFallbackMessage(code) || code };
+      return { ...error, message: policyBlockMessage(code) ?? code };
     }
   }
 
@@ -333,7 +317,6 @@ const withNestedErrorCode = (error: JsonObject): JsonObject => {
 };
 
 /** Event types that are not an error's own type. */
-const EVENT_TYPES = new Set(["error", "response.failed", "response.error"]);
 
 const responsesErrorDetail = (
   status: number,
@@ -383,7 +366,7 @@ const responsesErrorDetail = (
     }
 
     if (hasTopLevelCode && !hasScalarMessage && m === undefined)
-      message = policyFallbackMessage(code) || code;
+      message = policyBlockMessage(code) ?? code;
   }
 
   const detail: JsonObject = { type: responsesErrorClass(status).type, code, message, param: null };
@@ -391,7 +374,7 @@ const responsesErrorDetail = (
   if (payload !== undefined) {
     const t = nonBlank(payload["type"]);
 
-    if (t !== undefined && !EVENT_TYPES.has(t.trim())) detail["type"] = t.trim();
+    if (t !== undefined && !ERROR_EVENT_TYPES.has(t.trim())) detail["type"] = t.trim();
 
     if (Object.hasOwn(payload, "param")) detail["param"] = payload["param"] ?? null;
   }

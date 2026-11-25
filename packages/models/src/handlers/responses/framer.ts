@@ -17,6 +17,7 @@ import { SSE_KEEP_ALIVE } from "@commissary/translation/sse";
 import { statusText } from "../../http/status.ts";
 import {
   annotateImageGenerationError,
+  ERROR_EVENT_TYPES,
   statusFromErrorTypeAndCode,
 } from "../../http/upstream-error.ts";
 import {
@@ -473,9 +474,6 @@ const payloadErrorStatus = (payload: Json): number => {
   return payloadErrorStatusFromType(payload);
 };
 
-/** Event types that are not an error's own type. */
-const EVENT_TYPES = new Set(["error", "response.failed", "response.error"]);
-
 /**
  * `responsesSSEPayloadErrorStatus` (8fb60326, 1f76e479): the status implied by the error's type/code when none is
  * given, read from `error`, `response.error`, `body.error` or the payload itself.
@@ -491,7 +489,11 @@ const payloadErrorStatusFromType = (payload: Json): number => {
     return "";
   };
 
-  const type = first(["error.type", "response.error.type", "body.error.type", "type"], EVENT_TYPES);
+  const type = first(
+    ["error.type", "response.error.type", "body.error.type", "type"],
+    ERROR_EVENT_TYPES,
+  );
+
   const code = first(["error.code", "response.error.code", "body.error.code", "code"]);
 
   const status = statusFromErrorTypeAndCode(type, code);

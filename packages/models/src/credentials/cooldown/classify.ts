@@ -11,6 +11,7 @@
  * before an HTTP answer), `message` the upstream body or error text, `code` one of the conductor codes.
  */
 import { isJsonObject, type Json, type JsonObject, tryParseJson } from "@commissary/json";
+import { ERROR_EVENT_TYPES, POLICY_BLOCK_CODES } from "../../http/upstream-error.ts";
 
 /** Well-known error codes (sdk/cliproxy/auth/errors.go). */
 export const ErrorCode = {
@@ -44,16 +45,10 @@ const lower = (text: string): string => text.trim().toLowerCase();
 // --- request faults (internal/clienterror) --------------------------------------------------------------------------
 
 const REQUEST_FAULT_CODES = new Set([
-  "cyber_policy",
-  "cyber_policy_violation",
-  "bio_policy",
-  "misalignment_policy_violation",
-  "content_policy_violation",
-  "image_content_policy_violation",
+  ...POLICY_BLOCK_CODES,
   "context_length_exceeded",
   "message_too_big",
   "string_above_max_length",
-  "invalid_prompt",
   "invalid_value",
   "unsupported_value",
   "invalid_request_error",
@@ -144,8 +139,6 @@ const hasPolicyBlockPrefix = (text: string): boolean => {
   return POLICY_BLOCK_PREFIXES.some((prefix) => value.startsWith(prefix));
 };
 
-const IGNORED_TOP_LEVEL_TYPES = new Set(["error", "response.failed", "response.error"]);
-
 /**
  * `IsOpenAIPolicyBlockError` (Go 1f76e479): an OpenAI/Codex biological, cybersecurity or safety block, recognised by
  * its official message. A structured error whose code or type is not a request fault is never one, so a prompt that
@@ -164,7 +157,7 @@ const isOpenAIPolicyBlock = (body: string): boolean => {
     const code = lower(stringAt(root, `${prefix}code`));
     let type = lower(stringAt(root, `${prefix}type`));
 
-    if (prefix === "" && IGNORED_TOP_LEVEL_TYPES.has(type)) type = "";
+    if (prefix === "" && ERROR_EVENT_TYPES.has(type)) type = "";
     const message = stringAt(root, `${prefix}message`).trim();
 
     if (code === "" && type === "" && message === "") continue;
