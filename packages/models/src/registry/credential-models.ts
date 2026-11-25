@@ -52,6 +52,13 @@ import { EntryOnlyFormats } from "@commissary/translation/formats";
 import { cloneModelInfo, type ModelInfo, type ThinkingSupport } from "./model-info.ts";
 import { type GrantFilter, grantsReach } from "./grant-filter.ts";
 import type { ModelSource } from "./source.ts";
+import {
+  PUBLISHED_PROVIDERS,
+  type PublishedProvider,
+  publishedProvider,
+  sourceNativeId,
+  stripPublishedPrefix,
+} from "./published-routes.ts";
 
 export interface AssemblyOptions {
   readonly config: Pick<Config, "oauth" | "routing" | "upstream">;
@@ -471,7 +478,7 @@ const buildSystemOneConfigModels = (
 
 // --- filters and rewrites ------------------------------------------------------------------------------------------
 
-/** `applyExcludedModels`: case-insensitive wildcard patterns against the lower-cased id or published route's source. */
+/** `applyExcludedModels` (Go: sdk/cliproxy/service_models.go, f89d408e for the source): case-insensitive wildcard patterns against the lower-cased id or published route's source. */
 export const applyExcludedModels = (
   models: ReadonlyArray<ModelInfo>,
   excluded: ReadonlyArray<string>,
@@ -486,14 +493,21 @@ export const applyExcludedModels = (
 
   return models.filter((model) => {
     const id = model.id.trim().toLowerCase();
-    const source = (model.sourceModelId ?? "").trim().toLowerCase();
+    const source = normalizedSource(model);
 
     return !patterns.some(
       (pattern) =>
         matchWildcard(pattern, id) ||
-        (source !== "" && source !== id && matchWildcard(pattern, source)),
+        (source !== undefined && source !== id && matchWildcard(pattern, source)),
     );
   });
+};
+
+/** A published route's source, trimmed and lower-cased; `undefined` for other models. */
+const normalizedSource = (model: ModelInfo): string | undefined => {
+  const source = (model.sourceModelId ?? "").trim().toLowerCase();
+
+  return source === "" ? undefined : source;
 };
 
 /** `applyModelPrefixes`: adds `prefix/<id>`; the plain id stays unless `force-model-prefix` is set. */
@@ -696,20 +710,20 @@ export const applyOAuthModelAliasEntries = (
 /**
  * `config.ResolveOAuthModelSetting`: an alias match beats a name match; later entries win. A published route's names
  * include its source (`copilot/gpt-6-sol`) and the source's native id (`gpt-6-sol`, Go's `MetadataModelID` there), so
- * its aliases and prefixed copies share the source's settings (f89d408e).
+ * its aliases and prefixed copies share the source's settings. Go: internal/config/config_types.go
+ * (`ResolveOAuthModelSetting`), sdk/cliproxy/service_models.go (`applyOAuthSettingEntries`, f89d408e).
  */
 const resolveSetting = (
   settings: ReadonlyArray<OAuthModelSetting>,
   model: ModelInfo,
 ): OAuthModelSetting | undefined => {
   const id = model.id.trim().toLowerCase();
-  const source = (model.sourceModelId ?? "").trim().toLowerCase();
+  const source = normalizedSource(model);
 
   const names = [
     (model.metadataModelId ?? "").trim().toLowerCase(),
     (model.name ?? "").trim().toLowerCase(),
-    source,
-    source.slice(source.indexOf("/") + 1),
+    ...(source === undefined ? [] : [source, sourceNativeId(source)]),
   ].filter((candidate) => candidate !== "");
 
   let aliasMatch: OAuthModelSetting | undefined;
@@ -747,26 +761,28 @@ const applyOAuthSettings = (
 // --- assembly ------------------------------------------------------------------------------------------------------
 
 /**
- * `applyModelNamespace` and `setCopilotModelDisplayName` (f89d408e): Copilot's and Devin's catalog models publish as
- * `<provider>/<native id>`, their source, before exclusions, OAuth aliases and settings, so all of those name the
- * qualified id. Devin's catalog additions already carry the `devin/` prefix; Copilot's are native.
+ * `applyModelNamespace` and `setCopilotModelDisplayName` (Go: sdk/cliproxy/service_models.go, f89d408e): a published
+ * provider's catalog models register as `<provider>/<native id>`, their source, before exclusions, OAuth aliases and
+ * settings, so all of those name the qualified id. Devin's catalog additions already carry the `devin/` prefix;
+ * Copilot's are native.
  */
-const publishModels = (provider: string, models: ReadonlyArray<ModelInfo>): ModelInfo[] => {
-  const prefix = `${provider}/`;
+const publishModels = (
+  provider: PublishedProvider,
+  models: ReadonlyArray<ModelInfo>,
+): ModelInfo[] => {
+  const spec: { readonly prefix: string; readonly displaySuffix?: string } =
+    PUBLISHED_PROVIDERS[provider];
 
   return models.map((model) => {
-    const trimmed = model.id.trim();
-
-    const native = trimmed.toLowerCase().startsWith(prefix)
-      ? trimmed.slice(prefix.length)
-      : trimmed;
-
-    const id = `${prefix}${native}`;
+    const native = stripPublishedPrefix(provider, model.id.trim());
+    const id = `${spec.prefix}${native}`;
     const published: Types.Mutable<ModelInfo> = { ...model, id, sourceModelId: id };
+    const suffix = spec.displaySuffix;
 
-    if (provider === "copilot") {
+    if (suffix !== undefined) {
       const displayName = (model.displayName ?? "").trim() || native;
-      published.displayName = `${displayName.endsWith(" (Copilot)") ? displayName.slice(0, -" (Copilot)".length) : displayName} (Copilot)`;
+
+      published.displayName = `${displayName.endsWith(suffix) ? displayName.slice(0, -suffix.length) : displayName}${suffix}`;
     }
 
     return published;
@@ -788,6 +804,13 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
   const provider = source.provider.trim().toLowerCase();
   const configured = source.models ?? [];
   const excluded = source.excludedModels;
+  const published = publishedProvider(provider);
+
+  if (published !== undefined)
+    return applyExcludedModels(
+      publishModels(published, sectionModels(catalogs, published)),
+      excluded,
+    );
 
   switch (provider) {
     case "gemini":
@@ -837,16 +860,6 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
         configured.length > 0
           ? buildConfigModels(configured, "xai", "xai", "xai", options)
           : sectionModels(catalogs, "xai"),
-        excluded,
-      );
-    case "devin":
-      return applyExcludedModels(
-        publishModels("devin", sectionModels(catalogs, "devin")),
-        excluded,
-      );
-    case "copilot":
-      return applyExcludedModels(
-        publishModels("copilot", sectionModels(catalogs, "copilot")),
         excluded,
       );
     case "meta":

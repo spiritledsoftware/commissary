@@ -12,6 +12,7 @@ import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import { compareStrings } from "./compare.ts";
 import { OPENAI_IMAGE_MODEL_IDS } from "./openai-image-models.ts";
 import type { ModelInfo, ThinkingSupport } from "./model-info.ts";
+import { PUBLISHED_PROVIDERS } from "./published-routes.ts";
 
 export interface CodexClientModelsInput {
   /** The validated `codex_client_models.json` catalog (`{ models: [...] }`). */
@@ -649,10 +650,12 @@ const applyVisibilityOverride = (entry: Entry, id: string): void => {
   if (isImageOrVideoModel(id)) entry["visibility"] = "hide";
 };
 
+const DEVIN_PREFIX = PUBLISHED_PROVIDERS.devin.prefix;
+
 const devinInfo = (info: ModelInfo): boolean =>
   info.type.toLowerCase() === "devin" ||
   info.ownedBy.toLowerCase() === "cognition" ||
-  info.id.toLowerCase().startsWith("devin/");
+  info.id.toLowerCase().startsWith(DEVIN_PREFIX);
 
 /** `isCodexClientDevinModel`. */
 const isDevinModel = (
@@ -663,10 +666,10 @@ const isDevinModel = (
 ): boolean => {
   const lower = id.trim().toLowerCase();
 
-  if (lower.startsWith("devin/")) return true;
+  if (lower.startsWith(DEVIN_PREFIX)) return true;
   const slash = lower.indexOf("/");
 
-  if (slash !== -1 && lower.slice(slash + 1).startsWith("devin/")) return true;
+  if (slash !== -1 && lower.slice(slash + 1).startsWith(DEVIN_PREFIX)) return true;
 
   if (stringValue(entry, "owned_by").toLowerCase() === "cognition") return true;
 
