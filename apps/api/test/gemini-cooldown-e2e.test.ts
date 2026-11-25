@@ -159,6 +159,7 @@ beforeEach(() => {
 
 describe("a Gemini 429's RetryInfo hint", () => {
   it("cools the key for the hinted delay and serves from the other key", async () => {
+    // The Worker stamps cooldowns with its own real clock, out of a TestClock's reach, so the bound is real time too.
     const started = Date.now();
 
     for (let request = 0; request < 4; request += 1) {

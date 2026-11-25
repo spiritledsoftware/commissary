@@ -73,11 +73,7 @@ const normalizeTools = (body: Json): void => {
   }
 };
 
-/**
- * The response schema of each generation config casing moves to the JSON Schema carrier, normalized: the protobuf
- * `responseSchema` (either casing) becomes the config's own casing of `responseJsonSchema`, and an existing JSON Schema
- * carrier is normalized in place (Go 531aea15).
- */
+/** The protobuf and JSON Schema response schema keys of each generation config casing. */
 const RESPONSE_SCHEMA_KEYS = [
   {
     container: "generationConfig",
@@ -91,6 +87,11 @@ const RESPONSE_SCHEMA_KEYS = [
   },
 ] as const;
 
+/**
+ * The response schema of each generation config casing moves to the JSON Schema carrier, normalized: the protobuf
+ * `responseSchema` (either casing) becomes the config's own casing of `responseJsonSchema`, and an existing JSON Schema
+ * carrier is normalized in place (Go 531aea15).
+ */
 const normalizeResponseSchemas = (body: Json): void => {
   for (const { container, proto, json } of RESPONSE_SCHEMA_KEYS) {
     const config = get(body, container);
