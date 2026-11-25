@@ -178,7 +178,15 @@ describe("vertex service account", () => {
       metadata: { location: "global" },
     });
 
-    const h = harness(() => jsonResponse(GEMINI_RESPONSE), cred);
+    // A registered credential without a service account has nothing to mint (`not_refreshable`), so the attempt runs
+    // on its snapshot and the executor rejects it; an unregistered one would fail preparation as removed instead.
+    const registered = controlPlane([], () => ({
+      ok: false,
+      error: { code: "not_refreshable", message: "credential has no refresh token" },
+      terminal: false,
+    }));
+
+    const h = harness(() => jsonResponse(GEMINI_RESPONSE), cred, { CONTROL_PLANE: registered });
     afterAll(h.dispose);
     const response = await h.call("/v1beta/models/gemini-2.5-pro:generateContent", postJson(body));
     expect(response.status).toBe(500);
