@@ -439,6 +439,37 @@ export const convertClaudeRequestToAntigravity = (
         pendingDetachedTargetKind = targetKind;
       };
 
+      /**
+       * Takes the pending detached signature for a part of `targetKind`: returned when it targets that kind (or any)
+       * and `usable`, otherwise sent as a carrier part of its own; `""` when none is pending.
+       */
+      const claimPendingSignature = (targetKind: string, usable = true): string => {
+        const signature = pendingDetachedSignature;
+
+        if (signature === "") return "";
+
+        const matches =
+          pendingDetachedTargetKind === "" ||
+          pendingDetachedTargetKind === CarrierKind.Any ||
+          pendingDetachedTargetKind === targetKind;
+
+        clearPending();
+
+        if (matches && usable) return signature;
+        appendDetachedCarrier(signature);
+
+        return "";
+      };
+
+      /** A text part, carrying the pending detached signature when it targets text. */
+      const pushTextPart = (text: string): void => {
+        const part: JsonObject = { text };
+        const signature = claimPendingSignature(CarrierKind.Text);
+
+        if (signature !== "") part["thoughtSignature"] = signature;
+        partItems.push(part);
+      };
+
       let contents = get(message, "content");
 
       if (originalRole === "system" || originalRole === "developer") {
@@ -486,19 +517,9 @@ export const convertClaudeRequestToAntigravity = (
 
             let signatureFromPendingCarrier = false;
 
-            if (signature === "" && thinkingText !== "" && pendingDetachedSignature !== "") {
-              if (
-                pendingDetachedTargetKind === "" ||
-                pendingDetachedTargetKind === CarrierKind.Any ||
-                pendingDetachedTargetKind === CarrierKind.Text
-              ) {
-                signature = pendingDetachedSignature;
-                signatureFromPendingCarrier = true;
-              } else {
-                appendDetachedCarrier(pendingDetachedSignature);
-              }
-
-              clearPending();
+            if (signature === "" && thinkingText !== "") {
+              signature = claimPendingSignature(CarrierKind.Text);
+              signatureFromPendingCarrier = signature !== "";
             }
 
             // Unsigned thinking blocks are dropped (never converted to text) for non-Gemini providers.
@@ -638,23 +659,7 @@ export const convertClaudeRequestToAntigravity = (
 
             // Skip empty text parts: Gemini rejects "required oneof field 'data' must have one initialized field".
             if (prompt === "") continue;
-            const part: JsonObject = { text: prompt };
-
-            if (pendingDetachedSignature !== "") {
-              if (
-                pendingDetachedTargetKind === "" ||
-                pendingDetachedTargetKind === CarrierKind.Any ||
-                pendingDetachedTargetKind === CarrierKind.Text
-              ) {
-                part["thoughtSignature"] = pendingDetachedSignature;
-              } else {
-                appendDetachedCarrier(pendingDetachedSignature);
-              }
-
-              clearPending();
-            }
-
-            partItems.push(part);
+            pushTextPart(prompt);
           } else if (type === "tool_use") {
             // No dummy thinking blocks: Antigravity validates signatures and rejects dummy values.
             const originalFunctionName = asString(get(contentResult, "name"));
@@ -680,23 +685,12 @@ export const convertClaudeRequestToAntigravity = (
             const part: JsonObject = {};
             let signature = resolveToolUseThoughtSignature(modelName, contentResult, true);
 
-            if (pendingDetachedSignature !== "") {
-              const pendingMatchesTool =
-                pendingDetachedTargetKind === "" ||
-                pendingDetachedTargetKind === CarrierKind.Any ||
-                pendingDetachedTargetKind === CarrierKind.Function;
+            const pendingSignature = claimPendingSignature(
+              CarrierKind.Function,
+              signature === "" || signature === GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+            );
 
-              if (
-                pendingMatchesTool &&
-                (signature === "" || signature === GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR)
-              ) {
-                signature = pendingDetachedSignature;
-              } else {
-                appendDetachedCarrier(pendingDetachedSignature);
-              }
-
-              clearPending();
-            }
+            if (pendingSignature !== "") signature = pendingSignature;
 
             if (signature !== "") part["thoughtSignature"] = signature;
             const functionCall: JsonObject = {};
@@ -744,34 +738,17 @@ export const convertClaudeRequestToAntigravity = (
           } else if (type === "document" || type === "container_upload") {
             if (type === "document") {
               // A text document, or one of content blocks, becomes text (and images) (CLIProxyAPI e21cf8a5).
-              const emitText = (text: string): void => {
-                const part: JsonObject = { text };
-
-                if (pendingDetachedSignature !== "") {
-                  if (
-                    pendingDetachedTargetKind === "" ||
-                    pendingDetachedTargetKind === CarrierKind.Any ||
-                    pendingDetachedTargetKind === CarrierKind.Text
-                  )
-                    part["thoughtSignature"] = pendingDetachedSignature;
-                  else appendDetachedCarrier(pendingDetachedSignature);
-                  clearPending();
-                }
-
-                partItems.push(part);
-              };
-
               const docText = claudeDocumentTextBlock(contentResult);
 
               if (docText !== undefined) {
-                emitText(docText);
+                pushTextPart(docText);
                 continue;
               }
 
               if (
                 expandClaudeContentDocument(
                   contentResult,
-                  emitText,
+                  pushTextPart,
                   (image) => claudeBase64InlineData(get(image, "source")),
                   (part) => partItems.push(part),
                   originalRole === "user" ? () => drops.drop("image") : undefined,

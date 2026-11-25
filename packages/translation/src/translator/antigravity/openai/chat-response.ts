@@ -26,6 +26,10 @@ import {
   type NameMap,
   restoreSanitizedToolName,
 } from "../../common/tool-names.ts";
+import {
+  functionCallEndsContinuation,
+  functionCallWillContinue,
+} from "../../common/gemini-parts.ts";
 import { hasAntigravityResponsePayload } from "../common/payload.ts";
 
 /** One streamed tool call (`antigravityOpenAIToolCall`). */
@@ -155,15 +159,6 @@ const terminalChunk = (params: Params, usage: Json | undefined): JsonObject => {
 
   return template;
 };
-
-/** `VertexFunctionCallWillContinue`. */
-const willContinue = (functionCall: Json): boolean =>
-  asBool(get(functionCall, "willContinue")) || asBool(get(functionCall, "will_continue"));
-
-/** `antigravityOpenAIExplicitlyEndsContinuation`: a `willContinue: false` ends the call. */
-const explicitlyEnds = (functionCall: Json): boolean =>
-  !willContinue(functionCall) &&
-  (get(functionCall, "willContinue") === false || get(functionCall, "will_continue") === false);
 
 /** The members of an argument object without its braces, or undefined for anything but an object. */
 const objectMembers = (args: Json | undefined): string | undefined => {
@@ -376,7 +371,7 @@ export const convertAntigravityResponseToOpenAI = (
         const rawName = asString(get(functionCall, "name")).trim();
         const upstreamId = asString(get(functionCall, "id")).trim();
         const args = get(functionCall, "args");
-        const continues = willContinue(functionCall);
+        const continues = functionCallWillContinue(functionCall);
         let active = params.activeToolCall;
 
         if (upstreamId !== "") active = params.toolCallsById.get(upstreamId);
@@ -391,7 +386,7 @@ export const convertAntigravityResponseToOpenAI = (
             else {
               argumentDelta = continuationArguments(active, args);
 
-              if (explicitlyEnds(functionCall)) {
+              if (functionCallEndsContinuation(functionCall)) {
                 if (active.argumentsStarted) argumentDelta += "}";
                 else if (active.streaming) {
                   argumentDelta = "{}";

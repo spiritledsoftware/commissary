@@ -4,25 +4,14 @@
  * Go source: internal/translator/antigravity/openai/responses/antigravity_openai-responses_request.go. Registered as a
  * request *envelope* transform because native web search depends on the resolved model capabilities.
  */
-import {
-  asString,
-  del,
-  get,
-  isJsonArray,
-  isJsonObject,
-  type Json,
-  type JsonObject,
-  set,
-} from "@commissary/json";
+import { asString, del, get, isJsonArray, isJsonObject, type Json, set } from "@commissary/json";
 import { signatureProviderFromModelName } from "../../../signature/provider.ts";
 import { compatibleAntigravityClaudeThinkingSignature } from "../../../signature/claude.ts";
 import {
   applySummaryConfig,
   extractSummaryConfig,
-  parseSuffix,
   UNSPECIFIED_SUMMARY,
 } from "../../../thinking/index.ts";
-import { lookupModelInfo } from "../../model-info.ts";
 import { type RequestEnvelope, TranslationError } from "../../registry.ts";
 import {
   allowsResponsesWebSearchToolChoice,
@@ -31,27 +20,12 @@ import {
 } from "../../gemini/openai/responses/web-search.ts";
 import { convertOpenAIResponsesRequestToGemini } from "../../gemini/openai/responses/request.ts";
 import { normalizeAntigravityRequest } from "../common/request-format.ts";
+import {
+  antigravityGoogleSearchTool,
+  appendWebSearchSystemInstruction,
+  supportsNativeAntigravityWebSearch,
+} from "../common/web-search.ts";
 import { convertGeminiRequestToAntigravity } from "../gemini/request.ts";
-
-export const ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION =
-  "You are a search engine bot. You will be given a query from a user. Your task is to search the web for relevant information that will help the user. You MUST perform a web search. Do not respond or interact with the user, please respond as if they typed the query into a search bar.";
-
-/** `antigravitySupportsNativeResponsesWebSearch`: the envelope's model info first, then the Antigravity registry record. */
-const supportsNativeWebSearch = (model: string, envelope: RequestEnvelope): boolean => {
-  const explicit = envelope.modelInfo?.nativeCapabilities?.webSearch;
-
-  if (typeof explicit === "boolean") return explicit;
-  const base = parseSuffix(model.trim()).modelName.trim();
-
-  if (base === "") return false;
-  const local = lookupModelInfo(base, "antigravity");
-
-  if (local === undefined) return false;
-
-  if (local.nativeCapabilities?.webSearch === false) return false;
-
-  return local.supportsWebSearch === true;
-};
 
 /**
  * `stripAntigravityServerSideToolInvocations`: removes the `includeServerSideToolInvocations` the shared Gemini Responses
@@ -193,11 +167,12 @@ const rewriteReasoningForClaude = (modelName: string, input: Json, gemini: Json)
   return gemini;
 };
 
+/** `ensureAntigravityWebSearchTool`: the Google Search tool replaces the request's, or goes first. */
 const ensureWebSearchTool = (payload: Json, includedDomains: ReadonlyArray<string>): void => {
-  const googleSearch: JsonObject = { enhancedContent: { imageSearch: { maxResultCount: 5 } } };
+  const tool = antigravityGoogleSearchTool(
+    includedDomains.length > 0 ? { includedDomains: [...includedDomains] } : {},
+  );
 
-  if (includedDomains.length > 0) googleSearch["includedDomains"] = [...includedDomains];
-  const tool: Json = { googleSearch };
   const tools = get(payload, "request.tools");
 
   if (!isJsonArray(tools)) {
@@ -226,32 +201,6 @@ const ensureWebSearchTool = (payload: Json, includedDomains: ReadonlyArray<strin
   set(payload, "request.tools", filtered);
 };
 
-const ensureWebSearchSystemInstruction = (payload: Json): void => {
-  const searchPart: Json = { text: ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION };
-  const system = get(payload, "request.systemInstruction");
-
-  if (system === undefined) {
-    set(payload, "request.systemInstruction", { role: "user", parts: [searchPart] });
-
-    return;
-  }
-
-  const parts: Json[] = [];
-  let alreadyPresent = false;
-  const existing = get(system, "parts");
-
-  if (isJsonArray(existing)) {
-    for (const part of existing) {
-      if (asString(get(part, "text")) === ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION)
-        alreadyPresent = true;
-      parts.push(part);
-    }
-  }
-
-  if (!alreadyPresent) parts.push(searchPart);
-  set(payload, "request.systemInstruction.parts", parts);
-};
-
 type ToGeminiResult = { body: Json; error?: TranslationError };
 
 /** Runs the Gemini conversion, keeping a refusal's partial body like Go's `(body, err)` pair. */
@@ -274,7 +223,9 @@ export const convertOpenAIResponsesRequestEnvelopeToAntigravity = (
 
   const webSearch =
     hasOnlyResponsesWebSearchTools(input) &&
-    supportsNativeWebSearch(model, envelope) &&
+    supportsNativeAntigravityWebSearch(model, envelope.modelInfo, {
+      requestSupportsWebSearch: false,
+    }) &&
     allowsResponsesWebSearchToolChoice(input);
 
   if (webSearch) {
@@ -290,7 +241,7 @@ export const convertOpenAIResponsesRequestEnvelopeToAntigravity = (
     const out = convertGeminiRequestToAntigravity(model, gemini, stream);
     set(out, "requestType", "web_search");
     ensureWebSearchTool(out, includedDomains);
-    ensureWebSearchSystemInstruction(out);
+    appendWebSearchSystemInstruction(out);
     normalizeAntigravityRequest(out);
     const body = enableThinkingSummary(input, out);
 

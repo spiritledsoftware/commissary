@@ -27,11 +27,14 @@ import { renameKey } from "../../gemini/gemini/gemini.ts";
 import { mapSanitizedFunctionName, sanitizedFunctionNameMap } from "../../common/tool-names.ts";
 import { sanitizeAntigravityClaudeGeminiRequestSignatures } from "../gemini/request.ts";
 import { contentHasGeminiFunctionResponse } from "../../gemini/common/contents.ts";
-import { lookupModelInfo } from "../../model-info.ts";
 import { type RequestEnvelope, TranslationError } from "../../registry.ts";
-import { parseSuffix, type ThinkingModelInfo } from "../../../thinking/index.ts";
-import { ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION } from "../claude/web-search.ts";
+import type { ThinkingModelInfo } from "../../../thinking/index.ts";
 import { normalizeAntigravityRequest } from "../common/request-format.ts";
+import {
+  antigravityGoogleSearchTool,
+  appendWebSearchSystemInstruction,
+  supportsNativeAntigravityWebSearch,
+} from "../common/web-search.ts";
 
 const FUNCTION_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 
@@ -207,6 +210,12 @@ export const deduplicateFunctionDeclarations = (declarations: ReadonlyArray<Json
   return out;
 };
 
+/** A converted turn, and whether it may join a preceding tool-response turn (only real user turns may). */
+interface ChatContent {
+  readonly content: Json;
+  readonly mergeable: boolean;
+}
+
 const convertMessages = (
   out: Json,
   messages: Json[],
@@ -214,13 +223,10 @@ const convertMessages = (
   drops: UserTurnDrops,
 ): void => {
   const systemParts: Json[] = [];
-  const contentItems: Json[] = [];
-  // Whether each content may join a preceding tool-response turn: only real user turns may.
-  const canMerge: boolean[] = [];
+  const contentItems: ChatContent[] = [];
 
   const appendContent = (content: Json, mergeable: boolean): void => {
-    contentItems.push(content);
-    canMerge.push(mergeable);
+    contentItems.push({ content, mergeable });
   };
 
   let hasEncounteredConversation = false;
@@ -413,18 +419,17 @@ const convertMessages = (
 
   if (systemParts.length > 0)
     set(out, "request.systemInstruction", contentNode("user", systemParts));
-  set(out, "request.contents", mergeToolResponseUserContents(contentItems, canMerge));
+  set(out, "request.contents", mergeToolResponseUserContents(contentItems));
 };
 
 /**
  * `mergeAntigravityOpenAIToolResponseUserContents`: user turns that follow a tool-response turn join it, so the
  * responses and the user's follow-up go upstream as one user turn (CLIProxyAPI 9ac1cd7d).
  */
-const mergeToolResponseUserContents = (
-  contents: ReadonlyArray<Json>,
-  canMerge: ReadonlyArray<boolean>,
-): Json[] => {
-  if (contents.length <= 1) return [...contents];
+const mergeToolResponseUserContents = (items: ReadonlyArray<ChatContent>): Json[] => {
+  const contents = items.map((item) => item.content);
+
+  if (contents.length <= 1) return contents;
   const merged: Json[] = [];
 
   for (let i = 0; i < contents.length; i++) {
@@ -438,7 +443,7 @@ const mergeToolResponseUserContents = (
 
     let j = i + 1;
 
-    while (j < contents.length && canMerge[j] === true) j++;
+    while (j < items.length && items[j]?.mergeable === true) j++;
 
     if (j === i + 1) {
       merged.push(content);
@@ -514,13 +519,13 @@ const convertTools = (
   if (items.length > 0) set(out, "request.tools", items);
 };
 
-/** `convertOpenAIRequestToAntigravityChat`: the body, and the drops that may refuse it. */
 /** The converted chat request and the user parts it had to drop. */
 interface ConvertedChat {
   readonly body: Json;
   readonly drops: UserTurnDrops;
 }
 
+/** `convertOpenAIRequestToAntigravityChat`: the body, and the drops that may refuse it. */
 const convertChat = (modelName: string, raw: Json): ConvertedChat => {
   const drops = new UserTurnDrops();
   const nameMap = sanitizedFunctionNameMap(raw);
@@ -651,26 +656,6 @@ const convertChat = (modelName: string, raw: Json): ConvertedChat => {
   return { body, drops };
 };
 
-/** `antigravitySupportsNativeOpenAIWebSearch`: the envelope's model info first, then the Antigravity registry record. */
-const supportsNativeWebSearch = (
-  model: string,
-  modelInfo: ThinkingModelInfo | undefined,
-): boolean => {
-  const explicit = modelInfo?.nativeCapabilities?.webSearch;
-
-  if (typeof explicit === "boolean") return explicit;
-  const base = parseSuffix(model.trim()).modelName.trim();
-
-  if (base === "") return false;
-  const local = lookupModelInfo(base, "antigravity");
-
-  if (local === undefined) return modelInfo?.supportsWebSearch === true;
-
-  if (local.nativeCapabilities?.webSearch === false) return false;
-
-  return local.supportsWebSearch === true || modelInfo?.supportsWebSearch === true;
-};
-
 /** `hasOnlyAntigravityOpenAIWebSearchTools`: one tool, a bare `google_search`. */
 const hasOnlyWebSearchTools = (raw: Json): boolean => {
   const tools = get(raw, "tools");
@@ -705,22 +690,11 @@ const allowsWebSearch = (raw: Json): boolean => {
 const buildWebSearchRequest = (body: Json, raw: Json): Json => {
   set(body, "requestType", "web_search");
   set(body, "request.generationConfig.candidateCount", 1);
-  const existing = get(body, "request.systemInstruction.parts");
-
-  set(
-    body,
-    "request.systemInstruction",
-    contentNode("user", [
-      ...(isJsonArray(existing) ? existing : []),
-      textPart(ANTIGRAVITY_WEB_SEARCH_SYSTEM_INSTRUCTION),
-    ]),
-  );
-  const googleSearch: JsonObject = { enhancedContent: { imageSearch: { maxResultCount: 5 } } };
+  appendWebSearchSystemInstruction(body);
   const source = get(raw, "tools.0.google_search");
-
-  if (isJsonObject(source))
-    for (const [key, value] of Object.entries(source)) googleSearch[key] = structuredClone(value);
-  set(body, "request.tools", [{ googleSearch }]);
+  set(body, "request.tools", [
+    antigravityGoogleSearchTool(isJsonObject(source) ? structuredClone(source) : {}),
+  ]);
   del(body, "request.toolConfig.functionCallingConfig");
   const toolConfig = get(body, "request.toolConfig");
 
@@ -742,7 +716,7 @@ export const convertOpenAIRequestToAntigravity = (
 ): Json => {
   const webSearch =
     hasOnlyWebSearchTools(raw) &&
-    supportsNativeWebSearch(modelName, modelInfo) &&
+    supportsNativeAntigravityWebSearch(modelName, modelInfo, { requestSupportsWebSearch: true }) &&
     allowsWebSearch(raw);
 
   const converted = convertChat(modelName, raw);

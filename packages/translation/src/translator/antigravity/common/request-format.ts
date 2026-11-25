@@ -13,7 +13,7 @@ const objectAt = (value: Json | undefined, key: string): JsonObject | undefined 
 };
 
 /** Moves `snake` to `camel` (unless `camel` is set already) and drops `snake`. */
-const renameKey = (target: JsonObject, snake: string, camel: string): void => {
+const moveSnakeKeyToCamel = (target: JsonObject, snake: string, camel: string): void => {
   const value = target[snake];
 
   if (value === undefined) return;
@@ -22,6 +22,7 @@ const renameKey = (target: JsonObject, snake: string, camel: string): void => {
   delete target[snake];
 };
 
+/** The part has a snake_case media field, or a camelCase one with snake_case members. */
 const mediaNeedsNormalization = (part: JsonObject, snake: string, camel: string): boolean => {
   if (Object.hasOwn(part, snake)) return true;
 
@@ -35,16 +36,18 @@ const mediaNeedsNormalization = (part: JsonObject, snake: string, camel: string)
   );
 };
 
+/** Renames the media field and its members to camelCase. */
 const normalizeMediaField = (part: JsonObject, snake: string, camel: string): void => {
-  renameKey(part, snake, camel);
+  moveSnakeKeyToCamel(part, snake, camel);
   const media = objectAt(part, camel);
 
   if (media === undefined) return;
-  renameKey(media, "mime_type", "mimeType");
+  moveSnakeKeyToCamel(media, "mime_type", "mimeType");
 
-  if (camel === "fileData") renameKey(media, "file_uri", "fileUri");
+  if (camel === "fileData") moveSnakeKeyToCamel(media, "file_uri", "fileUri");
 };
 
+/** Normalizes the media fields of `parts`, and of the parts nested in their function responses. */
 const normalizeMediaParts = (parts: Json | undefined): void => {
   if (!isJsonArray(parts)) return;
 

@@ -138,16 +138,16 @@ const attachInlineData = (response: Json, images: ReadonlyArray<JsonObject>): Js
   return target;
 };
 
-/**
- * `collectFunctionResponsesWithSiblingInlineData`: the turn's function responses, with each sibling inline image moved
- * onto the nearest preceding response (leading images onto the first), and the turn's other parts, kept beside them.
- */
 /** A user turn's parts split into its function responses and everything else. */
 interface CollectedFunctionResponses {
   readonly responses: Json[];
   readonly others: Json[];
 }
 
+/**
+ * `collectFunctionResponsesWithSiblingInlineData`: the turn's function responses, with each sibling inline image moved
+ * onto the nearest preceding response (leading images onto the first), and the turn's other parts, kept beside them.
+ */
 const collectFunctionResponses = (parts: Json | undefined): CollectedFunctionResponses => {
   const responses: Json[] = [];
   const others: Json[] = [];
