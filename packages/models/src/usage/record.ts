@@ -290,3 +290,41 @@ export const responseModelOf = (payload: Json | undefined): string | undefined =
 
   return undefined;
 };
+
+const boundedModel = (value: Json | undefined): string | undefined =>
+  typeof value === "string" && value.trim() !== "" && value.trim().length <= 256
+    ? value.trim()
+    : undefined;
+
+/** `extractClaudeFallbackIterationModel`: the model of the last `fallback_message` in `usage.iterations`. */
+const fallbackIterationModel = (iterations: Json | undefined): string | undefined => {
+  if (!Array.isArray(iterations)) return undefined;
+  let served: string | undefined;
+
+  for (const iteration of iterations) {
+    if (get(iteration, "type") !== "fallback_message") continue;
+    served = boundedModel(get(iteration, "model")) ?? served;
+  }
+
+  return served;
+};
+
+/**
+ * The model a Claude payload reports as serving (`extractClaudeResponseModelEvent`, fa11a573): a server-side fallback
+ * switches it mid-stream (a `fallback` content block's `to.model`, the last `fallback_message` of
+ * `usage.iterations`); other payloads read like {@link responseModelOf}.
+ */
+export const claudeResponseModelOf = (payload: Json | undefined): string | undefined => {
+  switch (get(payload, "type")) {
+    case "content_block_start":
+      return get(payload, "content_block.type") === "fallback"
+        ? boundedModel(get(payload, "content_block.to.model"))
+        : undefined;
+    case "message_delta":
+      return fallbackIterationModel(get(payload, "usage.iterations"));
+    case "message":
+      return fallbackIterationModel(get(payload, "usage.iterations")) ?? responseModelOf(payload);
+    default:
+      return responseModelOf(payload);
+  }
+};

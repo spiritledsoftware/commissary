@@ -9,7 +9,7 @@
 import { get, tryParseJson } from "@commissary/json";
 import { str, type ResponseContext, type TranslatorRegistry } from "@commissary/translation";
 import type { Format } from "@commissary/translation/formats";
-import { responseModelOf, ssePayloadObject, type UsageDetail } from "../../usage/record.ts";
+import { claudeResponseModelOf, ssePayloadObject, type UsageDetail } from "../../usage/record.ts";
 import { ExecutionError } from "../errors.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { AliasRestoreError, restoreToolNamesInStreamLine } from "./mcp-alias.ts";
@@ -74,7 +74,7 @@ export class ClaudeStreamReader {
       if (id !== "") this.messageId = id;
     }
 
-    this.options.onResponseModel(responseModelOf(payload));
+    this.options.onResponseModel(claudeResponseModelOf(payload));
     const usage = parseClaudeStreamUsage(line);
 
     if (usage !== undefined) {

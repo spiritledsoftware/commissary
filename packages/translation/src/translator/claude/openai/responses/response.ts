@@ -1,7 +1,8 @@
 /**
  * Claude Messages provider -> OpenAI Responses client (response).
  *
- * Go source: internal/translator/claude/openai/responses/claude_openai-responses_response.go.
+ * Go source: internal/translator/claude/openai/responses/claude_openai-responses_response.go (the serving model and the
+ * fallback hops of an Anthropic server-side fallback: fa11a573).
  *
  * The Codex `apply_patch` custom tool bridge is included: a custom tool named `apply_patch` (original request
  * declaration) arrives as strict `{"input": ...}` function arguments, is streamed as `response.custom_tool_call_input`
@@ -25,6 +26,10 @@ import {
   applyPatchInputDone,
   isApplyPatchCustomTool,
 } from "../../../common/apply-patch.ts";
+import {
+  ClaudeFallbackChain,
+  claudePreTokenFallbackModels,
+} from "../../../common/claude-fallback.ts";
 import { claudeMessagesJSONToSSE } from "../../../common/claude-native-response.ts";
 import { exists, isObj, isStr, str } from "../../../common/gjson.ts";
 import {
@@ -176,6 +181,9 @@ interface State {
   webSearchByToolId: Map<string, WebSearchItem>;
   webSearchItems: WebSearchItem[];
   stopReason: string;
+  /** The model a server-side fallback switched to (`""` when none). */
+  fallbackModel: string;
+  fallbacks: ClaudeFallbackChain;
   usage: UsageTokens;
 }
 
@@ -228,6 +236,8 @@ const newState = (request: Json | undefined, nativeToolSearch: boolean): State =
     webSearchByToolId: new Map(),
     webSearchItems: [],
     stopReason: "",
+    fallbackModel: "",
+    fallbacks: new ClaudeFallbackChain(),
     usage: newUsage(),
   };
 };
@@ -304,6 +314,37 @@ const requestModelName = (original: Json | undefined, translated: Json | undefin
   }
 
   return "";
+};
+
+/** Sets `fallback` (the latest hop) and `fallbacks` (all of them) on a response. */
+const setFallbacks = (response: JsonObject, chain: ClaudeFallbackChain): void => {
+  const latest = chain.latest();
+  const all = chain.all();
+
+  if (latest !== undefined) response.fallback = latest;
+
+  if (all !== undefined) response.fallbacks = all;
+};
+
+/** The `response.in_progress` event that reports a fallback hop (`hop`) mid-stream. */
+const fallbackProgress = (st: State, sequence: number, hop: JsonObject): string => {
+  const response: JsonObject = {
+    id: st.responseId,
+    object: "response",
+    created_at: st.createdAt,
+    status: "in_progress",
+    output: [],
+  };
+
+  if (st.fallbackModel !== "") response.model = st.fallbackModel;
+  response.fallback = hop;
+  response.fallbacks = st.fallbacks.all() ?? [];
+
+  return emit("response.in_progress", {
+    type: "response.in_progress",
+    sequence_number: sequence,
+    response,
+  });
 };
 
 const emit = (event: string, payload: JsonObject): string =>
@@ -997,6 +1038,8 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       st.reasoningIndex = -1;
       st.reasoningItems = [];
       st.stopReason = "";
+      st.fallbackModel = "";
+      st.fallbacks.reset();
       st.funcItemAdded = new Map();
       st.funcArgsSent = new Map();
       st.funcBlockStopped = new Map();
@@ -1015,8 +1058,21 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       st.usage = newUsage();
       mergeUsage(st.usage, get(msg, "usage"));
 
-      const requestModel =
+      let requestModel =
         requestModelName(context.originalRequest, context.translatedRequest) || modelName;
+
+      const preToken = claudePreTokenFallbackModels(
+        context.originalRequest,
+        context.translatedRequest,
+        requestModel,
+        str(get(msg, "model")),
+      );
+
+      if (preToken !== undefined) {
+        st.fallbackModel = preToken[1];
+        st.fallbacks.recordPreToken(preToken[0], preToken[1]);
+        requestModel = preToken[1];
+      }
 
       const created: JsonObject = {
         type: "response.created",
@@ -1035,6 +1091,8 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       if (requestModel !== "")
         // SAFETY: `response` is an object literal in the event built just above.
         (created.response as JsonObject).model = requestModel;
+      // SAFETY: `response` is an object literal in the event built just above.
+      setFallbacks(created.response as JsonObject, st.fallbacks);
       out.push(emit("response.created", created));
 
       const inProgress: JsonObject = {
@@ -1052,6 +1110,8 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       if (requestModel !== "")
         // SAFETY: `response` is an object literal in the event built just above.
         (inProgress.response as JsonObject).model = requestModel;
+      // SAFETY: `response` is an object literal in the event built just above.
+      setFallbacks(inProgress.response as JsonObject, st.fallbacks);
       out.push(emit("response.in_progress", inProgress));
       break;
     }
@@ -1087,6 +1147,26 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       for (const item of st.webSearchItems) {
         if (!item.emitted && item.results !== undefined)
           out.push(...finalizeWebSearch(st, item, "completed", nextSeq));
+      }
+
+      if (typ === "fallback") {
+        const toModel = str(get(cb, "to.model")).trim();
+
+        if (toModel !== "") st.fallbackModel = toModel;
+
+        const defaultFrom =
+          str(get(cb, "from.model")).trim() ||
+          requestModelName(context.originalRequest, context.translatedRequest) ||
+          modelName;
+
+        const hop = st.fallbacks.recordBlock(cb, defaultFrom, st.fallbackModel, {
+          key: "output_index",
+          index: st.nextOutputIndex,
+        });
+
+        if (hop !== undefined) out.push(fallbackProgress(st, nextSeq(), hop));
+
+        return out;
       }
 
       if (typ === "text") {
@@ -1332,10 +1412,24 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
 
       return out;
     case "message_delta": {
-      mergeUsage(st.usage, get(root, "usage"));
+      const usage = get(root, "usage");
+      mergeUsage(st.usage, usage);
       const stopReason = get(root, "delta.stop_reason");
 
       if (exists(stopReason)) st.stopReason = str(stopReason);
+
+      const defaultFrom =
+        requestModelName(context.originalRequest, context.translatedRequest) || modelName;
+
+      const iterations = st.fallbacks.recordIterations(get(usage, "iterations"), defaultFrom);
+
+      if (iterations.model !== "") {
+        st.fallbackModel = iterations.model;
+        const latest = st.fallbacks.latest();
+
+        if (iterations.added.length > 0 && latest !== undefined)
+          return [fallbackProgress(st, nextSeq(), latest)];
+      }
 
       return [];
     }
@@ -1384,6 +1478,9 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
 
       if (isPauseTurn(st.stopReason)) response.end_turn = false;
       echoRequestFields(response, request);
+
+      if (st.fallbackModel !== "") response.model = st.fallbackModel;
+      setFallbacks(response, st.fallbacks);
 
       const output: Json[] = [];
 
@@ -1564,6 +1661,12 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
   let responseId = "";
   let createdAt = 0;
   let stopReason = "";
+  let fallbackModel = "";
+  const fallbacks = new ClaudeFallbackChain();
+
+  const defaultRequestModel =
+    requestModelName(context.originalRequest, context.translatedRequest) || context.model;
+
   const usageTokens = newUsage();
   const blockToItem = new Map<number, OutputItem>();
   const webSearchByToolId = new Map<string, OutputItem>();
@@ -1608,6 +1711,18 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
           responseId = str(get(msg, "id"));
           createdAt = Math.floor(Date.now() / 1000);
           mergeUsage(usageTokens, get(msg, "usage"));
+
+          const preToken = claudePreTokenFallbackModels(
+            context.originalRequest,
+            context.translatedRequest,
+            defaultRequestModel,
+            str(get(msg, "model")),
+          );
+
+          if (preToken !== undefined) {
+            fallbackModel = preToken[1];
+            fallbacks.recordPreToken(preToken[0], preToken[1]);
+          }
         }
 
         break;
@@ -1623,6 +1738,19 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
         if (typ !== "text") activeMessageItem = undefined;
 
         switch (typ) {
+          case "fallback": {
+            const toModel = str(get(cb, "to.model")).trim();
+
+            if (toModel !== "") fallbackModel = toModel;
+            fallbacks.recordBlock(
+              cb,
+              str(get(cb, "from.model")).trim() || defaultRequestModel,
+              fallbackModel,
+              { key: "output_index", index: nextOutputIndex },
+            );
+            break;
+          }
+
           case "text": {
             let item = activeMessageItem;
 
@@ -1810,10 +1938,18 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
       }
 
       case "message_delta": {
-        mergeUsage(usageTokens, get(root, "usage"));
+        const usage = get(root, "usage");
+        mergeUsage(usageTokens, usage);
         const value = get(root, "delta.stop_reason");
 
         if (exists(value)) stopReason = str(value);
+
+        const served = fallbacks.recordIterations(
+          get(usage, "iterations"),
+          defaultRequestModel,
+        ).model;
+
+        if (served !== "") fallbackModel = served;
         break;
       }
     }
@@ -1830,6 +1966,9 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
   echoRequestFields(out, reqJson);
 
   if (nativeModel !== "") out.model = nativeModel;
+
+  if (fallbackModel !== "") out.model = fallbackModel;
+  setFallbacks(out, fallbacks);
 
   const outputs: JsonObject[] = [];
   let failure: string | undefined;

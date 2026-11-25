@@ -911,13 +911,18 @@ export const applyCloaking = (request: CloakRequest): CloakResult => {
     turnOrigin,
     explicitCacheMode: explicit,
   });
-  const model = str(body.model).trim().toLowerCase();
+  // Cross-model server-side refusal fallbacks only when `upstream.claude.server-side-fallback` opts in (fa11a573).
 
-  if (isOpus55Model(model) && !probeOrHelper && body.fallbacks === undefined)
-    body.fallbacks = [{ model: "claude-opus-4-8" }];
+  if (
+    config.upstream.claude["server-side-fallback"] &&
+    !probeOrHelper &&
+    body.fallbacks === undefined
+  ) {
+    const model = str(body.model).trim().toLowerCase();
 
-  if (isFable51Model(model) && !probeOrHelper && body.fallbacks === undefined)
-    body.fallbacks = [{ model: "claude-opus-5" }];
+    if (isOpus55Model(model)) body.fallbacks = [{ model: "claude-opus-4-8" }];
+    else if (isFable51Model(model)) body.fallbacks = [{ model: "claude-opus-5" }];
+  }
 
   if (!probeOrHelper) applyThinkingDisplay(body);
 

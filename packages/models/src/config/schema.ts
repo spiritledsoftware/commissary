@@ -168,6 +168,11 @@ const upstream = section({
      * the Codex model catalog advertises search for models only those credentials serve. Off, the search is dropped.
      */
     "tool-search": flag(false),
+    /**
+     * Cloaked requests to `claude-opus-5-5` and `claude-fable-5-1` without `fallbacks` get Anthropic's server-side
+     * refusal fallback (`claude-opus-4-8`, `claude-opus-5`). Off, only a caller or a payload rule opts in.
+     */
+    "server-side-fallback": flag(false),
     "disable-claude-cloak-mode": flag(false),
     /** How much of a cloaked request looks like Claude Code; a key's `cloak.level` or the `cloak_level` attribute override it. */
     "cloak-level": ClaudeCloakLevel.pipe(

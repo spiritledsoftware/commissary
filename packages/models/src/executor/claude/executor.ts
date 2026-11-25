@@ -37,7 +37,7 @@ import {
   str,
 } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
-import { responseModelOf } from "../../usage/record.ts";
+import { claudeResponseModelOf } from "../../usage/record.ts";
 import { ExecutionError, headersRecord } from "../errors.ts";
 import {
   type ExecutionContext,
@@ -403,7 +403,7 @@ export const makeClaudeExecutor = (
 
             if (parsed !== undefined) usage = mergeUsage(usage, parsed);
             context.usage.observeResponseModel(
-              responseModelOf(
+              claudeResponseModelOf(
                 tryParseJson(line.trim().startsWith("data:") ? line.trim().slice(5).trim() : ""),
               ),
             );
@@ -442,7 +442,7 @@ export const makeClaudeExecutor = (
     } else {
       const parsed = tryParseJson(data);
       webSearch.observeMessage(parsed);
-      context.usage.observeResponseModel(responseModelOf(parsed));
+      context.usage.observeResponseModel(claudeResponseModelOf(parsed));
       yield* commitContinuity(
         prepared,
         str(get(parsed, "id")).trim(),
