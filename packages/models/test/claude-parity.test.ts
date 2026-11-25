@@ -11,6 +11,7 @@ import {
 } from "../src/executor/claude/reconcile.ts";
 import { makeMemoryDeviceProfileStore } from "../src/executor/claude/device-profile.ts";
 import { makeMemoryToolAliasStore } from "../src/executor/claude/thread.ts";
+import { makeMemoryAdvisorOwnerStore } from "../src/executor/claude/advisor-owners.ts";
 import { makeMemoryContinuityStore } from "../src/executor/claude/continuity.ts";
 import fixtures from "./fixtures/claude-profile.json";
 import { rebuildMidSystemMessagesToTopLevel } from "../src/executor/claude/mid-system.ts";
@@ -549,6 +550,7 @@ describe("Thread continuation alias state", () => {
     const executor = makeClaudeExecutor({
       continuity: makeMemoryContinuityStore(),
       toolAliases: makeMemoryToolAliasStore(),
+      advisorOwners: makeMemoryAdvisorOwnerStore(),
       deviceProfiles: makeMemoryDeviceProfileStore(),
     });
 

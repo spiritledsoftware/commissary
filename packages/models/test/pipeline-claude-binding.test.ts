@@ -11,6 +11,7 @@ import { makeMemoryWebSearchResultStore } from "../src/executor/claude/web-searc
 import { makeSessionStateDeviceProfileStore } from "../src/executor/claude/device-profile.ts";
 import { makeMemoryReplayStore } from "../src/executor/claude/thinking-replay.ts";
 import { makeSessionStateToolAliasStore } from "../src/executor/claude/thread.ts";
+import { makeMemoryAdvisorOwnerStore } from "../src/executor/claude/advisor-owners.ts";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import type { JsonObject } from "@commissary/json";
@@ -504,6 +505,7 @@ describe("count_tokens", () => {
         webSearchResults: makeMemoryWebSearchResultStore(),
         deviceProfiles: makeSessionStateDeviceProfileStore(),
         toolAliases: makeSessionStateToolAliasStore(),
+        advisorOwners: makeMemoryAdvisorOwnerStore(),
         now: () => new Date(0),
       },
       config,

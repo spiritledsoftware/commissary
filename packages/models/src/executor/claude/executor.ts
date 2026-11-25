@@ -70,6 +70,11 @@ import {
   prepareClaudeCompactionSummaryPayload,
 } from "./compaction.ts";
 import { type ContinuityStore, makeSessionStateContinuityStore } from "./continuity.ts";
+import {
+  type AdvisorOwnerStore,
+  commitAdvisorOwners,
+  makeSessionStateAdvisorOwnerStore,
+} from "./advisor-owners.ts";
 import { type DatePinStore, makeSessionStateDatePinStore } from "./date-pin.ts";
 import { type DeviceProfileStore, makeSessionStateDeviceProfileStore } from "./device-profile.ts";
 import { type ToolAliasStore, makeSessionStateToolAliasStore } from "./thread.ts";
@@ -123,6 +128,8 @@ const defaultDeviceProfiles = makeSessionStateDeviceProfileStore();
 
 const defaultToolAliases = makeSessionStateToolAliasStore();
 
+const defaultAdvisorOwners = makeSessionStateAdvisorOwnerStore();
+
 export interface ClaudeExecutorOptions {
   readonly translators?: TranslatorRegistry;
   readonly continuity?: ContinuityStore;
@@ -133,6 +140,8 @@ export interface ClaudeExecutorOptions {
   readonly webSearchResults?: WebSearchResultStore;
   readonly deviceProfiles?: DeviceProfileStore;
   readonly toolAliases?: ToolAliasStore;
+  /** Advisor block ownership (`advisor-owners.ts`). */
+  readonly advisorOwners?: AdvisorOwnerStore;
   /** Injected clock for date reminders (tests). */
   readonly now?: () => Date;
   /** Delegating provider profile (Kimi embeds this executor with its own model naming). */
@@ -238,6 +247,7 @@ export const makeClaudeExecutor = (
     webSearchResults: executorOptions.webSearchResults ?? defaultWebSearchResults,
     deviceProfiles: executorOptions.deviceProfiles ?? defaultDeviceProfiles,
     toolAliases: executorOptions.toolAliases ?? defaultToolAliases,
+    advisorOwners: executorOptions.advisorOwners ?? defaultAdvisorOwners,
     now: executorOptions.now ?? (() => new Date()),
     profile: executorOptions.profile,
   };
@@ -425,6 +435,8 @@ export const makeClaudeExecutor = (
       });
 
       data = restored.join("\n");
+      prepared.advisor?.recordAccepted();
+      prepared.advisor?.recordStream(data);
 
       const message = lines
         .map((line) =>
@@ -441,6 +453,8 @@ export const makeClaudeExecutor = (
       replayContent = reader.accumulator.content();
     } else {
       const parsed = tryParseJson(data);
+      prepared.advisor?.recordAccepted();
+      prepared.advisor?.recordResponse(parsed);
       webSearch.observeMessage(parsed);
       context.usage.observeResponseModel(claudeResponseModelOf(parsed));
       yield* commitContinuity(
@@ -470,6 +484,7 @@ export const makeClaudeExecutor = (
 
     yield* finishReplay(prepared, replayContent);
     yield* recordWebSearchResults(prepared, webSearch);
+    yield* commitAdvisorOwners(services.advisorOwners, prepared.advisor);
 
     let out = registry.translateNonStream(
       responseFormat,
@@ -660,7 +675,11 @@ export const makeClaudeExecutor = (
       Stream.mapError(transportError),
       Stream.mapAccum(
         () => reader,
-        (state, line: string) => [state, [state.push(line)]] as const,
+        (state, line: string) => {
+          prepared.advisor?.observeLine(line);
+
+          return [state, [state.push(line)]] as const;
+        },
         { onHalt: (state) => [state.end()] },
       ),
       Stream.takeUntil((step) => step.stop),
@@ -679,7 +698,10 @@ export const makeClaudeExecutor = (
       Stream.onExit((exit) =>
         Effect.andThen(
           // Go records each result as its line arrives, so a stream that fails later keeps what it delivered.
-          recordWebSearchResults(prepared, reader.webSearch),
+          Effect.andThen(
+            recordWebSearchResults(prepared, reader.webSearch),
+            commitAdvisorOwners(services.advisorOwners, prepared.advisor),
+          ),
           Exit.isSuccess(exit) && reader.completed
             ? Effect.andThen(
                 commitContinuity(
