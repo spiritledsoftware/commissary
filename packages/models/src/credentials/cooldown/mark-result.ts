@@ -767,6 +767,21 @@ export const classifiable = (error: CredentialError): ClassifiableError => ({
 });
 
 /** `MarkResult` for one attempt. Returns the new state (the input is not modified). */
+/**
+ * Go `credentialRetryAfter`: a credential-scoped failure other than a quota 429 locks the whole credential out of the
+ * credits round until its own deadline (CLIProxyAPI 8860264b). A later deadline only extends it.
+ */
+const recordCredentialRetry = (
+  state: Draft,
+  until: number,
+  disableCooling: boolean,
+  now: number,
+): void => {
+  if (disableCooling || until <= now) return;
+
+  if (until > (state.credentialRetryAfter ?? 0)) state.credentialRetryAfter = until;
+};
+
 export const markResult = (input: MarkInput): CredentialState => markResultDetailed(input).state;
 
 /** {@link markResult} plus the keys the result put into a cooldown. */
@@ -811,6 +826,9 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         sequence <= (marks.models.get(canonicalModelLookupKey(modelKey)) ?? 0));
 
   if (result.success) {
+    // A success ends a credential-scoped lockout (Go clears `credentialRetryAfter` with the cooldowns).
+    if (!wasTerminalUnauthorized && state.status !== "disabled") delete state.credentialRetryAfter;
+
     if (input.credential.disabled === true || state.status === "disabled") {
       // A late success of an attempt still in flight on a disabled credential resets no state (CLIProxyAPI 29de31a8).
       // A `disabled` status (a terminal refresh failure) stays unavailable. A credential disabled only by its file
@@ -1002,6 +1020,9 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
 
         holdForcedCooldown(model, forced, now);
 
+        if (result.credentialScoped === true && status !== 429 && !wasTerminalUnauthorized)
+          recordCredentialRetry(state, model.nextRetryAfter, disableCooling, now);
+
         state.status = "error";
         updateAggregatedAvailability(state, now);
       }
@@ -1019,6 +1040,9 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         result.headers,
       );
       cooledCredential = !shouldSkipCredentialCooldown(classified);
+
+      if (result.credentialScoped === true && classified.status !== 429)
+        recordCredentialRetry(state, state.nextRetryAfter, disableCooling, now);
     }
   }
 

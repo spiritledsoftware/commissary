@@ -754,9 +754,11 @@ export const conduct = <T, R>(
 
             if (isStopAction(action)) return stopped(error);
 
-            // A TOS_VIOLATION ends the request: the credential is disabled, and its siblings are not swept for the
-            // same account policy (CLIProxyAPI 5a351d95; Go stops its stream and credits paths, Commissary every path).
-            if (isTosViolationError(classifiable(error))) return stopped(error);
+            // A TOS_VIOLATION disables the credential. A stream and the credits round end at it
+            // (`isDirectStreamTerminalError`, `tryAntigravityCreditsExecute`); a non-stream request moves on to the next
+            // credential, as Go's `executeMixedOnce` does (CLIProxyAPI 5a351d95).
+            if ((prepared.stream || credits) && isTosViolationError(classifiable(error)))
+              return stopped(error);
 
             // A validation challenge ends the credits round (`tryAntigravityCreditsExecute`) and is never replayed by a
             // stream bootstrap retry (CLIProxyAPI d3e4db8b), unless a request-scoped rule decided otherwise.

@@ -1,6 +1,6 @@
 // Google One AI credits fallback in the conductor: after the normal rotation failed with a capacity error, Claude models
 // get one more pass over the Antigravity credentials (cooling ones included) with `enabledCreditTypes`.
-import { Effect, Layer, Result } from "effect";
+import { Clock, Effect, Layer, Result } from "effect";
 import type { HttpServerRequest } from "effect/http";
 import { describe, expect, it } from "vite-plus/test";
 import { AccessPrincipal } from "@commissary/auth";
@@ -12,7 +12,7 @@ import {
 import { CredentialRefresher } from "../src/executor/helps/credential-refresh.ts";
 import { ExecutorRegistry } from "../src/executor/registry.ts";
 import { Thinking } from "../src/executor/thinking.ts";
-import { executeNonStream } from "../src/handlers/execute.ts";
+import { executeNonStream, executeStream } from "../src/handlers/execute.ts";
 import { ModelCapabilities } from "../src/handlers/model-capabilities.ts";
 import { ModelProviders } from "../src/handlers/model-providers.ts";
 import { Formats } from "@commissary/translation/formats";
@@ -69,6 +69,23 @@ const bearer = (call: UpstreamCall): string =>
 const hasCredits = (call: UpstreamCall): boolean =>
   JSON.parse(call.body).enabledCreditTypes !== undefined;
 
+/** The wall clock moved `offsetMs` ahead: a later request of the same deployment, without waiting. */
+const shiftedClock = (offsetMs: number): Clock.Clock => {
+  const millis = (): number => Date.now() + offsetMs;
+  const nanos = (): bigint => BigInt(millis()) * 1_000_000n;
+  const monotonic = (): bigint => BigInt(Math.round(performance.now() * 1_000_000));
+
+  return {
+    currentTimeMillisUnsafe: millis,
+    currentTimeMillis: Effect.sync(millis),
+    currentTimeNanosUnsafe: nanos,
+    currentTimeNanos: Effect.sync(nanos),
+    monotonicTimeNanosUnsafe: monotonic,
+    monotonicTimeNanos: Effect.sync(monotonic),
+    sleep: () => Effect.void,
+  };
+};
+
 const run = async (
   yaml: string,
   model: string,
@@ -78,6 +95,10 @@ const run = async (
     seed?: (state: ReturnType<typeof antigravityStateFor>) => Promise<void>;
     /** A pool of an earlier run: a later request of the same deployment (no reset, no new credentials). */
     harness?: Awaited<ReturnType<typeof makePool>>;
+    /** Runs the request as a stream (its result is the failure before the first byte, or the stream). */
+    stream?: boolean;
+    /** Runs the request this far ahead of the wall clock. */
+    clockOffsetMs?: number;
   } = {},
 ) => {
   if (options.harness === undefined) resetMemoryAntigravityState();
@@ -115,14 +136,26 @@ const run = async (
     Thinking.live,
   ).pipe(Layer.provideMerge(staticConfigReader(harness.config)));
 
+  const input = {
+    entryProtocol: Formats.Claude,
+    model,
+    body: { model, max_tokens: 10, messages: [{ role: "user", content: "hi" }] },
+    alt: "",
+    request,
+  };
+
+  const execution =
+    options.stream === true
+      ? Effect.scoped(executeStream(input).pipe(Effect.as({ payload: "stream" })))
+      : executeNonStream(input);
+
+  const clocked =
+    options.clockOffsetMs === undefined
+      ? execution
+      : execution.pipe(Effect.provideService(Clock.Clock, shiftedClock(options.clockOffsetMs)));
+
   const result = await Effect.runPromise(
-    executeNonStream({
-      entryProtocol: Formats.Claude,
-      model,
-      body: { model, max_tokens: 10, messages: [{ role: "user", content: "hi" }] },
-      alt: "",
-      request,
-    }).pipe(
+    clocked.pipe(
       Effect.provide(layer),
       Effect.provideService(AccessPrincipal, identity),
       Effect.provideContext(envContext({} as Cloudflare.Env)),
@@ -289,6 +322,55 @@ describe("antigravity credits fallback", () => {
     expect(known.calls.some(hasCredits)).toBe(false);
   });
 
+  it("skips a credential locked out by a credential-scoped failure, not one cooling per model (CLIProxyAPI 8860264b)", async () => {
+    const harness = await makePool(CREDITS);
+
+    for (const name of ["a", "b"])
+      harness.store.upsert(`antigravity-${name}.json`, "antigravity", {
+        type: "antigravity",
+        access_token: `tok-${name}`,
+        refresh_token: `refresh-${name}`,
+        project_id: `proj-${name}`,
+        expired: new Date(harness.clock.now() + 3_600_000).toISOString(),
+      });
+
+    const lease = (name: string) => ({
+      id: `seed-${name}`,
+      credentialId: `antigravity-${name}.json`,
+      credentialVersion: 1,
+      provider: "antigravity",
+      model: "claude-sonnet-4-5",
+      issuedAt: 0,
+    });
+
+    // "a": a credential-scoped 403 (Go `credentialRetryAfter`); "b": a quota 429 that cools only the model.
+    harness.pool.report(lease("a"), {
+      success: false,
+      httpStatus: 403,
+      credentialScoped: true,
+      error: { message: "forbidden", retryable: false, httpStatus: 403 },
+    });
+    harness.pool.report(lease("b"), {
+      success: false,
+      httpStatus: 429,
+      error: { message: "quota", retryable: false, httpStatus: 429 },
+      retryAfterMs: 30 * 60_000,
+    });
+
+    resetMemoryAntigravityState();
+
+    const outcome = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      () => sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+      { harness },
+    );
+
+    expect(outcome.result._tag).toBe("Success");
+    expect(outcome.calls.map(bearer)).toEqual(["tok-b"]);
+    expect(outcome.calls.every(hasCredits)).toBe(true);
+  });
+
   it("runs the credits pass only for credentials whose route reaches a Claude model", async () => {
     // A rate limit with a short wait is no quota exhaustion: no credits pass (CLIProxyAPI e0a1e93d).
     const rateLimited = await run(CREDITS, "claude-sonnet-4-5", () =>
@@ -338,7 +420,7 @@ const CREDITS = "oauth:\n  providers:\n    antigravity:\n      antigravity-credi
 const PAUSE = `${CREDITS}      tos-pause-window: 1h\n`;
 
 describe("antigravity TOS_VIOLATION (CLIProxyAPI 5a351d95)", () => {
-  it("disables the credential with its appeal link, ends the request and keeps the credits pass out", async () => {
+  it("disables the credential with its appeal link and keeps the credits pass out", async () => {
     const first = await run(
       CREDITS,
       "claude-sonnet-4-5",
@@ -351,7 +433,7 @@ describe("antigravity TOS_VIOLATION (CLIProxyAPI 5a351d95)", () => {
 
     expect(first.result._tag).toBe("Failure");
     expect(Result.isFailure(first.result) ? first.result.failure.status : undefined).toBe(403);
-    // One attempt, no rotation, no credits pass.
+    // One attempt, no other credential, no credits pass.
     expect(first.calls).toHaveLength(1);
     expect(first.calls.some(hasCredits)).toBe(false);
 
@@ -427,6 +509,39 @@ describe("antigravity TOS_VIOLATION (CLIProxyAPI 5a351d95)", () => {
     });
   });
 
+  it("moves a non-stream request on to the next credential (Go executeMixedOnce)", async () => {
+    const outcome = await run(CREDITS, "claude-sonnet-4-5", (call) =>
+      bearer(call) === "tok-a"
+        ? jsonResponse(tosViolation, { status: 403 })
+        : sseResponse([`data: ${JSON.stringify(reply)}\n\n`]),
+    );
+
+    expect(outcome.result._tag).toBe("Success");
+    expect(outcome.calls.map(bearer)).toContain("tok-b");
+    expect(outcome.calls.some(hasCredits)).toBe(false);
+    expect(outcome.harness.store.get("antigravity-a.json")?.metadata).toMatchObject({
+      disabled: true,
+      tos_appeal_url: "https://support.google.com/appeal?case=1",
+      tos_appeal_url_text: "Appeal",
+    });
+  });
+
+  it("ends a stream at the violation (Go isDirectStreamTerminalError)", async () => {
+    const outcome = await run(
+      CREDITS,
+      "claude-sonnet-4-5",
+      () => jsonResponse(tosViolation, { status: 403 }),
+      { stream: true },
+    );
+
+    expect(Result.isFailure(outcome.result) ? outcome.result.failure.status : undefined).toBe(403);
+    // The first credential's violation ends the request: no second credential, no credits pass.
+    expect(outcome.calls).toHaveLength(1);
+    expect(
+      outcome.harness.pool.list().filter((item) => item.statusMessage === "tos_violation"),
+    ).toHaveLength(1);
+  });
+
   it("pauses the org's Antigravity pool for the configured window, without touching the other credentials", async () => {
     const first = await run(
       PAUSE,
@@ -472,6 +587,46 @@ describe("antigravity TOS_VIOLATION (CLIProxyAPI 5a351d95)", () => {
       nextRetryAfter: 0,
       modelStates: {},
     });
+  });
+
+  it("lets requests through again once the window ends", async () => {
+    const first = await run(
+      PAUSE,
+      "claude-sonnet-4-5",
+      () => jsonResponse(tosViolation, { status: 403 }),
+      { names: ["a"] },
+    );
+
+    expect(await antigravityStateFor({}, GLOBAL_ORG).tosPauseRemaining(Date.now())).toBeGreaterThan(
+      0,
+    );
+
+    first.harness.store.upsert("antigravity-b.json", "antigravity", {
+      type: "antigravity",
+      access_token: "tok-b",
+      project_id: "proj-b",
+      expired: new Date(first.harness.clock.now() + 3 * 3_600_000).toISOString(),
+    });
+    first.harness.pool.invalidate();
+
+    const respond = () => sseResponse([`data: ${JSON.stringify(reply)}\n\n`]);
+    // Just before the 1 h window ends the pool is still paused; just after, the request reaches the upstream.
+
+    const during = await run(PAUSE, "claude-sonnet-4-5", respond, {
+      harness: first.harness,
+      clockOffsetMs: 3_600_000 - 60_000,
+    });
+
+    expect(during.calls).toHaveLength(0);
+    expect(Result.isFailure(during.result) ? during.result.failure.status : undefined).toBe(503);
+
+    const after = await run(PAUSE, "claude-sonnet-4-5", respond, {
+      harness: first.harness,
+      clockOffsetMs: 3_600_000 + 60_000,
+    });
+
+    expect(after.result._tag).toBe("Success");
+    expect(after.calls.map(bearer)).toEqual(["tok-b"]);
   });
 
   it("never pauses by default", async () => {

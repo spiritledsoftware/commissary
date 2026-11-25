@@ -35,7 +35,14 @@ export const resetCooldownState = (state: CredentialState, now: number): Cooldow
   const disabled = state.status === "disabled";
   const keepError = disabled || terminalUnauthorized(state);
   // The reset ends a forced cooldown too.
-  const { lastError, statusMessage, forcedUntil: _forced, ...rest } = state;
+
+  const {
+    lastError,
+    statusMessage,
+    forcedUntil: _forced,
+    credentialRetryAfter: _credential,
+    ...rest
+  } = state;
 
   return {
     models,

@@ -643,8 +643,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   - A disabled credential stays disabled and unavailable through a late success and a cooldown reset (CLIProxyAPI
     29de31a8, 35afdf07); one disabled only in its file keeps its runtime state, so turning it back on needs no reset. A disabled model keeps its
     state through the reset too, only its timers cleared.
-    Commissary has no model reconciliation, inference verification or TOS-violation path, so the rest of those commits
-    has nothing to apply to.
+    A TOS_VIOLATION (SPI-1422, _Antigravity provider_) disables the credential this way too, so its late successes and
+    failures leave it disabled. Commissary has no model reconciliation or inference verification, so the rest of those
+    commits has nothing to apply to.
   - A live cooldown set by an explicit `force_cooldown` (`stop-and-cooldown`) outlasts later failures that write a zero
     deadline because cooling is disabled, or shorter ones, however many interleave: its deadline is persisted apart
     (`forcedUntil` on the credential and model state, Go's `forceCooldownUntil`, CLIProxyAPI 9d7d012b) until it passes, a
@@ -3554,10 +3555,10 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     `disabled`, message `tos_violation`, no retry time); a later failure reported against a disabled credential changes
     nothing. A TOS or validation-required result reported against an older credential version still counts when the
     refresh token's digest (`grantDigest`) matches the current one (Go's same-account exemption to
-    `isStaleResultForCurrentAuth`). Differences: re-enabling a TOS-disabled credential resets its state, where Go keeps
-    the terminal state until the next success; and a TOS_VIOLATION stops the request in every path (`handlers/conductor.ts`),
-    where Go's non-stream rotation moves on to the next credential: the violation is an account-wide policy, so sweeping
-    the org's other credentials with the same request is what the pause exists to prevent.
+    `isStaleResultForCurrentAuth`). A stream and the credits round end at the violation; a non-stream request moves on
+    to the next credential (`handlers/conductor.ts`, as Go's `isDirectStreamTerminalError`, `tryAntigravityCreditsExecute`
+    and `executeMixedOnce`). Difference: re-enabling a TOS-disabled credential resets its state, where Go keeps the
+    terminal state until the next success.
   - _Pool pause_ (`state.ts`, CLIProxyAPI `5a351d95`, `e96d4c48`, `81018ba4`): `oauth.providers.antigravity.tos-pause-window`
     (a Go duration; empty or `0`/`off`/`false`/`none`/`disabled` turns it off, the default) arms a pause on the first
     TOS_VIOLATION. While it runs, every generate, stream and token count answers a request-scoped 503 (`antigravity pool
@@ -3591,14 +3592,23 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
     15 min left. Failures back off separately: transient ones 2/4/8/16/30 min and 401s 10/20/30 min, both tied to the
     access token (a new token probes at once), and 403s 10/20/40/60 min tied to the credential (`forbidden`). Old records
     decode unchanged (the new fields are optional).
-  - _Already holds_: `8e0641c9`, `a35e8be3`, `8860264b` (the credits round runs through the conductor's normal retry, stop
-    and lockout rules; `PickRequest.ignoreCooldown` lifts only the cooldown), `cdbda2f2`, `0861f9e1` (refreshes go through
+  - _Credential lockouts_ (`cooldown/mark-result.ts`, `selection/pick.ts`, CLIProxyAPI `8860264b`): a credential-scoped
+    failure other than a quota 429 records its deadline as the state's `credentialRetryAfter` (Go `credentialRetryAfter`;
+    a later deadline extends it, a success clears it, and so does a cooldown reset), besides cooling the model it was
+    reported for. `PickRequest.ignoreCooldown` lifts per-model and quota cooldowns only: the credits round skips a
+    credential whose `credentialRetryAfter` is still ahead, as Go's `findAllAntigravityCreditsCandidateAuths` does. Go
+    also tracks `nonAuthCredentialRetryAfter`, the same deadline minus failures a refresh can clear; the credits round
+    checks both, so the one field answers it. Normal selection does not read the field: Commissary cools the model
+    the failure was reported for, as before.
+  - _Already holds_: `8e0641c9`, `a35e8be3` (the credits round runs through the conductor's normal retry and stop
+    rules), `cdbda2f2`, `0861f9e1` (refreshes go through
     `withCredentialRefresh`, which persists, with the refresh protocol's own transport and user agent), `99a1c1ca` (the
     credits warm is one bounded `waitUntil` probe, with no goroutine to leak), `d2086b4c` (picks exclude disabled
     credentials, and the executor reads config per request). `f2b00303`, `093c7efa`, `2d50f315`: the Hub map is at
     2.35.1 (`version.ts`). _Skipped_: `4ea1527c` (the version updater's service lifecycle and proxy: the cron task is the
-    lifecycle, and Workers has no outbound proxy), `acf238f6` with its revert `ca43428b`, and Go's conductor-wide
-    `credentialRetryAfter` bookkeeping from `d3e4db8b` (the ControlPlane cooldowns already carry each failure's retry time).
+    lifecycle, and Workers has no outbound proxy), `acf238f6` with its revert `ca43428b`, and the rest of Go's
+    `credentialRetryAfter` bookkeeping from `d3e4db8b` (its use in normal selection and its
+    clearing on a token refresh): the ControlPlane cooldowns already carry each failure's retry time.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
