@@ -323,6 +323,32 @@ const withRetryAfter = (
 };
 
 /**
+ * `annotatePoolCooldownTerminalError` (CLIProxyAPI 4da9f685): a terminal upstream 429 while every candidate of the
+ * model is blocked, at least one by a timed cooldown, keeps its status, body and upstream headers but becomes a model
+ * cooldown whose trusted `Retry-After` is the pool's earliest recovery, not the last attempt's own hint.
+ */
+export const withPoolCooldown = (
+  error: ExecutionError,
+  poolCooldownMs: number | undefined,
+): ExecutionError => {
+  if (poolCooldownMs === undefined || poolCooldownMs <= 0 || error.status !== 429) return error;
+
+  if (error.code === "model_cooldown" || error.modelCooldown === true) return error;
+
+  return withErrorFields(error, {
+    modelCooldown: true,
+    safeHeaders: {
+      ...Object.fromEntries(
+        Object.entries(error.safeHeaders ?? {}).filter(
+          ([name]) => name.toLowerCase() !== "retry-after",
+        ),
+      ),
+      "retry-after": String(Math.max(1, Math.ceil(poolCooldownMs / 1000))),
+    },
+  });
+};
+
+/**
  * Runs `run` over credentials until it succeeds. `run` must fail with an `ExecutionError` (never defects) and call
  * `attempt.finish` itself on success; the conductor calls it for failures.
  */
@@ -760,6 +786,7 @@ export const conduct = <T, R>(
     let preferredUpstream: ExecutionError | undefined;
     let lastFailure: Extract<RoundOutcome<T>, { ok: false }> | undefined;
     let recoveryHintMs: number | undefined;
+    let poolCooldownMs: number | undefined;
 
     for (let round = 0; ; round += 1) {
       const outcome = yield* runRound(round);
@@ -774,6 +801,7 @@ export const conduct = <T, R>(
 
       if (!plan.retry) {
         recoveryHintMs = plan.retryAfterMs;
+        poolCooldownMs = plan.poolCooldownMs;
         break;
       }
 
@@ -808,7 +836,7 @@ export const conduct = <T, R>(
 
     return {
       ok: false,
-      error: withRetryAfter(error, recoveryHintMs),
+      error: withRetryAfter(withPoolCooldown(error, poolCooldownMs), recoveryHintMs),
       bootstrap: last.bootstrap,
     } satisfies ConductResult<T>;
   });

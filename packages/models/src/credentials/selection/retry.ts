@@ -20,7 +20,7 @@ import {
   executorKey,
 } from "../model.ts";
 import { servesMember } from "../ownership.ts";
-import { availabilityBlock, isBlockedForModel } from "./availability.ts";
+import { availabilityBlock, type Block, isBlockedForModel } from "./availability.ts";
 import { grantedRoute } from "./grants.ts";
 import { canonicalModelLookupKey } from "./model-name.ts";
 import { type ModelRoute, resolveModelRoute, type RoutingContext } from "./routing.ts";
@@ -54,8 +54,17 @@ export const RetryQuery = Schema.Struct({
 export type RetryQuery = typeof RetryQuery.Type;
 
 export type RetryPlan =
-  /** `retryAfterMs`: how long until a credential recovers when that exceeded `maxWaitMs` (for `Retry-After`). */
-  | { readonly retry: false; readonly retryAfterMs?: number }
+  | {
+      readonly retry: false;
+      /** How long until a credential recovers when that exceeded `maxWaitMs` (for `Retry-After`). */
+      readonly retryAfterMs?: number;
+      /**
+       * After a 429 only: every candidate of the model is blocked, at least one by a timed cooldown, and the earliest
+       * recovers this long from now (`earliestPoolCooldownForModelAt`, CLIProxyAPI 4da9f685). The terminal 429 is
+       * then a model cooldown carrying this reset.
+       */
+      readonly poolCooldownMs?: number;
+    }
   | { readonly retry: true; readonly waitMs: number };
 
 const parseIntAny = (value: Json | undefined): number | undefined => {
@@ -251,22 +260,22 @@ export interface RetryPlanInput {
   readonly spend?: SpendGate | undefined;
 }
 
-/** `shouldRetryAfterErrorWithAttempted` steps 3-5 (the caller has already checked the error class). */
-export const planRetry = (input: RetryPlanInput): RetryPlan => {
-  const { query, now } = input;
+/** A candidate of the retry query: the credentials selection may use for the model (`undefined` = not one). */
+interface RetryCandidate {
+  readonly credential: Credential;
+  readonly state: CredentialState;
+  readonly route: ModelRoute | undefined;
+}
+
+const retryCandidates = (input: RetryPlanInput): RetryCandidate[] => {
+  const { query } = input;
 
   const providers = new Set(
     query.providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean),
   );
 
-  if (providers.size === 0 || query.round < 0) return { retry: false };
-  const attempted = new Set(query.attempted ?? []);
   const pinned = query.pinnedAuthId?.trim() ?? "";
-  const maxWait = query.maxWaitMs;
-
-  let allowed = false;
-  let found = false;
-  let minWait = 0;
+  const candidates: RetryCandidate[] = [];
 
   for (const { credential, state } of input.credentials) {
     if (credential.disabled || state.status === "disabled") continue;
@@ -299,7 +308,97 @@ export const planRetry = (input: RetryPlanInput): RetryPlan => {
       resolved === undefined ? undefined : grantedRoute(credential, resolved, input.reach);
 
     if (resolved !== undefined && route === undefined) continue;
+    candidates.push({ credential, state, route });
+  }
 
+  return candidates;
+};
+
+/** The block of a credential for its route: an alias pool is as available as its best upstream model. */
+const routeBlock = (candidate: RetryCandidate, now: number): Block => {
+  const { credential, state, route } = candidate;
+
+  const models =
+    route === undefined
+      ? [""]
+      : route.upstreamModels.length <= 1 && route.pooled !== true
+        ? [route.selectionModel]
+        : route.upstreamModels;
+
+  let earliest: Block | undefined;
+
+  for (const model of models) {
+    const block = isBlockedForModel(credential, state, model, now);
+
+    if (!block.blocked) return block;
+
+    if (
+      earliest === undefined ||
+      (block.next !== 0 && (earliest.next === 0 || block.next < earliest.next))
+    ) {
+      earliest = block;
+    }
+  }
+
+  return earliest ?? { blocked: true, reason: "other", next: 0 };
+};
+
+/**
+ * `earliestPoolCooldownForModelAt` (CLIProxyAPI 4da9f685): when no candidate is available and at least one is in a
+ * timed cooldown, how long until the earliest timed recovery of any of them (a short non-quota block counts too).
+ * The retry budget plays no part: it limits this request's rounds, not when the pool recovers.
+ */
+const poolCooldown = (
+  candidates: ReadonlyArray<RetryCandidate>,
+  now: number,
+): number | undefined => {
+  let cooling = 0;
+  let earliest = 0;
+
+  for (const candidate of candidates) {
+    const block = routeBlock(candidate, now);
+
+    if (!block.blocked) return undefined;
+
+    if (block.reason === "cooldown") cooling += 1;
+
+    if (
+      block.reason !== "disabled" &&
+      block.next > now &&
+      (earliest === 0 || block.next < earliest)
+    )
+      earliest = block.next;
+  }
+
+  return candidates.length > 0 && cooling > 0 && earliest !== 0 ? earliest - now : undefined;
+};
+
+/** `shouldRetryAfterErrorWithAttempted` steps 3-5 (the caller has already checked the error class). */
+export const planRetry = (input: RetryPlanInput): RetryPlan => {
+  const { query, now } = input;
+
+  const providers = new Set(
+    query.providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean),
+  );
+
+  if (providers.size === 0 || query.round < 0) return { retry: false };
+  const candidates = retryCandidates(input);
+  const pool = query.status === 429 ? poolCooldown(candidates, now) : undefined;
+
+  const stop = (retryAfterMs?: number): RetryPlan => ({
+    retry: false,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(pool === undefined ? {} : { poolCooldownMs: pool }),
+  });
+
+  const attempted = new Set(query.attempted ?? []);
+  const maxWait = query.maxWaitMs;
+
+  let allowed = false;
+  let found = false;
+  let minWait = 0;
+
+  for (const { credential, state, route } of candidates) {
     if (query.round >= effectiveRequestRetry(credential, query.requestRetry)) continue;
     const availability = routeAvailability(state, credential, route, now);
     const { eligible } = availability;
@@ -355,11 +454,10 @@ export const planRetry = (input: RetryPlanInput): RetryPlan => {
     }
   }
 
-  if (!allowed) return { retry: false };
+  if (!allowed) return stop();
 
   if (found) {
-    if (minWait > 0 && (maxWait <= 0 || minWait > maxWait))
-      return { retry: false, retryAfterMs: minWait };
+    if (minWait > 0 && (maxWait <= 0 || minWait > maxWait)) return stop(minWait);
 
     return { retry: true, waitMs: minWait };
   }
@@ -367,7 +465,7 @@ export const planRetry = (input: RetryPlanInput): RetryPlan => {
   const hint = query.retryAfterMs;
 
   if (hint !== undefined) {
-    if (hint < 0 || (hint > 0 && (maxWait <= 0 || hint > maxWait))) return { retry: false };
+    if (hint < 0 || (hint > 0 && (maxWait <= 0 || hint > maxWait))) return stop();
 
     return { retry: true, waitMs: hint };
   }

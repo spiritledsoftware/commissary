@@ -252,10 +252,12 @@ describe("planRetry (shouldRetryAfterErrorWithAttempted steps 3-5)", () => {
     expect(pool.planRetry({ ...query, maxWaitMs: 0 })).toEqual({
       retry: false,
       retryAfterMs: 120_000,
+      poolCooldownMs: 120_000,
     });
     expect(pool.planRetry({ ...query, maxWaitMs: 30_000 })).toEqual({
       retry: false,
       retryAfterMs: 120_000,
+      poolCooldownMs: 120_000,
     });
     expect(pool.planRetry({ ...query, maxWaitMs: 120_000 })).toEqual({
       retry: true,
@@ -293,6 +295,70 @@ describe("planRetry (shouldRetryAfterErrorWithAttempted steps 3-5)", () => {
       retry: true,
       waitMs: 0,
     });
+  });
+});
+
+describe("the pool's cooldown on a terminal 429 (CLIProxyAPI 4da9f685)", () => {
+  const query = (extra: Record<string, unknown> = {}) => ({
+    providers: providers(["a", "b"]),
+    model: "m",
+    round: 0,
+    requestRetry: 0,
+    status: 429,
+    maxWaitMs: 0,
+    ...extra,
+  });
+
+  const fail = (pool: CredentialPool, name: string, httpStatus: number, retryAfterMs: number) => {
+    const picked = ok(
+      pool.pick({
+        providers: providers([name]),
+        model: "m",
+      }),
+    );
+
+    pool.report(picked.lease, {
+      success: false,
+      httpStatus,
+      error: { message: "x", retryable: true, httpStatus },
+      retryAfterMs,
+    });
+
+    return picked.credential.id;
+  };
+
+  it("reports the earliest recovery of every blocked candidate, not the last attempt's", async () => {
+    const { pool } = await makePool(config(group("a") + group("b")));
+    const a = fail(pool, "a", 429, 95 * 60_000);
+    const b = fail(pool, "b", 429, 3 * 3_600_000);
+    const plan = pool.planRetry(query({ attempted: [a, b] }));
+    expect(plan).toMatchObject({ retry: false, poolCooldownMs: 95 * 60_000 });
+
+    // The retry budget limits this request's rounds, not when the pool recovers.
+    expect(pool.planRetry(query({ attempted: [a, b], round: 3 }))).toEqual({
+      retry: false,
+      poolCooldownMs: 95 * 60_000,
+    });
+  });
+
+  it("counts a short non-quota block toward the earliest recovery", async () => {
+    const { pool } = await makePool(config(group("a") + group("b")));
+    fail(pool, "a", 429, 3 * 3_600_000);
+    fail(pool, "b", 503, 45_000);
+    expect(pool.planRetry(query({ round: 3 }))).toEqual({ retry: false, poolCooldownMs: 45_000 });
+  });
+
+  it("has none while a candidate is available, for another status, or without a timed cooldown", async () => {
+    const { pool } = await makePool(config(group("a") + group("b")));
+    fail(pool, "a", 429, 3_600_000);
+    expect(pool.planRetry(query({ round: 3 }))).toEqual({ retry: false });
+
+    fail(pool, "b", 429, 3_600_000);
+    expect(pool.planRetry(query({ round: 3, status: 503 }))).toEqual({ retry: false });
+
+    const { pool: other } = await makePool(config(group("a")));
+    fail(other, "a", 503, 45_000);
+    expect(other.planRetry(query({ round: 3 }))).toEqual({ retry: false });
   });
 });
 

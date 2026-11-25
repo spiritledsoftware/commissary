@@ -245,9 +245,12 @@ export const isClaudeThreadNotFound = (status: number, text: string): boolean =>
 export const claudeCooldownRetryAfter = (error: {
   readonly status: number;
   readonly code?: string | undefined;
+  readonly modelCooldown?: boolean | undefined;
   readonly safeHeaders?: Readonly<Record<string, string>> | undefined;
 }): string | undefined =>
-  error.status === 429 && error.code === "model_cooldown" ? safeRetryAfter(error) : undefined;
+  error.status === 429 && (error.code === "model_cooldown" || error.modelCooldown === true)
+    ? safeRetryAfter(error)
+    : undefined;
 
 /** `reset after <Go duration>` for a positive whole-second Retry-After; huge values keep the raw seconds. */
 const resetAfterHint = (retryAfter: string): string => {

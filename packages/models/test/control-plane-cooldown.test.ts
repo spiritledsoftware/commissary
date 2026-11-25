@@ -111,7 +111,11 @@ describe("ControlPlane report -> cooldown (Workers pool)", () => {
     expect(await stub.models().planRetry({ ...query, maxWaitMs: 0 })).toMatchObject({
       retry: false,
     });
-    expect(await stub.models().planRetry({ ...query, round: 1 })).toEqual({ retry: false });
+    // The budget is spent; the terminal 429 still learns when the pool recovers (CLIProxyAPI 4da9f685).
+    const spent = await stub.models().planRetry({ ...query, round: 1 });
+    expect(spent).toMatchObject({ retry: false });
+    expect(spent.retry === false && spent.poolCooldownMs).toBeGreaterThan(0);
+    expect(spent.retry === false && spent.poolCooldownMs).toBeLessThanOrEqual(20_000);
   });
 
   it("hasAlternative answers over RPC: another credential, not a cooling or excluded one", async () => {

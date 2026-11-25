@@ -106,9 +106,10 @@ const QUOTA_PATHS = [
 
 /** `isResponsesWebsocketQuotaOrCooldownError`: a quota (`usage_limit_reached`) or model cooldown (`model_cooldown`) failure. */
 export const isQuotaOrCooldownError = (
-  error: Pick<ExecutionError, "message" | "code">,
+  error: Pick<ExecutionError, "message" | "code" | "modelCooldown">,
 ): boolean => {
-  if (error.code?.trim().toLowerCase() === "model_cooldown") return true;
+  if (error.modelCooldown === true || error.code?.trim().toLowerCase() === "model_cooldown")
+    return true;
   const body = tryParseJson(error.message.trim());
 
   return (
