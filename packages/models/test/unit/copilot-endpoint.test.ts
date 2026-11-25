@@ -25,6 +25,8 @@ describe("isTrustedCopilotApi", () => {
     "https://api.githubcopilot.com#x",
     "https://evil.githubcopilot.com",
     "https://api.githubcopilot.com.evil.com",
+    "https://api.githubcopilot.com\\@evil.com",
+    "https://api.githubcopilot.com\\v1",
     "not a url",
   ])("refuses %s", (url) => {
     expect(isTrustedCopilotApi(url)).toBe(false);

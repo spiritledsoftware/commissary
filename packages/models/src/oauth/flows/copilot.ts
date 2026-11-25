@@ -16,18 +16,18 @@ import { SESSION_TTL_MS } from "../session-store.ts";
 import { type DeviceFlow, type FlowFailure, flowFailure } from "./types.ts";
 
 /** The public client id of GitHub's Copilot device flow (no secret: device flows carry none). */
-export const COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+const COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
 
-export const GITHUB_URL = "https://github.com";
+const GITHUB_URL = "https://github.com";
 
-export const GITHUB_API = "https://api.github.com";
+const GITHUB_API = "https://api.github.com";
 
 export const COPILOT_DEFAULT_API = "https://api.individual.githubcopilot.com";
 
-export const COPILOT_TOKEN_URL = `${GITHUB_API}/copilot_internal/v2/token`;
+const COPILOT_TOKEN_URL = `${GITHUB_API}/copilot_internal/v2/token`;
 
 /** `CLIUserAgent`: the official CLI's agent; Workers report the `linux` platform. */
-export const COPILOT_USER_AGENT = "copilot/1.0.114 (linux v24.22.1) term/unknown";
+const COPILOT_USER_AGENT = "copilot/1.0.114 (linux v24.22.1) term/unknown";
 
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -56,6 +56,10 @@ export const isTrustedCopilotApi = (raw: string): boolean => {
       url.username === "" &&
       url.password === "" &&
       url.port === "" &&
+      // URL parsing reads a backslash as a slash, so the pattern above alone would let a path through.
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === "" &&
       TRUSTED_HOSTS.has(url.hostname)
     );
   } catch {
@@ -67,7 +71,7 @@ export const isTrustedCopilotApi = (raw: string): boolean => {
 export const copilotApiBase = (token: JsonObject): string | undefined => {
   const api = isJsonObject(token.endpoints) ? str(token.endpoints.api) : "";
 
-  if (api !== "") return isTrustedCopilotApi(api) ? api.replace(/\/+$/, "") : undefined;
+  if (api !== "") return isTrustedCopilotApi(api) ? new URL(api).origin : undefined;
 
   for (const part of str(token.token).split(";")) {
     if (part.startsWith("proxy-ep=proxy.")) {
@@ -132,7 +136,7 @@ export const exchangeCopilotToken = (
     return { token, expiresAt: Math.trunc(expiresAt), baseUrl };
   });
 
-const failed = (reason: string) => flowFailure(`Authentication failed: ${reason}`);
+const authFailed = (reason: string) => flowFailure(`Authentication failed: ${reason}`);
 
 export const copilotFlow = (): DeviceFlow => ({
   kind: "device",
@@ -193,7 +197,7 @@ export const copilotFlow = (): DeviceFlow => ({
       );
 
       if (reply === undefined || reply.status >= 500) return { _tag: "pending" as const };
-      const payload = yield* jsonReply(reply).pipe(Effect.mapError((e) => failed(e.message)));
+      const payload = yield* jsonReply(reply).pipe(Effect.mapError((e) => authFailed(e.message)));
       const githubToken = str(payload.access_token);
 
       if (githubToken === "") {
@@ -203,9 +207,9 @@ export const copilotFlow = (): DeviceFlow => ({
           case "slow_down":
             return { _tag: "pending" as const, intervalMs: intervalMs + DEFAULT_INTERVAL_MS };
           case "access_denied":
-            return yield* failed("copilot: GitHub device authorization denied");
+            return yield* authFailed("copilot: GitHub device authorization denied");
           default:
-            return yield* failed("copilot: GitHub device authorization failed or expired");
+            return yield* authFailed("copilot: GitHub device authorization failed or expired");
         }
       }
 
@@ -214,16 +218,16 @@ export const copilotFlow = (): DeviceFlow => ({
         githubRequest(HttpClientRequest.get(`${GITHUB_API}/user`), githubToken),
       ).pipe(
         Effect.flatMap(jsonReply),
-        Effect.mapError((e) => failed(e.message)),
+        Effect.mapError((e) => authFailed(e.message)),
       );
 
       const accountId = Math.trunc(seconds(account.id));
 
-      if (accountId <= 0) return yield* failed("copilot: missing GitHub account ID");
+      if (accountId <= 0) return yield* authFailed("copilot: missing GitHub account ID");
       const login = str(account.login);
 
       const exchanged = yield* exchangeCopilotToken(githubToken, now).pipe(
-        Effect.mapError((e) => failed(e.message)),
+        Effect.mapError((e) => authFailed(e.message)),
       );
 
       const metadata: JsonObject = {
