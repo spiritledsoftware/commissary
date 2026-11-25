@@ -290,10 +290,14 @@ const Body = ({
                 requires: "Only while the signature cache is off.",
               })}
               {field("oauth.providers.antigravity.sensitive-words")}
+              {field("oauth.providers.antigravity.sensitive-words-replace")}
+              {field("oauth.providers.antigravity.sensitive-patterns-replace")}
             </div>
             <div className={styles["sub"]}>
               <h3 className={styles["subTitle"]}>Devin</h3>
               {field("oauth.providers.devin.sensitive-words")}
+              {field("oauth.providers.devin.sensitive-words-replace")}
+              {field("oauth.providers.devin.sensitive-patterns-replace")}
             </div>
           </>
         )}

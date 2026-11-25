@@ -9,6 +9,7 @@
 // unless a field it changes moved on the server; then the page lists those fields.
 import { Effect, Predicate, Schema } from "effect";
 import { ManagementError } from "@commissary/contract/errors";
+import { SensitivePatternRule, SensitiveWordsReplace } from "@commissary/contract/provider-keys";
 import {
   type DisableImageGeneration,
   type SaveSettings,
@@ -21,8 +22,21 @@ import {
 // ---------------------------------------------------------------------------------------------------------------
 // Fields
 
-/** A settings leaf as the contract carries it: text, a number, a flag, an unset tri-state, or a list of text. */
-export type SettingValue = string | number | boolean | null | ReadonlyArray<string>;
+/** A `sensitive-patterns-replace` rule: an RE2 pattern and its replacement (missing = empty). */
+export type PatternRule = SensitivePatternRule;
+
+/**
+ * A settings leaf as the contract carries it: text, a number, a flag, an unset tri-state, a list of text, a mapping
+ * of text to text (`sensitive-words-replace`), or a list of pattern rules (`sensitive-patterns-replace`).
+ */
+export type SettingValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ReadonlyArray<string>
+  | Readonly<Record<string, string>>
+  | ReadonlyArray<PatternRule>;
 
 export type SectionId =
   | "routing"
@@ -37,7 +51,7 @@ export type SectionId =
  * How a value is edited: `bool` a checkbox; `tristate` a checkbox over an unset Go pointer; `int` whole numbers ≥ 0;
  * `duration` a Go duration > 0; `bootstrap` a duration, whole seconds or 0 for unlimited; `text` trimmed text;
  * `model` a `gpt-` model or empty; `timezone` an IANA zone, `Local` or empty; `words` one entry
- * per line; `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
+ * per line; `replacements` and `patterns` one `target => replacement` rule per line; `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
  */
 export type FieldKind =
   | "bool"
@@ -49,6 +63,8 @@ export type FieldKind =
   | "model"
   | "timezone"
   | "words"
+  | "replacements"
+  | "patterns"
   | "choice"
   | "images"
   | "catalog"
@@ -183,6 +199,18 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
   ),
   field(
     "providers",
+    "oauth.providers.antigravity.sensitive-words-replace",
+    "replacements",
+    "Antigravity word replacements",
+  ),
+  field(
+    "providers",
+    "oauth.providers.antigravity.sensitive-patterns-replace",
+    "patterns",
+    "Antigravity pattern replacements",
+  ),
+  field(
+    "providers",
     "oauth.providers.antigravity.antigravity-credits",
     "bool",
     "Antigravity credits",
@@ -202,6 +230,18 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
     false,
   ),
   field("providers", "oauth.providers.devin.sensitive-words", "words", "Devin sensitive words"),
+  field(
+    "providers",
+    "oauth.providers.devin.sensitive-words-replace",
+    "replacements",
+    "Devin word replacements",
+  ),
+  field(
+    "providers",
+    "oauth.providers.devin.sensitive-patterns-replace",
+    "patterns",
+    "Devin pattern replacements",
+  ),
 
   field("catalogs", "models.catalog", "catalog", "Model catalog"),
 
@@ -228,6 +268,10 @@ export const fieldOfPath = (path: string | undefined): FieldSpec | undefined => 
   ).toSorted((a, b) => b.path.length - a.path.length)[0];
 };
 
+const isPatternRule = Schema.is(SensitivePatternRule);
+
+const isStringMap = Schema.is(SensitiveWordsReplace);
+
 /** The value at a dotted path of the settings values (`undefined` when there is none). */
 export const valueAt = (values: SettingsValues, path: string): SettingValue | undefined => {
   let node: unknown = values;
@@ -237,8 +281,15 @@ export const valueAt = (values: SettingsValues, path: string): SettingValue | un
     node = node[key];
   }
 
-  if (Array.isArray(node))
-    return node.filter((entry): entry is string => typeof entry === "string");
+  if (Array.isArray(node)) {
+    const rules = node.filter(isPatternRule);
+
+    return rules.length > 0
+      ? rules
+      : node.filter((entry): entry is string => typeof entry === "string");
+  }
+
+  if (isStringMap(node)) return node;
 
   return typeof node === "string" ||
     typeof node === "number" ||
@@ -265,7 +316,36 @@ const isChoice = (input: Input): input is Choice => typeof input === "object";
 const asText = (input: Input): string => (typeof input === "string" ? input : "");
 
 const strings = (value: SettingValue | undefined): ReadonlyArray<string> =>
-  typeof value === "object" && value !== null ? value : [];
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+
+const stringMap = (value: SettingValue | undefined): Readonly<Record<string, string>> =>
+  isStringMap(value) ? value : {};
+
+const patternRules = (value: SettingValue | undefined): ReadonlyArray<PatternRule> =>
+  Array.isArray(value) ? value.filter(isPatternRule) : [];
+
+/** Between a rule's target and its replacement. */
+const ARROW = " =>";
+
+/** A rule as a line: `target => replacement`, or `target =>` when the replacement deletes the match. */
+const ruleLine = (target: string, replacement: string): string =>
+  replacement === "" ? `${target}${ARROW}` : `${target}${ARROW} ${replacement}`;
+
+/** A rule line's target (trimmed) and replacement (as written after `=> `); a line without `=>` deletes. */
+const splitRule = (line: string): readonly [target: string, replacement: string] => {
+  const arrow = line.indexOf(ARROW);
+
+  if (arrow < 0) return [line.trim(), ""];
+  const rest = line.slice(arrow + ARROW.length);
+
+  return [line.slice(0, arrow).trim(), rest.startsWith(" ") ? rest.slice(1) : rest];
+};
+
+const ruleLines = (text: string): ReadonlyArray<readonly [string, string]> =>
+  text
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map(splitRule);
 
 /** The form's input for a stored value. */
 export const inputOf = (spec: FieldSpec, value: SettingValue | undefined): Input => {
@@ -278,6 +358,14 @@ export const inputOf = (spec: FieldSpec, value: SettingValue | undefined): Input
       return typeof value === "number" ? String(value) : "0";
     case "words":
       return strings(value).join("\n");
+    case "replacements":
+      return Object.entries(stringMap(value))
+        .map(([target, replacement]) => ruleLine(target, replacement))
+        .join("\n");
+    case "patterns":
+      return patternRules(value)
+        .map((rule) => ruleLine(rule.pattern, rule.replacement ?? ""))
+        .join("\n");
     case "images":
       return typeof value === "string" ? value : String(value === true);
     case "catalog": {
@@ -445,6 +533,28 @@ export const parseInput = (spec: FieldSpec, input: Input): Parsed => {
 
     case "words":
       return ok(lines(asText(input)));
+    case "replacements": {
+      const out: Record<string, string> = {};
+
+      for (const [target, replacement] of ruleLines(asText(input))) {
+        if (target === "") return fail("A rule has no word before =>.");
+
+        if (Object.hasOwn(out, target)) return fail(`${quoted(target)} is listed twice.`);
+        out[target] = replacement;
+      }
+
+      return ok(out);
+    }
+
+    case "patterns": {
+      const rules = ruleLines(asText(input));
+
+      if (rules.some(([pattern]) => pattern === ""))
+        return fail("A rule has no pattern before =>.");
+
+      return ok(rules.map(([pattern, replacement]) => ({ pattern, replacement })));
+    }
+
     case "choice":
       return ok(asText(input));
     case "images": {
@@ -486,12 +596,14 @@ export const parseInput = (spec: FieldSpec, input: Input): Parsed => {
   }
 };
 
-const jsonSame = (a: SettingValue | undefined, b: SettingValue | undefined): boolean => {
-  if (typeof a === "object" && a !== null && typeof b === "object" && b !== null)
-    return a.length === b.length && a.every((entry, index) => entry === b[index]);
+/** A value as two equal values spell it: a mapping by sorted key. */
+const canonical = (value: SettingValue | undefined): string | undefined =>
+  JSON.stringify(
+    isStringMap(value) ? Object.entries(value).toSorted(([x], [y]) => x.localeCompare(y)) : value,
+  );
 
-  return a === b;
-};
+const jsonSame = (a: SettingValue | undefined, b: SettingValue | undefined): boolean =>
+  canonical(a) === canonical(b);
 
 /** Whether two values of a field have the same effect (an unset tri-state is its documented default). */
 export const sameValue = (
@@ -505,6 +617,17 @@ export const sameValue = (
   // Every negative transient cooldown turns it off.
   if (spec.kind === "cooldown" && typeof a === "number" && typeof b === "number" && a < 0 && b < 0)
     return true;
+
+  // A rule without a replacement deletes, like an empty one.
+  if (spec.kind === "patterns") {
+    const rules = (value: SettingValue | undefined) =>
+      patternRules(value).map((rule) => ({
+        pattern: rule.pattern,
+        replacement: rule.replacement ?? "",
+      }));
+
+    return jsonSame(rules(a), rules(b));
+  }
 
   return jsonSame(a, b);
 };
@@ -833,6 +956,12 @@ export const valueText = (spec: FieldSpec, value: SettingValue | undefined): str
     const entries = lines(input);
 
     return entries.length === 0 ? "none" : entries.join(", ");
+  }
+
+  if (spec.kind === "replacements" || spec.kind === "patterns") {
+    const count = ruleLines(input).length;
+
+    return count === 0 ? "none" : unit(count, "rule");
   }
 
   return input === "" ? "empty" : input;
