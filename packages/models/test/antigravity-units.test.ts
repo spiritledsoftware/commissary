@@ -137,23 +137,25 @@ describe("429 decisions and retry delays", () => {
   });
 
   it("follows the decision table", () => {
-    expect(decideAntigravity429("").kind).toBe("soft_retry");
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "1s", "NOT_EXHAUSTED")).kind).toBe(
-      "soft_retry",
-    );
-    expect(decideAntigravity429(body("QUOTA_EXHAUSTED")).kind).toBe("full_quota_exhausted");
-    expect(decideAntigravity429(body("INSUFFICIENT_G1_CREDITS_BALANCE")).kind).toBe(
+    expect(decideAntigravity429("", undefined, 0).kind).toBe("soft_retry");
+    expect(
+      decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "1s", "NOT_EXHAUSTED"), undefined, 0).kind,
+    ).toBe("soft_retry");
+    expect(decideAntigravity429(body("QUOTA_EXHAUSTED"), undefined, 0).kind).toBe(
       "full_quota_exhausted",
     );
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED")).kind).toBe("soft_retry");
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "2s")).kind).toBe(
+    expect(decideAntigravity429(body("INSUFFICIENT_G1_CREDITS_BALANCE"), undefined, 0).kind).toBe(
+      "full_quota_exhausted",
+    );
+    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED"), undefined, 0).kind).toBe("soft_retry");
+    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "2s"), undefined, 0).kind).toBe(
       "instant_retry_same_auth",
     );
-    expect(decideAntigravity429(body("rate_limit_exceeded", "30s"))).toMatchObject({
+    expect(decideAntigravity429(body("rate_limit_exceeded", "30s"), undefined, 0)).toMatchObject({
       kind: "short_cooldown_switch_auth",
       retryAfterMs: 30_000,
     });
-    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "300s")).kind).toBe(
+    expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "300s"), undefined, 0).kind).toBe(
       "full_quota_exhausted",
     );
     expect(
@@ -161,10 +163,16 @@ describe("429 decisions and retry delays", () => {
         JSON.stringify({
           error: { status: "RESOURCE_EXHAUSTED", message: "Quota exhausted today" },
         }),
+        undefined,
+        0,
       ).kind,
     ).toBe("full_quota_exhausted");
     expect(
-      decideAntigravity429(JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } })).kind,
+      decideAntigravity429(
+        JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }),
+        undefined,
+        0,
+      ).kind,
     ).toBe("soft_retry");
   });
 
