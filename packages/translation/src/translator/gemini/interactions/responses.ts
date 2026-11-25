@@ -23,10 +23,12 @@ import {
   setGeminiFunctionResponseRaw,
   setGeminiFunctionResponseResult,
 } from "../common/contents.ts";
+import { geminiPartFunctionResponse } from "../../common/gemini-parts.ts";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import {
   firstNonBlankString,
   geminiPartToInteractionsSteps,
+  interactionsResultFromGeminiFunctionResponse,
   geminiTextPartJson,
   interactionsContentPartToGeminiPart,
   interactionsFunctionPartId,
@@ -222,7 +224,7 @@ const appendGeminiPartToStream = (out: string[], st: StreamState, part: Json): v
     return;
   }
 
-  const fr = get(part, "functionResponse");
+  const fr = geminiPartFunctionResponse(part);
 
   if (fr !== undefined) {
     ensureStep(out, st, "function_result", fr);
@@ -233,9 +235,9 @@ const appendGeminiPartToStream = (out: string[], st: StreamState, part: Json): v
       result: {},
     };
 
-    const response = get(fr, "response");
+    const result = interactionsResultFromGeminiFunctionResponse(fr);
 
-    if (response !== undefined) delta["result"] = response;
+    if (result !== undefined) delta["result"] = result;
     out.push(
       sseEvent("step.delta", { index: st.activeStepIndex, delta, event_type: "step.delta" }),
     );
@@ -386,6 +388,60 @@ export const convertGeminiResponseToInteractionsNonStream = (
 
 // --- Interactions provider -> Gemini client -----------------------------------------------------------------------------
 
+/** The most argument text buffered across a stream's open calls: the native Interactions SSE frame limit. */
+const MAX_BUFFERED_ARGUMENTS = 50 << 20;
+
+/**
+ * A streamed call's arguments, buffered until the outer object closes (9d60b36f). The scanner tracks the nesting
+ * depth and string state so the buffered prefix is never re-parsed; only the complete document is.
+ */
+class StreamedArguments {
+  raw = "";
+  private depth = 0;
+  private inString = false;
+  private escaped = false;
+  complete = false;
+
+  /** Appends `fragment`; `false` when the text cannot be (or extend) one JSON object. */
+  append(fragment: string): boolean {
+    this.raw += fragment;
+
+    for (const c of fragment) {
+      if (this.inString) {
+        if (this.escaped) this.escaped = false;
+        else if (c === "\\") this.escaped = true;
+        else if (c === '"') this.inString = false;
+        continue;
+      }
+
+      if (this.depth === 0) {
+        if (c === " " || c === "\t" || c === "\r" || c === "\n") continue;
+
+        if (c === "{" && !this.complete) {
+          this.depth = 1;
+          continue;
+        }
+
+        return false;
+      }
+
+      if (c === '"') this.inString = true;
+      else if (c === "{") this.depth++;
+      else if (c === "}") {
+        this.depth--;
+
+        if (this.depth === 0) {
+          this.complete = tryParseJson(this.raw) !== undefined;
+
+          return this.complete;
+        }
+      }
+    }
+
+    return true;
+  }
+}
+
 interface ToGeminiState {
   id: string;
   model: string;
@@ -393,7 +449,19 @@ interface ToGeminiState {
   stepNames: Map<number, string>;
   stepIds: Map<number, string>;
   stepSignatures: Map<number, string>;
+  /** Function-call steps whose `step.start` carried complete arguments, emitted at `step.stop` unless deltas follow. */
+  pendingFunctionSteps: Map<number, Json>;
+  /** Per step, its buffered arguments; `null` marks a call already emitted or closed. */
+  functionArguments: Map<number, StreamedArguments | null>;
+  bufferedArgumentLength: number;
 }
+
+const closeFunctionArguments = (st: ToGeminiState, index: number): void => {
+  const args = st.functionArguments.get(index);
+
+  if (args !== undefined && args !== null) st.bufferedArgumentLength -= args.raw.length;
+  st.functionArguments.set(index, null);
+};
 
 const ssePayload = (raw: string): string | undefined => {
   const trimmed = raw.trim();
@@ -574,26 +642,84 @@ const rawObjectValue = (value: Json | undefined): Json | undefined => {
   return value;
 };
 
+/** `interactionsFunctionCallStepToGeminiPart`. */
+const functionCallStepToGeminiPart = (step: Json): JsonObject => {
+  const functionCall: JsonObject = { name: asString(get(step, "name")), args: {} };
+  const id = firstNonBlankString(asString(get(step, "call_id")), asString(get(step, "id")));
+
+  if (id !== "") functionCall["id"] = id;
+  const part: JsonObject = { functionCall };
+
+  const signature = firstNonBlankString(
+    asString(get(step, "signature")),
+    asString(get(step, "thoughtSignature")),
+    asString(get(step, "thought_signature")),
+  );
+
+  if (signature !== "") part["thoughtSignature"] = signature;
+  functionCall["args"] = rawObjectValue(firstExisting(step, "arguments", "args")) ?? {};
+
+  return part;
+};
+
+/** `emitInteractionsGeminiFunctionCall`: the call at `index` once its arguments are complete and it has a name. */
+const emitFunctionCall = (
+  modelName: string,
+  index: number,
+  st: ToGeminiState,
+): Json | undefined => {
+  const args = st.functionArguments.get(index);
+  const name = st.stepNames.get(index) ?? "";
+
+  if (args === undefined || args === null || !args.complete || name.trim() === "") return undefined;
+  closeFunctionArguments(st, index);
+  const functionCall: JsonObject = { name, args: {} };
+  const id = st.stepIds.get(index) ?? "";
+
+  if (id !== "") functionCall["id"] = id;
+  const part: JsonObject = { functionCall };
+  const signature = st.stepSignatures.get(index) ?? "";
+
+  if (signature !== "") part["thoughtSignature"] = signature;
+  functionCall["args"] = tryParseJson(args.raw.trim()) ?? {};
+
+  return buildGeminiChunk(st, modelName, [part], "", undefined, false);
+};
+
+/** `rememberInteractionsGeminiStep`: a later `step.start` without a field keeps the earlier one. */
+const rememberStep = (root: Json, st: ToGeminiState): void => {
+  const index = asInt(get(root, "index"));
+  const step = get(root, "step");
+  const name = asString(get(step, "name"));
+
+  if (name.trim() !== "") st.stepNames.set(index, name);
+  const id = firstNonBlankString(asString(get(step, "call_id")), asString(get(step, "id")));
+
+  if (id !== "") st.stepIds.set(index, id);
+
+  const signature = firstNonBlankString(
+    asString(get(step, "signature")),
+    asString(get(step, "thoughtSignature")),
+    asString(get(step, "thought_signature")),
+  );
+
+  if (signature !== "") st.stepSignatures.set(index, signature);
+
+  // Even an empty arguments object may be complete, or it may precede a delta (65864c04).
+  if (
+    step !== undefined &&
+    !st.functionArguments.has(index) &&
+    asString(get(step, "type")) === "function_call" &&
+    isJsonObject(firstExisting(step, "arguments", "args"))
+  )
+    st.pendingFunctionSteps.set(index, step);
+  else st.pendingFunctionSteps.delete(index);
+};
+
 const stepToGeminiParts = (step: Json): Json[] => {
   switch (asString(get(step, "type"))) {
-    case "function_call": {
-      const functionCall: JsonObject = { name: asString(get(step, "name")), args: {} };
-      const id = firstNonBlankString(asString(get(step, "call_id")), asString(get(step, "id")));
-
-      if (id !== "") functionCall["id"] = id;
-      const part: JsonObject = { functionCall };
-
-      const signature = firstNonBlankString(
-        asString(get(step, "signature")),
-        asString(get(step, "thoughtSignature")),
-        asString(get(step, "thought_signature")),
-      );
-
-      if (signature !== "") part["thoughtSignature"] = signature;
-      functionCall["args"] = rawObjectValue(firstExisting(step, "arguments", "args")) ?? {};
-
-      return [part];
-    }
+    case "function_call":
+      return [functionCallStepToGeminiPart(step)];
 
     case "function_result": {
       const functionResponse: JsonObject = { name: asString(get(step, "name")), response: {} };
@@ -635,27 +761,40 @@ const stepDeltaToGeminiChunk = (
 
   switch (asString(get(delta, "type"))) {
     case "arguments_delta": {
-      const functionCall: JsonObject = {
-        name: firstNonBlankString(st.stepNames.get(index) ?? "", asString(get(root, "step.name"))),
-        args: {},
-      };
+      // The arguments arrive in fragments: the call goes out once they form one complete object (9d60b36f).
+      let args = st.functionArguments.get(index);
 
-      const id = st.stepIds.get(index) ?? "";
+      if (args === null) return undefined;
+      const name = asString(get(root, "step.name"));
 
-      if (id !== "") functionCall["id"] = id;
-      const part: JsonObject = { functionCall };
-      const signature = st.stepSignatures.get(index) ?? "";
+      if ((st.stepNames.get(index) ?? "") === "" && name.trim() !== "")
+        st.stepNames.set(index, name);
+      const fragment = asString(get(delta, "arguments"));
 
-      if (signature !== "") part["thoughtSignature"] = signature;
-      const args = asString(get(delta, "arguments")).trim();
+      if (fragment !== "") {
+        st.pendingFunctionSteps.delete(index);
 
-      if (args !== "") {
-        const parsed = tryParseJson(args);
+        if (fragment.length > MAX_BUFFERED_ARGUMENTS - st.bufferedArgumentLength) {
+          closeFunctionArguments(st, index);
 
-        if (parsed !== undefined) functionCall["args"] = parsed;
+          return undefined;
+        }
+
+        if (args === undefined) {
+          args = new StreamedArguments();
+          st.functionArguments.set(index, args);
+        }
+
+        st.bufferedArgumentLength += fragment.length;
+
+        if (!args.append(fragment)) {
+          closeFunctionArguments(st, index);
+
+          return undefined;
+        }
       }
 
-      return buildGeminiChunk(st, modelName, [part], "", undefined, false);
+      return emitFunctionCall(modelName, index, st);
     }
 
     case "text": {
@@ -722,29 +861,46 @@ const convertInteractionsEventToGemini = (
     }
 
     case "step.start": {
-      const index = asInt(get(root, "index"));
-      const step = get(root, "step");
-      st.stepNames.set(index, asString(get(step, "name")));
-      st.stepIds.set(
-        index,
-        firstNonBlankString(asString(get(step, "call_id")), asString(get(step, "id"))),
-      );
-      st.stepSignatures.set(
-        index,
-        firstNonBlankString(
-          asString(get(step, "signature")),
-          asString(get(step, "thoughtSignature")),
-          asString(get(step, "thought_signature")),
-        ),
-      );
+      rememberStep(root, st);
+      const chunk = emitFunctionCall(modelName, asInt(get(root, "index")), st);
 
-      return [];
+      return chunk === undefined ? [] : [JSON.stringify(chunk)];
     }
 
     case "step.delta": {
       const chunk = stepDeltaToGeminiChunk(modelName, root, st);
 
       return chunk === undefined ? [] : [JSON.stringify(chunk)];
+    }
+
+    // A call that started complete and got no argument deltas goes out when its step stops (65864c04).
+    case "step.stop": {
+      const index = asInt(get(root, "index"));
+
+      if (st.functionArguments.has(index)) {
+        closeFunctionArguments(st, index);
+
+        return [];
+      }
+
+      const step = st.pendingFunctionSteps.get(index);
+
+      if (step === undefined) return [];
+      st.pendingFunctionSteps.delete(index);
+      st.functionArguments.set(index, null);
+
+      return [
+        JSON.stringify(
+          buildGeminiChunk(
+            st,
+            modelName,
+            [functionCallStepToGeminiPart(step)],
+            "",
+            undefined,
+            false,
+          ),
+        ),
+      ];
     }
 
     case "interaction.completed":
@@ -792,6 +948,9 @@ const newToGeminiState = (model: string): ToGeminiState => ({
   stepNames: new Map(),
   stepIds: new Map(),
   stepSignatures: new Map(),
+  pendingFunctionSteps: new Map(),
+  functionArguments: new Map(),
+  bufferedArgumentLength: 0,
 });
 
 /** `ConvertInteractionsResponseToGemini`. */

@@ -18,7 +18,12 @@ import {
   set,
 } from "@commissary/json";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
-import { reorderGeminiUserParts, setGeminiFunctionResponseResult } from "../common/contents.ts";
+import { geminiPartFunctionResponse } from "../../common/gemini-parts.ts";
+import {
+  mergeAdjacentGeminiUserContents,
+  reorderGeminiUserParts,
+  setGeminiFunctionResponseResult,
+} from "../common/contents.ts";
 import {
   geminiPartIsSendable,
   interactionsAttachmentType,
@@ -39,6 +44,7 @@ import {
   geminiTextPartJson,
   interactionsContentPartToGeminiPart,
   interactionsGeminiContent,
+  toSnakeCase,
 } from "./common.ts";
 
 // --- Gemini -> Interactions ---------------------------------------------------------------------------------------------
@@ -94,12 +100,163 @@ const normalizeGeminiThinkingConfigForInteractions = (out: Json): void => {
 const isNonEmptyObject = (value: Json | undefined): value is JsonObject =>
   isJsonObject(value) && Object.keys(value).length > 0;
 
+/** `geminiSearchTypesToInteractions`: the set keys of an object, or the strings of an array, in snake_case. */
+const geminiSearchTypesToInteractions = (value: Json): string[] => {
+  if (isJsonObject(value)) {
+    return Object.entries(value).flatMap(([key, item]) => {
+      const normalized = item === null ? "" : toSnakeCase(key.trim());
+
+      return normalized === "" ? [] : [normalized];
+    });
+  }
+
+  if (isJsonArray(value)) {
+    return value.flatMap((item) => {
+      const normalized = toSnakeCase(asString(item).trim());
+
+      return normalized === "" ? [] : [normalized];
+    });
+  }
+
+  return [];
+};
+
+/**
+ * `geminiBuiltinToolToInteractionsEntry`: a built-in tool's settings sit beside its `type`, in snake_case (1d39a9de);
+ * Google Search's `searchTypes` becomes a list of names.
+ */
 const builtinToolEntry = (type: string, node: Json): JsonObject => {
   const entry: JsonObject = { type };
 
-  if (isNonEmptyObject(node)) entry[type] = node;
+  if (!isNonEmptyObject(node)) return entry;
+
+  for (const [key, value] of Object.entries(node)) {
+    const snakeKey = toSnakeCase(key.trim());
+
+    if (snakeKey === "" || snakeKey === "type") continue;
+
+    if (type === "google_search" && snakeKey === "search_types") {
+      const searchTypes = geminiSearchTypesToInteractions(value);
+
+      if (searchTypes.length > 0) entry["search_types"] = searchTypes;
+      continue;
+    }
+
+    entry[snakeKey] =
+      isJsonObject(value) || isJsonArray(value) ? convertCamelCaseKeysToSnakeCase(value) : value;
+  }
 
   return entry;
+};
+
+/**
+ * `normalizeGeminiResponseFormatForInteractionsDoc`: Gemini's response modalities, image config, MIME type and schema
+ * become the Interactions `response_format` (one entry, or a list), and leave `generation_config` (1d39a9de).
+ */
+const normalizeGeminiResponseFormatForInteractions = (out: JsonObject, genCfg: Json): void => {
+  const modalities: string[] = [];
+  const mods = firstExistingPath(genCfg, ["responseModalities", "response_modalities"]);
+
+  if (isJsonArray(mods)) {
+    for (const mod of mods) {
+      const normalized = asString(mod).trim().toLowerCase();
+
+      if (normalized !== "" && !modalities.includes(normalized)) modalities.push(normalized);
+    }
+  }
+
+  const imageCfg = firstExistingPath(genCfg, ["imageConfig", "image_config"]);
+  const hasImageCfg = isJsonObject(imageCfg);
+
+  const mimeType = asString(
+    firstExistingPath(genCfg, ["responseMimeType", "response_mime_type"]),
+  ).trim();
+
+  const schema = firstExistingPath(genCfg, [
+    "responseJsonSchema",
+    "response_json_schema",
+    "responseSchema",
+    "response_schema",
+  ]);
+
+  const hasTextFormat = mimeType !== "" || schema !== undefined;
+
+  if (modalities.length > 0 || hasImageCfg || hasTextFormat) {
+    const imageEntry = (): JsonObject => {
+      const entry: JsonObject = { type: "image" };
+
+      if (isNonEmptyObject(imageCfg)) {
+        const converted = convertCamelCaseKeysToSnakeCase(imageCfg);
+
+        for (const [key, value] of Object.entries(isJsonObject(converted) ? converted : {})) {
+          const k = key.trim();
+
+          if (k !== "" && k !== "type") entry[k] = value;
+        }
+      }
+
+      return entry;
+    };
+
+    const textEntry = (): JsonObject => {
+      const entry: JsonObject = { type: "text" };
+
+      if (mimeType !== "") entry["mime_type"] = mimeType;
+
+      if (schema !== undefined) entry["schema"] = normalizeJsonSchemaNumericConstraints(schema);
+
+      return entry;
+    };
+
+    const entries: JsonObject[] = [];
+    let addedImage = false;
+    let addedText = false;
+
+    for (const mod of modalities) {
+      if (mod === "image") {
+        entries.push(imageEntry());
+        addedImage = true;
+      } else if (mod === "text") {
+        entries.push(textEntry());
+        addedText = true;
+      } else {
+        entries.push({ type: mod });
+      }
+    }
+
+    if (hasTextFormat && !addedText) entries.push(textEntry());
+
+    if (hasImageCfg && !addedImage) entries.push(imageEntry());
+
+    const [only] = entries;
+
+    if (entries.length === 1 && only !== undefined) out["response_format"] = only;
+    else if (entries.length > 1) out["response_format"] = entries;
+  }
+
+  for (const path of [
+    "generation_config.response_modalities",
+    "generation_config.image_config",
+    "generation_config.response_mime_type",
+    "generation_config.response_schema",
+    "generation_config.response_json_schema",
+  ]) {
+    if (exists(out, path)) del(out, path);
+  }
+
+  const gen = out["generation_config"];
+
+  if (isJsonObject(gen) && Object.keys(gen).length === 0) delete out["generation_config"];
+};
+
+/** `copyGeminiGenerationConfigToInteractionsDoc`. */
+const copyGeminiGenerationConfigToInteractions = (out: JsonObject, root: Json): void => {
+  const genCfg = get(root, "generationConfig") ?? get(root, "generation_config");
+
+  if (genCfg === undefined) return;
+  out["generation_config"] = convertCamelCaseKeysToSnakeCase(genCfg);
+  normalizeGeminiThinkingConfigForInteractions(out);
+  normalizeGeminiResponseFormatForInteractions(out, genCfg);
 };
 
 const functionToolEntry = (source: Json): JsonObject => {
@@ -178,13 +335,7 @@ export const convertGeminiRequestToInteractions = (
   const text = geminiSystemInstructionText(sys);
 
   if (text !== "") out["system_instruction"] = text;
-  const generationConfig = get(request, "generationConfig");
-
-  if (generationConfig !== undefined) {
-    out["generation_config"] = convertCamelCaseKeysToSnakeCase(generationConfig);
-    normalizeGeminiThinkingConfigForInteractions(out);
-  }
-
+  copyGeminiGenerationConfigToInteractions(out, request);
   copyGeminiToolsToInteractions(out, request);
 
   const inputItems: Json[] = [];
@@ -197,7 +348,7 @@ export const convertGeminiRequestToInteractions = (
     const parts = get(content, "parts");
 
     for (const part of isJsonArray(parts) ? parts : []) {
-      if (exists(part, "functionCall") || exists(part, "functionResponse")) {
+      if (exists(part, "functionCall") || geminiPartFunctionResponse(part) !== undefined) {
         sendable += pushSteps(inputItems, part);
         continue;
       }
@@ -936,7 +1087,10 @@ export const convertInteractionsRequestToGemini = (
   const contentItems: JsonObject[] = [];
 
   const finish = (): Json => {
-    if (contentItems.length > 0) out["contents"] = contentItems;
+    // Consecutive user turns (a multipart user message) become one turn (9e19ffd3).
+    const merged = mergeAdjacentGeminiUserContents(contentItems);
+
+    if (merged.length > 0) out["contents"] = merged;
 
     return out;
   };
