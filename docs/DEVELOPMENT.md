@@ -531,7 +531,10 @@ dispatcher in `.vite-hooks/_` and points `core.hooksPath` at it):
   surfaces at `pre-push` or in CI, not at commit.
 - `commit-msg`: commitlint with `@commitlint/config-conventional` (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `style:`, `test:`, `ci:`, …; header and body lines up to 100 characters).
-- `pre-push`: `pnpm run typecheck && pnpm run lint`. The test suite runs in CI.
+- `pre-push`: `tools/pre-push.sh`, targeted checks on what the pushed branch changes since its merge base with the
+  default branch: `vp fmt --check` and `vp lint --quiet` on its changed files, and the typecheck of each package they
+  belong to (plus `typecheck:root` when the deploy code changes). Several agents share a machine, so nothing at
+  push is repo-wide: CI runs the full typecheck, lint, tests and smoke test on every pull request.
 
 Skip them once with `git commit --no-verify` / `git push --no-verify`, or for a whole shell with `VP_GIT_HOOKS=0`
 (`vp hooks disable` turns them off in one clone).
