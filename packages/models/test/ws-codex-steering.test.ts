@@ -347,6 +347,45 @@ requests:
     expect(results[1]?.success).toBe(false);
   });
 
+  it("ends the stream on a quota error after response.created instead of relaying it (CLIProxyAPI 14144df5)", async () => {
+    const second = wsCredential({
+      id: "codex-oauth-2",
+      metadata: { access_token: "access-token-2", account_id: "acct_2" },
+    });
+
+    const s = setup([wsCredential(), second], {
+      onConnection: scripted((_frame, index, send) => {
+        if (index === 0) {
+          send(created("resp_1"));
+          send(done("resp_1"));
+        } else {
+          send(created("resp_2"));
+          send({
+            type: "error",
+            status: 429,
+            error: { type: "usage_limit_reached", message: "limit", resets_in_seconds: 60 },
+          });
+        }
+      }),
+    });
+
+    const client = await s.connect();
+    client.send(create("go"));
+    await client.until("response.completed");
+    client.send(create("again", { previous_response_id: "resp_1" }));
+    // The quota error is not a recoverable duplex event: it ends the stream through the terminal error path once,
+    // instead of being relayed and then delivered again as the terminal error.
+    expect(await client.closed).toMatchObject({ code: 1011 });
+
+    const errors = client.messages.filter((text) => JSON.parse(text)["type"] === "error");
+
+    expect(errors).toHaveLength(1);
+    expect(JSON.parse(errors[0]!)).toMatchObject({
+      status: 429,
+      error: { type: "usage_limit_reached" },
+    });
+  });
+
   it("is off by default: the handler plans every turn itself", async () => {
     const s = setup(
       [wsCredential()],

@@ -466,9 +466,15 @@ export const runResponsesSocket = <R>(
                 if (options.toolTurn !== undefined) options.toolTurn.recordResponse(payload);
                 else recordToolCallsFromPayload(deps.toolCaches, deps.toolSessionKey, payload);
                 collector.recordPending(payload);
+
                 // In Codex duplex mode the executor owns connection termination: payload errors after response.created are
-                // recoverable events; a failing stream still arrives as an execution error and closes the socket.
-                const preserveErrorEvent = responseStarted && duplexStream();
+                // recoverable events; a failing stream still arrives as an execution error and closes the socket. Credential
+                // quota and cooldown errors are not recoverable on the same socket and still stop the turn (CLIProxyAPI
+                // 14144df5).
+                const preserveErrorEvent =
+                  responseStarted &&
+                  duplexStream() &&
+                  !isQuotaOrCooldownError({ message: JSON.stringify(payload) });
 
                 if (type === "error" && !preserveErrorEvent) {
                   closeResponse("");
