@@ -91,6 +91,29 @@ describe("claudeErrorBody", () => {
     );
   });
 
+  it("prefixes Google input token limit errors with prompt is too long (ff9339fe)", () => {
+    const google = "The input token count exceeds the maximum number of tokens allowed (1048576).";
+
+    const message = (status: number, text: string) =>
+      JSON.parse(claudeErrorBody(status, text)).error.message;
+
+    expect(message(400, google)).toBe(`prompt is too long: ${google}`);
+    expect(
+      message(400, "The input token count (1200000) exceeds the maximum number of tokens allowed."),
+    ).toBe(
+      "prompt is too long: The input token count (1200000) exceeds the maximum number of tokens allowed.",
+    );
+    expect(message(500, `{"error":{"type":"invalid_request_error","message":"${google}"}}`)).toBe(
+      `prompt is too long: ${google}`,
+    );
+    // Idempotent, other statuses and output-token limits stay as they are.
+    expect(message(400, `prompt is too long: ${google}`)).toBe(`prompt is too long: ${google}`);
+    expect(message(500, google)).toBe(google);
+    expect(message(400, "The output token count exceeds the maximum.")).toBe(
+      "The output token count exceeds the maximum.",
+    );
+  });
+
   it("marks thread_not_found", () => {
     const body = claudeErrorBody(
       404,

@@ -2,8 +2,8 @@
  * Error bodies per client protocol.
  *
  * Go source: sdk/api/handlers/handlers.go (BuildErrorResponseBodyWithError, ErrorResponse),
- * sdk/api/handlers/claude/code_handlers.go (toClaudeError, claudeErrorDetailFromText, claudeErrorTypeFromStatus),
- * internal/clienterror/client_error.go (IsClaudeThreadNotFound), sdk/api/handlers/openai_responses_stream_error.go
+ * sdk/api/handlers/claude/code_handlers.go (toClaudeError, claudeErrorDetailFromText, claudeErrorTypeFromStatus,
+ * normalizeClaudePromptTooLongMessage: ff9339fe), internal/clienterror/client_error.go (IsClaudeThreadNotFound), sdk/api/handlers/openai_responses_stream_error.go
  * (BuildOpenAIResponsesStreamErrorChunk, BuildOpenAIResponsesStreamFailedChunk, applyOpenAIResponsesNestedErrorCode: 43f27e3a).
  *
  * Gemini and Interactions handlers reuse the OpenAI-shaped body.
@@ -176,7 +176,42 @@ export const claudeErrorDetailFromText = (status: number, text: string): ClaudeE
     }
   }
 
-  return { type, message };
+  return { type, message: promptTooLongMessage(type, message) };
+};
+
+/**
+ * `normalizeClaudePromptTooLongMessage`: a Google input-token-limit error gets Anthropic's `prompt is too long: ` prefix,
+ * so Claude clients recognise the context overflow and compact.
+ */
+const promptTooLongMessage = (type: string, message: string): string => {
+  if (type !== "invalid_request_error") return message;
+  const lower = message.toLowerCase();
+
+  if (lower.startsWith("prompt is too long")) return message;
+
+  return isGoogleInputTokenExceeded(lower) ? `prompt is too long: ${message}` : message;
+};
+
+/** `isGoogleInputTokenExceededMessage`: `input token count`, an optional `(N)`, then `exceeds the maximum`. */
+const isGoogleInputTokenExceeded = (lower: string): boolean => {
+  const phrase = "input token count";
+  let remaining = lower;
+
+  for (;;) {
+    const index = remaining.indexOf(phrase);
+
+    if (index < 0) return false;
+    remaining = remaining.slice(index + phrase.length);
+    let rest = remaining.trim();
+
+    if (rest.startsWith("(")) {
+      const end = rest.indexOf(")");
+
+      if (end >= 0) rest = rest.slice(end + 1).trim();
+    }
+
+    if (rest.startsWith("exceeds the maximum")) return true;
+  }
 };
 
 /** `clienterror.IsClaudeThreadNotFound`. */
