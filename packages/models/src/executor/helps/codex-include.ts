@@ -79,6 +79,13 @@ export const preserveCodexOpenAIResponsesInclude = (
   ]);
 };
 
+/**
+ * The body without the include values only Codex accepts, for an upstream (Meta, OpenCode, xAI) that shares the
+ * Responses -> Codex translator; each caller decides when it applies.
+ */
+export const stripCodexOnlyIncludes = (body: Json): Json =>
+  stripResponsesIncludeValues(body, CODEX_ONLY_INCLUDES);
+
 /** `StripResponsesIncludeValuesDoc`: `body` without the `blocked` string values in `include` (dropped when emptied). */
 export const stripResponsesIncludeValues = (body: Json, blocked: ReadonlyArray<string>): Json => {
   const current = get(body, "include");
