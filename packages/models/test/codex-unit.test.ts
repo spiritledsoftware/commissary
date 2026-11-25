@@ -226,6 +226,41 @@ describe("tool schema normalisation", () => {
     expect(JSON.stringify(body)).toBe(once);
   });
 
+  it("strips the uniqueItems keyword from schemas only (6faa8d20)", () => {
+    const body: Json = {
+      tools: [
+        {
+          type: "function",
+          name: "pick",
+          parameters: {
+            type: "object",
+            properties: {
+              tags: { type: "array", uniqueItems: true, items: { type: "string" } },
+              nested: {
+                type: "object",
+                properties: { ids: { type: "array", uniqueItems: false } },
+              },
+              uniqueItems: { type: "boolean" },
+              user_data: { type: "object", default: { uniqueItems: true } },
+            },
+            $defs: { set: { type: "array", uniqueItems: true } },
+          },
+        },
+      ],
+    };
+
+    normalizeCodexToolSchemas(body);
+
+    const params = get(body, "tools.0.parameters");
+
+    expect(get(params, "properties.tags")).toEqual({ type: "array", items: { type: "string" } });
+    expect(get(params, "properties.nested.properties.ids")).toEqual({ type: "array" });
+    // A property merely named uniqueItems and example data under default are left alone.
+    expect(get(params, "properties.uniqueItems")).toEqual({ type: "boolean" });
+    expect(get(params, "properties.user_data.default.uniqueItems")).toBe(true);
+    expect(get(params, "$defs.set")).toEqual({ type: "array" });
+  });
+
   it("drops the union when an identical enum already exists", () => {
     const body: Json = {
       tools: [

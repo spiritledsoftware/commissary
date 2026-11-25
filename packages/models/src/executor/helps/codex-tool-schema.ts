@@ -5,8 +5,8 @@
  * internal/client/codex/tool-schema/tool_schema.go (NormalizeCodexToolIntegerTypes). Bodies are parsed JSON mutated
  * in place.
  *  - {@link normalizeCodexToolSchemas}: collapses pure-constant `oneOf`/`anyOf` unions (>= 8 branches, e.g. MCP enums)
- *    into `enum`, drops regex patterns upstream validators reject and numeric bounds outside int64 (the backend
- *    answers those with HTTP 500, 57d005fe). Runs inside the Codex executor.
+ *    into `enum`, drops regex patterns upstream validators reject, numeric bounds outside int64 (the backend
+ *    answers those with HTTP 500, 57d005fe) and `uniqueItems` (6faa8d20). Runs inside the Codex executor.
  *  - {@link normalizeCodexToolIntegerTypes}: `number` -> `integer` for the numeric fields of the Codex CLI's own
  *    tools; part of the payload barrier for Codex clients targeting non-Codex executors (see `payload.ts`).
  */
@@ -62,7 +62,10 @@ const INT64_LIMIT = 2 ** 63;
 const isOutOfInt64 = (bound: Json | undefined): boolean =>
   typeof bound === "number" && !(bound > -INT64_LIMIT && bound < INT64_LIMIT);
 
-/** `stripIncompatibleSchemaKeywords`: schema-aware removal of unsupported `pattern`s and out-of-int64 bounds; true when something was removed. */
+/**
+ * `stripIncompatibleSchemaKeywords`: schema-aware removal of unsupported `pattern`s, out-of-int64 bounds and
+ * `uniqueItems`; true when something was removed.
+ */
 const stripIncompatibleSchemaKeywords = (value: Json | undefined): boolean => {
   let changed = false;
 
@@ -85,6 +88,12 @@ const stripIncompatibleSchemaKeywords = (value: Json | undefined): boolean => {
       delete value[boundKey];
       changed = true;
     }
+  }
+
+  // The backend rejects `uniqueItems` (Go 6faa8d20); a property named `uniqueItems` is a map entry, not this keyword.
+  if ("uniqueItems" in value) {
+    delete value["uniqueItems"];
+    changed = true;
   }
 
   const patternProperties = value["patternProperties"];
