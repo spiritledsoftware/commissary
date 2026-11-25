@@ -64,7 +64,10 @@ const normalizeClock = (value: Json): Json => {
             ? "<time>"
             : typeof item === "string" && /^(interaction|msg)_\d{15,}$/.test(item)
               ? item.replace(/\d+$/, "<n>")
-              : normalizeClock(item),
+              : // Antigravity's synthesized Claude message id: `msg_<hex unix nanos>_<counter>` (Go da4396fd).
+                typeof item === "string" && /^msg_[0-9a-f]{15,}_\d+$/.test(item)
+                ? "msg_<clock>_<n>"
+                : normalizeClock(item),
       ]),
     );
   }

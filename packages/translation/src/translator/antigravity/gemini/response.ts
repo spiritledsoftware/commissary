@@ -191,7 +191,14 @@ export const convertAntigravityResponseToGemini = (
     for (const item of parsed) {
       const response = get(item, "response");
 
-      if (response !== undefined) items.push(response);
+      // Every array item gets its usage and tool names back too (CLIProxyAPI a3e75421).
+      if (response !== undefined)
+        items.push(
+          restoreFunctionNames(
+            restoreUsageMetadata(structuredClone(response)),
+            context.originalRequest,
+          ),
+        );
     }
   }
 
