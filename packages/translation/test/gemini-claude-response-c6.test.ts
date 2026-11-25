@@ -1,4 +1,4 @@
-// Gemini -> Claude Messages responses (ticket C6; upstream 202b8b8c, e1fb2521, 58257007, 7f2f17d7, 3f5d3a16).
+// Gemini -> Claude Messages responses (ticket C6; upstream 202b8b8c, e1fb2521, 58257007, 7f2f17d7, 3f5d3a16, cf07c78a).
 // Expected values come from the Go tests of those commits (gemini_claude_response_test.go).
 import { describe, expect, it } from "vite-plus/test";
 import { asString, get, type Json, tryParseJson } from "@commissary/json";
@@ -313,5 +313,75 @@ describe("MALFORMED_FUNCTION_CALL is an API error, not a refusal (7f2f17d7)", ()
   it("maps MALFORMED_RESPONSE to a refusal (3f5d3a16)", () => {
     const out = nonStream(tools, candidate([{ text: "x" }], "MALFORMED_RESPONSE"));
     expect(get(out, "stop_reason")).toBe("refusal");
+  });
+});
+
+// Go: gemini_claude_response_test.go at cf07c78a.
+describe("zero visible output decides MALFORMED_FUNCTION_CALL (cf07c78a)", () => {
+  const plain = { model: "claude-opus-5-5", messages: [{ role: "user", content: "hi" }] };
+
+  const usage = { promptTokenCount: 50, candidatesTokenCount: 3, totalTokenCount: 53 };
+
+  const finished = (parts: Json[], finishReason: string): Json => ({
+    candidates: [{ content: { role: "model", parts }, index: 0, finishReason }],
+    usageMetadata: usage,
+    modelVersion: "m",
+    responseId: "resp-partial",
+  });
+
+  it("keeps partial visible text, non-streamed", () => {
+    const out = nonStream(plain, finished([{ text: "partial answer" }], "MALFORMED_FUNCTION_CALL"));
+
+    expect(get(out, "type")).toBe("message");
+    expect(get(out, "content.0.text")).toBe("partial answer");
+    expect(get(out, "stop_reason")).toBe("end_turn");
+  });
+
+  it("keeps partial visible text, streamed", () => {
+    const text = streamWithDone(plain, [
+      {
+        candidates: [{ content: { role: "model", parts: [{ text: "partial answer" }] }, index: 0 }],
+        modelVersion: "m",
+        responseId: "resp-partial",
+      },
+      finished([], "MALFORMED_FUNCTION_CALL"),
+    ]);
+
+    expect(text).not.toContain("event: error\n");
+    expect(text).toContain("partial answer");
+    expect(text).toContain('"type":"message_stop"');
+  });
+
+  it("whitespace-only text is no visible output", () => {
+    const out = nonStream(plain, finished([{ text: "  \n" }], "MALFORMED_FUNCTION_CALL"));
+
+    expect(get(out, "type")).toBe("error");
+  });
+
+  it("an empty functionCall placeholder is an error, streamed or not", () => {
+    const body = finished([{ functionCall: {} }], "MALFORMED_FUNCTION_CALL");
+
+    expect(get(nonStream(plain, body), "type")).toBe("error");
+    expect(streamWithDone(plain, [body])).toContain("event: error\n");
+  });
+
+  it.each<[string, Json]>([
+    ["an id", { id: "call_1" }],
+    ["partialArgs", { partialArgs: [{ jsonPath: "$.a", stringValue: "x" }] }],
+    ["partial_args", { partial_args: [{ jsonPath: "$.a", stringValue: "x" }] }],
+    ["non-empty args", { args: { a: 1 } }],
+  ])("a call with only %s is a call", (_name, functionCall) => {
+    const out = nonStream(plain, finished([{ functionCall }], "MALFORMED_FUNCTION_CALL"));
+
+    expect(get(out, "type")).toBe("message");
+    expect(get(out, "content.0.type")).toBe("tool_use");
+    expect(get(out, "stop_reason")).toBe("tool_use");
+  });
+
+  it("trims and ignores case in the finish reason", () => {
+    expect(get(nonStream(plain, finished([], " malformed_function_call ")), "type")).toBe("error");
+    expect(streamWithDone(plain, [finished([], " Malformed_Function_Call\n")])).toContain(
+      "event: error\n",
+    );
   });
 });
