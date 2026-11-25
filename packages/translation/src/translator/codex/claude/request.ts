@@ -532,19 +532,31 @@ export const convertClaudeRequestToCodex = (
   modelName: string,
   request: Json,
   _stream: boolean,
-): Json => convertClaudeRequest(modelName, request, false);
+): Json => convertClaudeRequest(modelName, request, false, true, true);
+
+/**
+ * `ConvertClaudeRequestToResponses` (7ae771fc): standard Responses without the Codex wire defaults (no default
+ * `reasoning.effort`, `parallel_tool_calls`, `tool_choice`, `store` or `include`; the client's `temperature` and
+ * `top_p` pass through, `stream` follows the request). Only the Copilot executor uses it.
+ */
+export const convertClaudeRequestToResponses = (
+  modelName: string,
+  request: Json,
+  stream: boolean,
+): Json => convertClaudeRequest(modelName, request, false, false, stream);
 
 /** `ConvertClaudeRequestToCodexWithCompat`: thinking blocks with empty/unknown signatures are preserved. */
 export const convertClaudeRequestToCodexWithCompat = (
   modelName: string,
   request: Json,
   _stream: boolean,
-): Json => convertClaudeRequest(modelName, request, true);
+): Json => convertClaudeRequest(modelName, request, true, true, true);
 
 /** `convertClaudeFunctionToolToCodex`: a Claude tool definition as a Codex function tool. */
 const convertClaudeFunctionToolToCodex = (
   source: Json,
   toolNameMap: ReadonlyMap<string, string>,
+  codex: boolean,
 ): Json => {
   let tool = cloneJson(source);
 
@@ -564,7 +576,10 @@ const convertClaudeFunctionToolToCodex = (
     if (get(tool, path) !== undefined) tool = del(tool, path);
   }
 
-  if (get(tool, "strict") !== false) tool = set(tool, "strict", false);
+  // Standard Responses keeps a client's `strict: true`; Codex always relaxes it.
+  const strict = get(source, "strict");
+
+  if (strict !== false && (codex || strict !== true)) tool = set(tool, "strict", false);
 
   return tool;
 };
@@ -607,6 +622,7 @@ const convertSystemAdditionalTools = (
   content: Json | undefined,
   state: DeferredToolState,
   toolNameMap: ReadonlyMap<string, string>,
+  codex: boolean,
 ): Json | undefined => {
   if (!isJsonArray(content)) return undefined;
   const toolItems: Json[] = [];
@@ -634,7 +650,7 @@ const convertSystemAdditionalTools = (
 
     if (isReference && state.emitted.has(name)) continue;
     state.emitted.add(name);
-    const converted = convertClaudeFunctionToolToCodex(definition, toolNameMap);
+    const converted = convertClaudeFunctionToolToCodex(definition, toolNameMap, codex);
     const index = indexByName.get(name);
 
     if (index === undefined) {
@@ -654,6 +670,9 @@ const convertClaudeRequest = (
   modelName: string,
   request: Json,
   preserveEmptyThinkingBlocks: boolean,
+  /** Add the Codex wire defaults; `false` is standard Responses (`ConvertClaudeRequestToResponses`). */
+  codex: boolean,
+  stream: boolean,
 ): Json => {
   const drops = new UserTurnDrops();
   let template: Json = { model: "", instructions: "", input: [] };
@@ -711,6 +730,7 @@ const convertClaudeRequest = (
           get(message, "content"),
           deferredTools,
           toolNameMap,
+          codex,
         );
 
         if (additionalTools !== undefined) {
@@ -750,7 +770,7 @@ const convertClaudeRequest = (
 
         if (name === "" || deferredTools.emitted.has(name)) return;
         deferredTools.emitted.add(name);
-        turnDiscoveredTools.push(convertClaudeFunctionToolToCodex(definition, toolNameMap));
+        turnDiscoveredTools.push(convertClaudeFunctionToolToCodex(definition, toolNameMap, codex));
       };
 
       const flushTurnDiscoveredTools = () => {
@@ -1037,7 +1057,10 @@ const convertClaudeRequest = (
   let hasWebSearchTool = false;
   const toolItems: Json[] = [];
 
-  if (isJsonArray(tools) || hasAdditionalTools) {
+  if (
+    (isJsonArray(tools) || hasAdditionalTools) &&
+    (codex || get(request, "tool_choice") !== undefined)
+  ) {
     const webSearchToolNames = new Set<string>();
 
     for (const tool of isJsonArray(tools) ? tools : []) {
@@ -1077,16 +1100,15 @@ const convertClaudeRequest = (
           continue;
       }
 
-      toolItems.push(convertClaudeFunctionToolToCodex(toolResult, toolNameMap));
+      toolItems.push(convertClaudeFunctionToolToCodex(toolResult, toolNameMap, codex));
     }
   }
 
   // Parallel tool calls unless tool_choice explicitly disables them.
-  let parallelToolCalls = true;
   const disableParallel = get(request, "tool_choice.disable_parallel_tool_use");
 
-  if (disableParallel !== undefined) parallelToolCalls = !asBool(disableParallel);
-  template = set(template, "parallel_tool_calls", parallelToolCalls);
+  if (disableParallel !== undefined || codex)
+    template = set(template, "parallel_tool_calls", !asBool(disableParallel));
 
   // thinking.budget_tokens -> reasoning.effort.
   let reasoningEffort = "medium";
@@ -1129,18 +1151,28 @@ const convertClaudeRequest = (
     if (effort !== "") reasoningEffort = effort;
   }
 
-  template = set(template, "reasoning.effort", reasoningEffort);
+  if (codex || thinkingConfig !== undefined || claudeOutputEffort(request) !== "")
+    template = set(template, "reasoning.effort", reasoningEffort);
   let serviceTier = normalizeCodexServiceTier(get(request, "service_tier"));
 
   if (get(request, "speed") === "fast") serviceTier = "priority";
 
   if (serviceTier !== "") template = set(template, "service_tier", serviceTier);
-  template = set(template, "stream", true);
-  template = set(template, "store", false);
-  const include = ["reasoning.encrypted_content"];
+  template = set(template, "stream", codex || stream);
 
-  if (hasWebSearchTool) include.push("web_search_call.action.sources");
-  template = set(template, "include", include);
+  if (codex) {
+    template = set(template, "store", false);
+    const include = ["reasoning.encrypted_content"];
+
+    if (hasWebSearchTool) include.push("web_search_call.action.sources");
+    template = set(template, "include", include);
+  } else {
+    for (const key of ["temperature", "top_p"]) {
+      const value = get(request, key);
+
+      if (value !== undefined) template = set(template, key, cloneJson(value));
+    }
+  }
 
   // output_config.format (json_schema) -> text.format.
   const format = get(request, "output_config.format");

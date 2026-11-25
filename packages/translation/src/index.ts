@@ -19,7 +19,7 @@ export {
   TranslatorRegistry,
 } from "./translator/registry.ts";
 
-export { builtinTranslators } from "./translator/builtin.ts";
+export { builtinTranslators, standardResponsesTranslators } from "./translator/builtin.ts";
 
 export {
   isReasoningEffortActive,
