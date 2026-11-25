@@ -4,10 +4,11 @@
  * Go source: internal/runtime/executor/antigravity_reasoning_replay.go (`antigravityReasoningReplayScopeFromRequest`,
  * `…ClientSessionKey`, `antigravityClaudeReplaySystemLane`, `antigravityReplaySessionIDFromPayload`, and the
  * canonical and body session identities of CLIProxyAPI 3988a389: `antigravityFormatCanonicalReplaySessionKey`,
- * `antigravityReplayBodyAgentID`, `antigravityCodexQualifiedSessionKey`, `antigravityReplayHasForkIndicator`). The Go
- * execution-session metadata key does not exist on Workers, and the canonical session is the request's explicit one
- * (`metadata.sessionId`; Commissary has no LCP-reconciled canonical id in the metadata). Workers addition: keys are
- * namespaced by the caller scope (like the xAI/Kimi/Claude stores) so two callers never share a ledger.
+ * `antigravityReplayBodyAgentID`, `antigravityCodexQualifiedSessionKey`, `antigravityReplayHasForkIndicator`). Go's
+ * execution session (`ExecutionSessionMetadataKey`) is the downstream WebSocket's id (`metadata.websocket.sessionId`),
+ * as for the Antigravity session id; the canonical session is the request's explicit one (`metadata.sessionId`;
+ * Commissary has no LCP-reconciled canonical id in the metadata). Workers addition: keys are namespaced by the caller
+ * scope (like the xAI/Kimi/Claude stores) so two callers never share a ledger.
  */
 import { createHash } from "node:crypto";
 import {
@@ -39,6 +40,8 @@ export interface ReplayScopeInput {
   readonly derivedSessionId: string;
   /** The request's explicit session identity (`metadata.sessionId`, Go `CanonicalSessionIDMetadataKey`), or `""`. */
   readonly canonicalSessionId: string;
+  /** The downstream WebSocket's id (Go `ExecutionSessionMetadataKey`), or `""` for an HTTP request. */
+  readonly executionSessionId: string;
   readonly callerScope: string;
 }
 
@@ -369,6 +372,11 @@ const clientSessionKey = (input: ReplayScopeInput): string => {
 
     if (key !== "") return key;
   }
+
+  // The execution session ranks ahead of prompt-cache and derived keys.
+  const execution = input.executionSessionId.trim();
+
+  if (execution !== "") return `execution:${execution}`;
 
   if (resolved.startsWith("execution:") || resolved.startsWith("pck:")) {
     const key = canonicalReplayKey(resolved);

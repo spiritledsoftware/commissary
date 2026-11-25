@@ -211,6 +211,7 @@ describe("accumulator -> ledger -> request restore", () => {
         headers: new Headers(headers),
         derivedSessionId: "",
         canonicalSessionId: "",
+        executionSessionId: "",
         callerScope: "scope",
       },
       {},
@@ -618,6 +619,7 @@ describe("OpenAI chat replay continuity (Go da21f1e5, 80aa2b1d)", () => {
           headers: sessionHeaders,
           derivedSessionId: "",
           canonicalSessionId: "",
+          executionSessionId: "",
           callerScope: "",
         },
         {},
@@ -651,6 +653,7 @@ describe("OpenAI chat replay continuity (Go da21f1e5, 80aa2b1d)", () => {
           headers: new Headers(headers),
           derivedSessionId: "derived-1",
           canonicalSessionId: "",
+          executionSessionId: "",
           callerScope: "",
         },
         {},
@@ -984,6 +987,7 @@ describe("replay session key isolation (Go 3988a389)", () => {
     headers: Record<string, string> = {},
     canonical = "",
     translated: Json = {},
+    execution = "",
   ) =>
     replaySessionKey(
       {
@@ -993,6 +997,7 @@ describe("replay session key isolation (Go 3988a389)", () => {
         headers: new Headers(headers),
         derivedSessionId: "",
         canonicalSessionId: canonical,
+        executionSessionId: execution,
         callerScope: "",
       },
       translated,
@@ -1073,6 +1078,15 @@ describe("replay session key isolation (Go 3988a389)", () => {
     expect(key({}, turn("worker-1"))).not.toBe(key({}, turn("worker-2")));
     expect(key({}, turn("worker-1"))).toMatch(/^client:codex:/);
     expect(key({}, { "Session-Id": "codex-root-sess" })).toBe("responses:codex-root-sess");
+  });
+
+  it("ranks the WebSocket execution session ahead of prompt-cache and derived keys", () => {
+    expect(key({ prompt_cache_key: "same-value" }, {}, "", {}, "socket-session")).toBe(
+      "execution:socket-session",
+    );
+    // An explicit canonical session still wins.
+    expect(key({}, {}, "session:plain-id", {}, "socket-session")).toBe("session:plain-id");
+    expect(key({ prompt_cache_key: "same-value" })).toBe("prompt-cache:same-value");
   });
 
   it("replays nothing for a fork without an identifiable child session", () => {
