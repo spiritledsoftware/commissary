@@ -873,6 +873,8 @@ export const makeAntigravityExecutor = (
         sealed.usage.output,
         sealed.usage.total,
         Date.now(),
+        // The summary's cached and reasoning tokens are kept (CLIProxyAPI dc2455d9).
+        { cached: sealed.usage.cached, reasoning: sealed.usage.reasoning },
       );
 
       return { payload: JSON.stringify(body), headers: sealed.headers } satisfies ExecutorResponse;
@@ -906,6 +908,8 @@ export const makeAntigravityExecutor = (
         sealed.usage.output,
         sealed.usage.total,
         Date.now(),
+        // The summary's cached and reasoning tokens are kept (CLIProxyAPI dc2455d9).
+        { cached: sealed.usage.cached, reasoning: sealed.usage.reasoning },
       );
 
       const headers = new Headers(sealed.headers);

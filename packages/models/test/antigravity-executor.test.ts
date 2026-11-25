@@ -747,6 +747,32 @@ describe("antigravity executor: Responses compaction summary", () => {
     ...extra,
   });
 
+  it("keeps the summary's cached and reasoning tokens in the compaction response (CLIProxyAPI dc2455d9)", async () => {
+    const h = harness(
+      () =>
+        jsonResponse(
+          upstream([{ text: "the summary" }], {
+            usageMetadata: {
+              promptTokenCount: 10,
+              cachedContentTokenCount: 4,
+              candidatesTokenCount: 3,
+              thoughtsTokenCount: 2,
+              totalTokenCount: 15,
+            },
+          }),
+        ),
+      { credential: unique("compaction-usage") },
+    );
+
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/responses", postJson(trigger()));
+    expect(response.status).toBe(200);
+    const usage = (await response.json()).usage;
+    expect(usage.input_tokens_details.cached_tokens).toBe(4);
+    expect(usage.output_tokens_details.reasoning_tokens).toBe(2);
+  });
+
   it("answers a summary without text with a request-scoped 502, not a 500", async () => {
     const h = harness(() => jsonResponse(upstream([{ thought: true, text: "thinking" }])));
     afterAll(h.dispose);
