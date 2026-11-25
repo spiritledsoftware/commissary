@@ -188,13 +188,22 @@ export const countCodexInputTokens = (codec: BpeCodec, body: Json | undefined): 
 
   const input = get(body, "input");
 
-  if (isJsonArray(input)) {
+  if (typeof input === "string") add(segments, input);
+  else if (isJsonArray(input)) {
     for (const item of input) {
-      switch (asString(get(item, "type"))) {
+      let type = asString(get(item, "type"));
+
+      // An untyped item with a role and content is a message (Go 1ef770d9).
+      if (type === "" && asString(get(item, "role")) !== "" && get(item, "content") !== undefined)
+        type = "message";
+
+      switch (type) {
         case "message": {
           const content = get(item, "content");
 
-          if (isJsonArray(content)) for (const part of content) add(segments, get(part, "text"));
+          if (typeof content === "string") add(segments, content);
+          else if (isJsonArray(content))
+            for (const part of content) add(segments, get(part, "text"));
           break;
         }
 
