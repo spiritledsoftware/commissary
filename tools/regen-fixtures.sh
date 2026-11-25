@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Regenerates golden fixtures from the reference CLIProxyAPI at a pinned commit (tools/fixturegen/PORT_TARGET by
-# default), never from the shared .repos/CLIProxyAPI checkout, which `pnpm install` fast-forwards. The generators run
-# against a detached worktree of the reference clone at that commit, kept in a cache directory and reused, through a
-# throwaway go.work, so the shared checkout's HEAD and working tree never move. Writes the fixtures to the same paths as
+# Regenerates golden fixtures from the reference CLIProxyAPI at a pinned commit: the port target
+# (tools/fixturegen/PORT_TARGET) while a port is in progress, else tools/fixturegen/UPSTREAM_COMMIT. Never from the
+# shared .repos/CLIProxyAPI checkout, which `pnpm install` fast-forwards. The generators run against a detached worktree
+# of the reference clone at that commit, kept in a cache directory and reused, through a throwaway go.work, so the
+# shared checkout's HEAD and working tree never move. Writes the fixtures to the same paths as
 # `go run ./tools/fixturegen/<name>` (docs/DEVELOPMENT.md, "Golden fixtures").
 # The generators run on Linux: Go's Devin executor writes runtime.GOOS into its requests, and Commissary sends "linux".
 # On another OS they run in a golang container (Docker), at go.work's Go version.
@@ -16,7 +17,9 @@ unset $(git rev-parse --local-env-vars)
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-commit="$(tr -d '[:space:]' <tools/fixturegen/PORT_TARGET)"
+pin=tools/fixturegen/UPSTREAM_COMMIT
+if [[ -f tools/fixturegen/PORT_TARGET ]]; then pin=tools/fixturegen/PORT_TARGET; fi
+commit="$(tr -d '[:space:]' <"$pin")"
 generators=()
 while (($#)); do
   case "$1" in

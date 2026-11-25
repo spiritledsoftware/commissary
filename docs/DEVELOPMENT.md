@@ -494,14 +494,16 @@ them and reports the upstream commits since that commit and the test files that 
 ### Porting from a pinned commit
 
 A port split into tickets that land in parallel must generate every fixture from the same upstream commit, but each
-`pnpm install` fast-forwards the shared reference checkout. `tools/fixturegen/PORT_TARGET` records the **port target**:
-the upstream commit the current port ports up to and regenerates from. `UPSTREAM_COMMIT` stays at the last ported state
-until the port's last ticket moves it to the target. `tools/regen-fixtures.sh` regenerates from the target:
+`pnpm install` fast-forwards the shared reference checkout. A port starts by creating `tools/fixturegen/PORT_TARGET`,
+which records the **port target**: the upstream commit the port ports up to and regenerates from. `UPSTREAM_COMMIT`
+stays at the last ported state until the port's last ticket regenerates every generator at the target, sets
+`UPSTREAM_COMMIT` to it and deletes `PORT_TARGET`. `tools/regen-fixtures.sh` regenerates from `PORT_TARGET` when it
+exists, else from `UPSTREAM_COMMIT`:
 
 ```sh
 tools/regen-fixtures.sh translator thinking   # the named generators (directories of tools/fixturegen)
 tools/regen-fixtures.sh                       # all of them
-tools/regen-fixtures.sh --commit <sha> devin  # another commit than PORT_TARGET
+tools/regen-fixtures.sh --commit <sha> devin  # another commit
 ```
 
 It runs the generators against a detached worktree of the reference clone at that commit, kept under
