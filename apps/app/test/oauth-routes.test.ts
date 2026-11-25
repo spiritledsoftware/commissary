@@ -371,6 +371,163 @@ describe("management oauth routes", () => {
   });
 });
 
+/** Lets the next status poll reach GitHub without waiting the device interval. */
+const pollNow = (state: string) =>
+  runInDurableObject(controlPlane(), (_instance, storage) => {
+    storage.storage.sql.exec("UPDATE oauth_sessions SET next_poll_at = 0 WHERE state = ?", state);
+  });
+
+const files = async () =>
+  (
+    (await json("/v9/management/credentials")).body as {
+      files: Array<{ name: string; type: string; provider: string; label: string }>;
+    }
+  ).files;
+
+describe("GitHub Copilot sign-in", () => {
+  // A fake GitHub: the device code, the device grant (`grants` in order, the last repeated), the account and the
+  // Copilot token exchange.
+  const github =
+    (grants: ReadonlyArray<Json>, exchange: Readonly<Record<string, Json>> = {}): Upstream =>
+    ({ method, url, body }) => {
+      const key = `${method} ${url}`;
+
+      if (key === "POST https://github.com/login/device/code") {
+        expect(new URLSearchParams(body).get("client_id")).toBe("Iv1.b507a08c87ecfe98");
+
+        return Response.json({
+          device_code: "device-fixture",
+          user_code: "USER-CODE",
+          verification_uri: "https://github.com/login/device",
+          expires_in: 900,
+          interval: 5,
+        });
+      }
+
+      if (key === "POST https://github.com/login/oauth/access_token") {
+        const grant = grants[Math.min(grantCalls, grants.length - 1)];
+        grantCalls++;
+
+        return Response.json(grant);
+      }
+
+      if (key === "GET https://api.github.com/user")
+        return Response.json({ id: 12345, login: "alice" });
+
+      if (key === "GET https://api.github.com/copilot_internal/v2/token") {
+        return Response.json({
+          token: "copilot-fixture",
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+          ...exchange,
+        });
+      }
+
+      return undefined;
+    };
+
+  let grantCalls = 0;
+
+  beforeEach(() => {
+    grantCalls = 0;
+  });
+
+  it("stores the Copilot credential after the operator enters the code, and lists it", async () => {
+    upstream = github([{ error: "authorization_pending" }, { access_token: "github-fixture" }], {
+      endpoints: { api: "https://api.business.githubcopilot.com" },
+    });
+
+    const started = await start("provider=copilot");
+    expect(started).toMatchObject({
+      status: "ok",
+      url: "https://github.com/login/device",
+      flow: "device",
+      user_code: "USER-CODE",
+      expires_in: 900,
+    });
+    expect(started.state).toMatch(/^copilot-\d+-[0-9a-f]{8}$/);
+    // The first poll waits one device interval, like Go.
+    expect(await status(started.state)).toEqual({ status: "wait" });
+    expect(grantCalls).toBe(0);
+    await pollNow(started.state);
+    expect(await status(started.state)).toEqual({ status: "wait" });
+    expect(grantCalls).toBe(1);
+    await pollNow(started.state);
+    expect(await status(started.state)).toEqual({ status: "ok" });
+
+    expect(await files()).toEqual([
+      expect.objectContaining({
+        name: "copilot-12345.json",
+        type: "copilot",
+        provider: "copilot",
+        label: "alice",
+      }),
+    ]);
+
+    const download = await json("/v9/management/credentials/download?name=copilot-12345.json", {
+      auth: await serviceToken(SERVICE_ADMIN),
+    });
+
+    expect(download.body).toMatchObject({
+      type: "copilot",
+      account_id: "12345",
+      username: "alice",
+      access_token: "copilot-fixture",
+      refresh_token: "github-fixture",
+      base_url: "https://api.business.githubcopilot.com",
+      expired: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
+      disabled: false,
+    });
+  });
+
+  it("reports a denied authorization and stores nothing", async () => {
+    upstream = github([{ error: "access_denied" }]);
+    const started = await start("provider=copilot");
+    await pollNow(started.state);
+    expect(await status(started.state)).toEqual({
+      status: "error",
+      error: "Authentication failed: copilot: GitHub device authorization denied",
+    });
+    expect(await files()).toEqual([]);
+  });
+
+  it("stores nothing for a cancelled login", async () => {
+    upstream = github([{ access_token: "github-fixture" }]);
+    const started = await start("provider=copilot");
+    expect(
+      (await json(`/v9/management/oauth/session?state=${started.state}`, { method: "DELETE" }))
+        .body,
+    ).toMatchObject({ cancelled: true });
+    await pollNow(started.state);
+    expect(await status(started.state)).toMatchObject({ status: "error" });
+    expect(grantCalls).toBe(0);
+    expect(await files()).toEqual([]);
+  });
+
+  it("refuses a Copilot token that names an untrusted inference endpoint", async () => {
+    upstream = github([{ access_token: "github-fixture" }], {
+      endpoints: { api: "https://copilot.example.com" },
+    });
+    const started = await start("provider=copilot");
+    await pollNow(started.state);
+    expect(await status(started.state)).toEqual({
+      status: "error",
+      error: "Authentication failed: copilot: untrusted API endpoint",
+    });
+    expect(await files()).toEqual([]);
+  });
+
+  it("answers a failed device code request with the Go error", async () => {
+    upstream = ({ url }) =>
+      url === "https://github.com/login/device/code"
+        ? new Response("nope", { status: 503 })
+        : undefined;
+    expect(await json("/v9/management/oauth/auth-url?provider=copilot")).toMatchObject({
+      status: 500,
+      body: { error: "failed to start device authorization flow" },
+    });
+  });
+});
+
 describe("public browser callbacks", () => {
   const get = (path: string) => call(path, { auth: false });
 

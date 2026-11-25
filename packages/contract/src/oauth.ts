@@ -4,7 +4,7 @@
  *
  * Two flows. Callback flows (claude, codex, antigravity, devin) answer an authorize `url`; the provider redirects to
  * a localhost page that does not load, and the operator pastes that address into `POST /oauth/callback`. Device
- * flows (xai, meta, kimi, kimi-ai, and codex with `flow=device`) answer `flow: "device"` with a `user_code` to enter
+ * flows (xai, copilot, meta, kimi, kimi-ai, and codex with `flow=device`) answer `flow: "device"` with a `user_code` to enter
  * at `url`. Both finish through `GET /oauth/status`, which the panel polls; for device flows each poll also advances
  * the provider check. Status errors come back as HTTP 200 with `status: "error"`.
  */
@@ -21,6 +21,7 @@ export const OAuthProvider = Schema.Literals([
   "antigravity",
   "devin",
   "xai",
+  "copilot",
   "meta",
   "kimi",
   "kimi-ai",

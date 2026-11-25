@@ -4354,7 +4354,7 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
 
 Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_files_devin_oauth.go`, `oauth_callback.go`,
 `oauth_sessions.go`) and `internal/auth/*`. The panel's OAuth page works unchanged: `GET /v9/management/oauth/auth-url?provider=`
-(`claude`, `codex`, `antigravity`, `devin`, `xai`, `meta`, `kimi`, `kimi-ai`; `is_webui` ignored) returns `{status,url,state}`
+(`claude`, `codex`, `antigravity`, `devin`, `xai`, `copilot`, `meta`, `kimi`, `kimi-ai`; `is_webui` ignored) returns `{status,url,state}`
 (+ `flow:"device"`, `user_code`, `expires_in` for device logins), `GET /oauth/status?state=` answers `ok|wait|error`,
 `DELETE /oauth/session?state=` cancels and `POST /oauth/callback` takes `{provider, redirect_url | state+code}`.
 
@@ -4368,12 +4368,19 @@ Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_fil
   `/oauth/status` (messages are Go's: `State code error` cannot occur because the state _is_ the session key; `Bad request`,
   `Failed to exchange authorization code for tokens[: cause]`, `Timeout waiting for OAuth callback`, ...). The callback window is
   5 minutes. PKCE (S256, 96 bytes; Devin 64) and states use WebCrypto; authorization URLs use Go's `url.Values.Encode` ordering.
-- **Device logins** (Codex `?provider=codex&flow=device`, xAI, Meta, Kimi/Kimi.ai): `auth-url` requests the device code, the panel
+- **Device logins** (Codex `?provider=codex&flow=device`, xAI, GitHub Copilot, Meta, Kimi/Kimi.ai): `auth-url` requests the device code, the panel
   polls `/oauth/status` and each poll performs the upstream poll when `nextPollAt` has passed (xAI immediately, others after one
   interval; `slow_down` +5 s except Kimi), so providers are never polled faster than their interval. Windows: xAI 30 min, Meta/
-  Kimi/Codex 15 min (or the device code's `expires_in`). No DO alarms are needed.
+  Kimi/Codex 15 min (or the device code's `expires_in`; Copilot's, at most the 30 min session, like Go). No DO alarms are needed.
+- **GitHub Copilot** (`flows/copilot.ts`, Go `7ae771fc`/`feadc90b`, `internal/auth/copilot/client.go`): GitHub's device flow with
+  the Copilot CLI's public client id (no binding or secret), then `GET api.github.com/user` (the numeric id names the file)
+  and the Copilot token exchange (`/copilot_internal/v2/token`). The file keeps the GitHub token as `refresh_token`, the
+  Copilot token as `access_token` with its `expired`, and the inference `base_url` the token names, accepted only on Go's
+  trusted `api.*githubcopilot.com` hosts (`isTrustedCopilotApi`); an untrusted endpoint fails the login. Its `username`
+  (the GitHub login) is the account's label, as Go's `Label`. Serving requests, refreshing the Copilot token and the
+  model catalog come with the Copilot executor.
 - **Credentials** are the Go files (same keys, same names: `claude-<sha8(org|account)>-<email>.json`, `codex-<sha8(account)>-<email>-<plan>.json`,
-  `antigravity-<email>.json`, `xai-<email|sub>.json`, `meta-<email>-<sha16>.json`, `kimi[-ai]-<ms>.json`, `devin-<user>.json`, plus
+  `antigravity-<email>.json`, `xai-<email|sub>.json`, `copilot-<github id>.json`, `meta-<email>-<sha16>.json`, `kimi[-ai]-<ms>.json`, `devin-<user>.json`, plus
   `disabled`). `record.ts` replays `saveTokenRecord`: same-name user settings are kept (never tokens), a Claude login migrates the
   legacy email/account-named file, then the file is stored through the pool (`importAuthFile` semantics) and is selectable at once.
 - **Public browser callbacks** (`/anthropic/callback`, `/codex/callback`, `/antigravity/callback`, `/callback`, `/devin/callback`;
@@ -4383,7 +4390,7 @@ Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_fil
   (`orgScopedName`: `org.<org>.<hex>`, a bare state is `global`'s), so the callback asks only that org's ControlPlane.
 
 Deviations from Go: the Antigravity login uses the Go fallback client version `2.29.0` (the executor reads the polled Hub version, see
-_Antigravity provider_) and project discovery runs inside the login (non-fatal; the executor repeats it when `project_id` is missing); a transport failure or 5xx of one xAI/Kimi poll keeps waiting instead of ending the login; Codex
+_Antigravity provider_) and project discovery runs inside the login (non-fatal; the executor repeats it when `project_id` is missing); a transport failure or 5xx of one xAI/Kimi/Copilot poll keeps waiting instead of ending the login; Codex
 exchange errors include the (scrubbed) upstream status/body like Go but cap it at 512 chars; device-flow states carry a random
 suffix (`xai-<ms>-<hex>`); Kimi stores the normalised `domain`; Claude's uTLS/ordered-header fingerprint cannot be reproduced (see
 Claude provider). `POST /v9/management/oauth/import?provider=vertex` (`models/management/oauth-import.ts`, Go `ImportVertexCredential`)

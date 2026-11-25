@@ -58,6 +58,14 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     method: { kind: "sign-in", provider: "xai", flow: "code" },
   },
   {
+    id: "copilot",
+    name: "GitHub Copilot",
+    how: "Enter a code on github.com.",
+    notice:
+      "GitHub offers Copilot in its own apps and in the editors and tools it supports, and documents no way for a hosted service to relay a Copilot sign-in, so you use it at your own risk.",
+    method: { kind: "sign-in", provider: "copilot", flow: "code" },
+  },
+  {
     id: "antigravity",
     name: "Antigravity",
     how: "Sign in with Google, then paste the address your browser lands on.",
