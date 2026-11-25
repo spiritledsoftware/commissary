@@ -1,5 +1,5 @@
-// SPI-1415 (Go cf07c78a, 7e82d0d1): zero-output abnormal terminations of Gemini responses. Cases follow
-// gemini_zero_output_test.go of cf07c78a.
+// SPI-1415 (Go cf07c78a, 7e82d0d1, f2efe2c4): zero-output abnormal terminations of Gemini responses. Cases follow
+// gemini_zero_output_test.go at dd543d09.
 import { type Json, tryParseJson } from "@commissary/json";
 import { describe, expect, it } from "vite-plus/test";
 import {
@@ -28,6 +28,7 @@ describe("inspectGeminiPayload", () => {
       "a wrapped abnormal finish with usage",
       {
         response: {
+          // SAFETY: `finished` always builds an object literal; `Json` only widens its type for the spread.
           ...(finished([], "MALFORMED_FUNCTION_CALL") as object),
           usageMetadata: { promptTokenCount: 10 },
         },
@@ -89,6 +90,18 @@ describe("inspectGeminiPayload", () => {
       { visible: true },
     ],
     [
+      "a signature-only part (f2efe2c4)",
+      finished([{ text: "", thoughtSignature: "sig" }], "STOP"),
+      false,
+      {},
+    ],
+    [
+      "a signature-only thought (f2efe2c4)",
+      finished([{ thought: true, thought_signature: "sig" }], "STOP"),
+      false,
+      {},
+    ],
+    [
       "a thought image",
       finished(
         [{ thought: true, inlineData: { mimeType: "image/png", data: "AA==" } }],
@@ -133,6 +146,39 @@ describe("ZeroOutputStreamGuard", () => {
       flush: [JSON.stringify(shell)],
     });
     expect(guard.finalize()).toEqual({ kind: "emit", flush: [] });
+  });
+
+  it("withholds a leading signature-only frame until content arrives (f2efe2c4)", () => {
+    const guard = new ZeroOutputStreamGuard("openai");
+    const signature = finished([{ text: "", thoughtSignature: "sig" }]);
+
+    expect(observe(guard, signature)).toEqual({ kind: "continue" });
+    expect(observe(guard, finished([{ text: "hello" }]))).toEqual({
+      kind: "emit",
+      flush: [JSON.stringify(signature)],
+    });
+  });
+
+  it("fails a stream that closes holding only candidate or usage shells (f2efe2c4)", () => {
+    for (const shell of [
+      finished([{ text: "", thoughtSignature: "sig" }]),
+      { usageMetadata: { promptTokenCount: 3 } },
+    ]) {
+      const guard = new ZeroOutputStreamGuard("openai");
+
+      expect(observe(guard, shell)).toEqual({ kind: "continue" });
+      expect(guard.finalize()).toEqual({ kind: "fail", finishReason: "" });
+    }
+  });
+
+  it("flushes withheld frames without a candidate or usage at the end", () => {
+    const guard = new ZeroOutputStreamGuard("openai");
+
+    expect(observe(guard, { modelVersion: "gemini-2.5-pro" })).toEqual({ kind: "continue" });
+    expect(guard.finalize()).toEqual({
+      kind: "emit",
+      flush: [JSON.stringify({ modelVersion: "gemini-2.5-pro" })],
+    });
   });
 
   it("waits for the trailing usage of an abnormal finish, then fails", () => {
@@ -196,6 +242,14 @@ describe("zero-output errors (7e82d0d1)", () => {
     expect(zeroOutputErrorMessage("openai", "MALFORMED_RESPONSE")).toBe(
       "upstream returned zero output with finishReason MALFORMED_RESPONSE",
     );
+  });
+
+  it("names a stream closed with zero output when there is no reason (f2efe2c4)", () => {
+    expect(tryParseJson(zeroOutputErrorMessage("claude", " "))).toEqual({
+      type: "error",
+      error: { type: "api_error", message: "Gemini stream closed with zero output" },
+    });
+    expect(zeroOutputErrorMessage("openai", "")).toBe("upstream stream closed with zero output");
   });
 
   it("keeps a malformed-call Claude error from cooling the credential", () => {

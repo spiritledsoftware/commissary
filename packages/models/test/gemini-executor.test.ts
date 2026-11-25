@@ -577,6 +577,25 @@ describe("OpenAI Responses client -> Gemini credential", () => {
       });
     });
 
+    it("fails a stream of signature-only shells with 502 before it commits (Go f2efe2c4)", async () => {
+      const { status, text } = await ask([
+        `data: ${JSON.stringify({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "", thoughtSignature: "sig" }] },
+              index: 0,
+            },
+          ],
+          responseId: "r",
+        })}\n\n`,
+      ]);
+
+      // The signature-only frame was withheld, so the client gets the 502 itself.
+      expect(status).toBe(502);
+      expect(text).toContain("Gemini stream closed with zero output");
+      expect(text).not.toContain("message_start");
+    });
+
     it("answers a non-stream MALFORMED_FUNCTION_CALL with 502 so the client retries (Go 7f2f17d7)", async () => {
       const h = harness(() =>
         jsonResponse({

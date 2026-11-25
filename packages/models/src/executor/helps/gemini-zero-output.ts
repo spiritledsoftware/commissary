@@ -1,14 +1,15 @@
 /**
  * Zero-output abnormal terminations of Gemini-family responses (Gemini, Vertex; Go also Antigravity and AI Studio).
  *
- * Go source: internal/runtime/executor/helps/gemini_zero_output.go (cf07c78a) and `newGeminiZeroOutputStatusErr`,
+ * Go source: internal/runtime/executor/helps/gemini_zero_output.go (cf07c78a, f2efe2c4) and `newGeminiZeroOutputStatusErr`,
  * `newGeminiTranslatedClaudeErrorStatusErr` in internal/runtime/executor/openai_compat_executor.go (7e82d0d1).
  *
  * A response that finishes with `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL` or `MALFORMED_RESPONSE` before any
  * visible output (non-blank text, a non-empty function call, media, code, grounding) answered nothing: it fails as a
  * 502 the conductor rotates past without cooling the credential (`transient_transport`). A stream withholds its
- * leading contentless frames (role-only shells), so such a stream fails before its first payload and the handler can
- * still fail over; thought frames are never withheld.
+ * leading contentless frames (role-only shells, signature-only parts), so such a stream fails before its first payload
+ * and the handler can still fail over; thought frames are never withheld. A stream that ends holding only candidate or
+ * usage shells fails the same way (f2efe2c4).
  */
 import {
   asBool,
@@ -25,6 +26,7 @@ import { ExecutionError } from "../errors.ts";
 /** `GeminiPayloadInspection`. */
 export interface GeminiPayloadInspection {
   readonly finishReason: string;
+  readonly hasCandidate: boolean;
   readonly hasVisibleOutput: boolean;
   readonly hasThoughtOutput: boolean;
   readonly hasUsageMetadata: boolean;
@@ -41,15 +43,24 @@ const ABNORMAL_FINISH_REASONS: ReadonlySet<string> = new Set([
 export const isZeroOutputAbnormalFinishReason = (reason: string): boolean =>
   ABNORMAL_FINISH_REASONS.has(reason.trim().toUpperCase());
 
-/** `GeminiZeroOutputErrorMessage`: a Claude error body for Claude clients, plain text otherwise. */
+/**
+ * `GeminiZeroOutputErrorMessage`: a Claude error body for Claude clients, plain text otherwise; an empty reason is a
+ * stream that closed holding only shells (f2efe2c4).
+ */
 export const zeroOutputErrorMessage = (responseFormat: string, finishReason: string): string => {
   const reason = finishReason.trim().toUpperCase();
 
-  return responseFormat === Formats.Claude
-    ? JSON.stringify({
-        type: "error",
-        error: { type: "api_error", message: `Gemini response finished with ${reason}` },
-      })
+  if (responseFormat === Formats.Claude) {
+    const message =
+      reason === ""
+        ? "Gemini stream closed with zero output"
+        : `Gemini response finished with ${reason}`;
+
+    return JSON.stringify({ type: "error", error: { type: "api_error", message } });
+  }
+
+  return reason === ""
+    ? "upstream stream closed with zero output"
     : `upstream returned zero output with finishReason ${reason}`;
 };
 
@@ -142,24 +153,21 @@ export const inspectGeminiPayload = (
 
     for (const part of isJsonArray(parts) ? parts : []) {
       const mediaOrTool = hasMediaOrTool(part);
-
-      const signature =
-        asString(get(part, "thoughtSignature")) || asString(get(part, "thought_signature"));
-
       const text = asString(get(part, "text"));
 
+      // A signature-only part is neither: it stays buffered until real content arrives (f2efe2c4).
       if (asBool(get(part, "thought"))) {
-        if (text !== "" || signature !== "" || mediaOrTool) hasThoughtOutput = true;
+        if (text !== "" || mediaOrTool) hasThoughtOutput = true;
         continue;
       }
 
       if (mediaOrTool || text.trim() !== "") hasVisibleOutput = true;
-      else if (signature !== "") hasThoughtOutput = true;
     }
   }
 
   return {
     finishReason,
+    hasCandidate: isJsonArray(candidates) && candidates.length > 0,
     hasVisibleOutput,
     hasThoughtOutput,
     hasUsageMetadata: usage !== undefined,
@@ -200,6 +208,7 @@ export class ZeroOutputStreamGuard {
   readonly #responseFormat: string;
   readonly #allowResponseWrapper: boolean;
   #pendingShells: string[] = [];
+  #sawCandidateShell = false;
   #sawVisibleOutput = false;
   #emitted = false;
   #abnormalFinishReason = "";
@@ -253,6 +262,7 @@ export class ZeroOutputStreamGuard {
       !inspection.hasThoughtOutput &&
       !inspection.hasPromptBlock
     ) {
+      if (inspection.hasCandidate || inspection.hasUsageMetadata) this.#sawCandidateShell = true;
       this.#pendingShells.push(payload);
 
       return { kind: "continue" };
@@ -264,9 +274,19 @@ export class ZeroOutputStreamGuard {
     return { kind: "emit", flush };
   }
 
-  /** `Finalize`: resolves a latched abnormal finish or the withheld shells at the end of the upstream stream. */
+  /**
+   * `Finalize`: resolves a latched abnormal finish or the withheld shells at the end of the upstream stream. A stream
+   * that sent nothing and withheld candidate or usage shells answered nothing: it fails with an empty finish reason.
+   */
   finalize(): ZeroOutputAction {
     if (this.#abnormalFinishReason !== "") return this.#failure();
+
+    if (this.#pendingShells.length > 0 && !this.#emitted && this.#sawCandidateShell) {
+      this.#pendingShells = [];
+
+      return { kind: "fail", finishReason: "" };
+    }
+
     const flush = this.#pendingShells;
     this.#pendingShells = [];
 
