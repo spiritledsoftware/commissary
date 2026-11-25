@@ -20,8 +20,10 @@ import {
   set,
   tryParseJson,
 } from "@commissary/json";
+import { applyOpenAIGoogleThinkingConfig } from "../../../thinking/google-extra-body.ts";
 import { countSendableGeminiParts, UserTurnDrops } from "../../common/parts.ts";
 import { normalizeOpenAIFileData } from "../../common/file-data.ts";
+import { contentHasGeminiFunctionResponse } from "../common/contents.ts";
 import { attachDefaultSafetySettings } from "../common/safety.ts";
 import { geminiReplaySignatureOrBypass } from "../common/signature.ts";
 import { renameKey } from "../gemini/gemini.ts";
@@ -85,6 +87,77 @@ const demotedSystemText = (text: string, isDemoted: boolean): string =>
 
 const isNumber = (value: Json | undefined): value is number => typeof value === "number";
 
+/** The `allowed_tools` tool choice: its function names (a Set) and mode, or `undefined` for any other choice. */
+export interface AllowedTools {
+  readonly names: ReadonlySet<string>;
+  readonly mode: string;
+}
+
+/** `parseGeminiOpenAIAllowedTools`. */
+export const parseAllowedTools = (request: Json | undefined): AllowedTools | undefined => {
+  const toolChoice = get(request, "tool_choice");
+
+  if (!isJsonObject(toolChoice) || asString(toolChoice["type"]) !== "allowed_tools")
+    return undefined;
+  const names = new Set<string>();
+  let toolList = get(toolChoice, "allowed_tools.tools");
+
+  if (!isJsonArray(toolList) || toolList.length === 0) toolList = get(toolChoice, "tools");
+
+  for (const t of isJsonArray(toolList) ? toolList : []) {
+    let fnName = asString(get(t, "function.name")).trim();
+
+    if (fnName === "") fnName = asString(get(t, "name")).trim();
+
+    if (fnName !== "") names.add(fnName);
+  }
+
+  let mode = asString(get(toolChoice, "allowed_tools.mode")).trim().toLowerCase();
+
+  if (mode === "") mode = asString(get(toolChoice, "mode")).trim().toLowerCase();
+
+  return { names, mode: mode === "" ? "auto" : mode };
+};
+
+/**
+ * `mergeGeminiOpenAIToolResponseUserContents`: a user turn of function responses absorbs the plain user turns right
+ * after it (de472050), so a follow-up message does not split the tool round trip.
+ */
+const mergeToolResponseUserContents = (contents: Json[], canMerge: boolean[]): Json[] => {
+  if (contents.length <= 1) return contents;
+  const merged: Json[] = [];
+
+  for (let i = 0; i < contents.length; i++) {
+    // SAFETY: the index is in bounds (loop bound); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
+    const content = contents[i] as Json;
+
+    if (asString(get(content, "role")) !== "user" || !contentHasGeminiFunctionResponse(content)) {
+      merged.push(content);
+      continue;
+    }
+
+    let j = i + 1;
+
+    while (j < contents.length && canMerge[j] === true) j++;
+
+    if (j === i + 1) {
+      merged.push(content);
+      continue;
+    }
+
+    const parts = contents.slice(i, j).flatMap((current) => {
+      const currentParts = get(current, "parts");
+
+      return isJsonArray(currentParts) ? currentParts : [];
+    });
+
+    merged.push({ ...(isJsonObject(content) ? content : {}), parts });
+    i = j - 1;
+  }
+
+  return merged;
+};
+
 /** `applyOpenAIResponseFormatToGemini`. */
 const applyResponseFormat = (out: Json, request: Json): void => {
   const responseFormat = get(request, "response_format");
@@ -131,6 +204,13 @@ export const convertOpenAIRequestToGemini = (
       else set(out, "generationConfig.thinkingConfig.thinkingLevel", effort);
     }
   }
+
+  // Gemini's own thinking fields (`extra_body.google.thinking_config` and friends) when reasoning_effort set none.
+  if (
+    !exists(out, "generationConfig.thinkingConfig.thinkingLevel") &&
+    !exists(out, "generationConfig.thinkingConfig.thinkingBudget")
+  )
+    applyOpenAIGoogleThinkingConfig(out, request, "generationConfig.thinkingConfig");
 
   const temperature = get(request, "temperature");
 
@@ -196,6 +276,14 @@ export const convertOpenAIRequestToGemini = (
   if (isJsonArray(messages)) {
     const systemParts: Json[] = [];
     const contentItems: Json[] = [];
+    // Whether each content may merge into a preceding tool-response turn: only plain user turns may.
+    const canMergeWithToolResponse: boolean[] = [];
+
+    const appendContent = (content: Json, canMerge: boolean): void => {
+      contentItems.push(content);
+      canMergeWithToolResponse.push(canMerge);
+    };
+
     let hasEncounteredConversation = false;
 
     for (let i = 0; i < messages.length; i++) {
@@ -288,7 +376,7 @@ export const convertOpenAIRequestToGemini = (
 
         drops.endTurn(countSendableGeminiParts(partItems));
 
-        if (partItems.length > 0) contentItems.push(contentNode("user", partItems));
+        if (partItems.length > 0) appendContent(contentNode("user", partItems), role === "user");
       } else if (role === "assistant") {
         hasEncounteredConversation = true;
         const partItems: Json[] = [];
@@ -311,20 +399,9 @@ export const convertOpenAIRequestToGemini = (
               }
 
               case "image_url": {
-                const imageUrl = asString(get(item, "image_url.url"));
+                const file = normalizeOpenAIFileData("", "", asString(get(item, "image_url.url")));
 
-                if (imageUrl.length > 5) {
-                  const rest = imageUrl.slice(5);
-                  const semicolon = rest.indexOf(";");
-
-                  if (semicolon >= 0) {
-                    const mime = rest.slice(0, semicolon);
-                    const payload = rest.slice(semicolon + 1);
-
-                    if (payload.length > 7) partItems.push(inlineDataPart(mime, payload.slice(7)));
-                  }
-                }
-
+                if (file !== undefined) partItems.push(inlineDataPart(file.mimeType, file.data));
                 break;
               }
 
@@ -352,7 +429,7 @@ export const convertOpenAIRequestToGemini = (
             toolCalls.push({ id: asString(get(tc, "id")), name: functionName });
           }
 
-          if (partItems.length > 0) contentItems.push(contentNode("model", partItems));
+          if (partItems.length > 0) appendContent(contentNode("model", partItems), false);
 
           // Tool responses scoped to this assistant turn.
           const turnToolResponses = new Map<string, string>();
@@ -385,9 +462,9 @@ export const convertOpenAIRequestToGemini = (
             });
           }
 
-          if (responseParts.length > 0) contentItems.push(contentNode("user", responseParts));
+          if (responseParts.length > 0) appendContent(contentNode("user", responseParts), false);
         } else if (partItems.length > 0) {
-          contentItems.push(contentNode("model", partItems));
+          appendContent(contentNode("model", partItems), false);
         }
       }
     }
@@ -395,37 +472,22 @@ export const convertOpenAIRequestToGemini = (
     if (systemParts.length > 0) out["systemInstruction"] = contentNode("user", systemParts);
     const last = contentItems[contentItems.length - 1];
 
-    if (last !== undefined && asString(get(last, "role")) === "model") contentItems.pop();
+    if (last !== undefined && asString(get(last, "role")) === "model") {
+      contentItems.pop();
+      canMergeWithToolResponse.pop();
+    }
 
-    if (contentItems.length > 0) out["contents"] = contentItems;
+    const merged = mergeToolResponseUserContents(contentItems, canMergeWithToolResponse);
+
+    if (merged.length > 0) out["contents"] = merged;
   }
 
   // tools -> functionDeclarations + googleSearch/codeExecution/urlContext passthrough
-  const allowedToolNames = new Set<string>();
-  let isAllowedTools = false;
-  let allowedMode = "auto";
+  const allowedTools = parseAllowedTools(request);
+  const isAllowedTools = allowedTools !== undefined;
+  const allowedToolNames = allowedTools?.names ?? new Set<string>();
+  const allowedMode = allowedTools?.mode ?? "auto";
   const toolChoiceValue = get(request, "tool_choice");
-
-  if (isJsonObject(toolChoiceValue) && asString(toolChoiceValue["type"]) === "allowed_tools") {
-    isAllowedTools = true;
-    let toolList = get(toolChoiceValue, "allowed_tools.tools");
-
-    if (!isJsonArray(toolList) || toolList.length === 0) toolList = get(toolChoiceValue, "tools");
-
-    for (const t of isJsonArray(toolList) ? toolList : []) {
-      let fnName = asString(get(t, "function.name")).trim();
-
-      if (fnName === "") fnName = asString(get(t, "name")).trim();
-
-      if (fnName !== "") allowedToolNames.add(fnName);
-    }
-
-    let modeVal = asString(get(toolChoiceValue, "allowed_tools.mode")).trim().toLowerCase();
-
-    if (modeVal === "") modeVal = asString(get(toolChoiceValue, "mode")).trim().toLowerCase();
-
-    if (modeVal !== "") allowedMode = modeVal;
-  }
 
   const declaredOriginalToSanitized = new Map<string, string>();
   const sanitizedCounts = new Map<string, number>();

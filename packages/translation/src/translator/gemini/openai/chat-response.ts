@@ -8,7 +8,6 @@ import {
   asBool,
   asInt,
   asString,
-  exists,
   get,
   isJsonArray,
   type Json,
@@ -16,12 +15,15 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
-import { functionCallId, isContentFilterFinishReason } from "../../common/gemini-response.ts";
 import {
-  restoreSanitizedToolName,
-  sanitizedToolNameMap,
-  type NameMap,
-} from "../../common/tool-names.ts";
+  isGeminiThoughtSignatureBypass,
+  signaturePayloadWithoutProviderPrefix,
+} from "../../../signature/gemini.ts";
+import { functionCallId, isContentFilterFinishReason } from "../../common/gemini-response.ts";
+import { restoreSanitizedToolName, type NameMap } from "../../common/tool-names.ts";
+import { hasUnsupportedPartPayload } from "../common/parts.ts";
+import { sanitizeFunctionName } from "../util/claude.ts";
+import { parseAllowedTools } from "./chat-request.ts";
 
 interface Params {
   unixTimestamp: number;
@@ -33,7 +35,85 @@ interface Params {
   responseId: string;
   pendingUsageMetadata: Json | undefined;
   sanitizedNameMap: NameMap;
+  /** Per candidate, the index of the last tool call a detached thought signature still belongs to. */
+  lastToolCallIndex: Map<number, number>;
 }
+
+/** The part fields the OpenAI Chat translation carries; a part with any other payload is skipped. */
+const SUPPORTED_PART_FIELDS = [
+  "text",
+  "functionCall",
+  "inlineData",
+  "inline_data",
+  "audioTranscription",
+];
+
+/** `geminiOpenAIToolThoughtSignature`: the signature a tool call carries back to the client, bypass sentinels dropped. */
+const toolThoughtSignature = (raw: Json | undefined): string => {
+  const signature = asString(raw).trim();
+
+  return isGeminiThoughtSignatureBypass(signaturePayloadWithoutProviderPrefix(signature))
+    ? ""
+    : signature;
+};
+
+const setToolSignature = (call: JsonObject, signature: string): void => {
+  call["extra_content"] = { google: { thought_signature: signature } };
+};
+
+/**
+ * `geminiOpenAISanitizedToolNameMap`: sanitized name -> original name for the function tools the request translator
+ * declared (after `allowed_tools` filtering; a sanitized name two originals share is left out), also reading legacy
+ * top-level tools without a `type`.
+ */
+export const geminiOpenAISanitizedToolNameMap = (request: Json | undefined): NameMap => {
+  const tools = get(request, "tools");
+
+  if (!isJsonArray(tools)) return undefined;
+  const allowed = parseAllowedTools(request);
+  const sanitizedToOriginal = new Map<string, string>();
+  const collided = new Set<string>();
+
+  const record = (originalName: string): void => {
+    if (originalName === "") return;
+
+    if (allowed !== undefined && !allowed.names.has(originalName)) return;
+    const sanitizedName = sanitizeFunctionName(originalName);
+
+    if (sanitizedName === "") return;
+    const existing = sanitizedToOriginal.get(sanitizedName);
+
+    if (existing !== undefined) {
+      if (existing !== originalName) collided.add(sanitizedName);
+
+      return;
+    }
+
+    sanitizedToOriginal.set(sanitizedName, originalName);
+  };
+
+  for (const tool of tools) {
+    const toolType = asString(get(tool, "type"));
+
+    if (toolType === "function") {
+      const fn = get(tool, "function");
+
+      if (fn !== null && typeof fn === "object" && !Array.isArray(fn))
+        record(asString(get(fn, "name")));
+    } else if (toolType === "") {
+      record(asString(get(tool, "name")).trim());
+    }
+  }
+
+  const out = new Map<string, string>();
+
+  for (const [sanitizedName, originalName] of sanitizedToOriginal) {
+    if (!collided.has(sanitizedName) && sanitizedName !== originalName)
+      out.set(sanitizedName, originalName);
+  }
+
+  return out.size === 0 ? undefined : out;
+};
 
 interface ResolvedFinishReason {
   finishReason: string;
@@ -45,7 +125,7 @@ const resolveFinishReason = (upstream: string, sawToolCall: boolean): ResolvedFi
   finishReason: sawToolCall
     ? "tool_calls"
     : upstream === "MAX_TOKENS"
-      ? "max_tokens"
+      ? "length"
       : isContentFilterFinishReason(upstream)
         ? "content_filter"
         : "stop",
@@ -106,6 +186,36 @@ const baseChunk = (): JsonObject => ({
   ],
 });
 
+/**
+ * `buildGeminiOpenAITerminalChunkDoc`: the chunk that finishes a choice, with an empty delta (8cd6817b): strict Chat
+ * Completions parsers reject a chunk that carries both a delta payload and a finish reason.
+ */
+const terminalChunk = (
+  p: Params,
+  candidateIndex: number,
+  reasons: ResolvedFinishReason,
+  usage: Json | undefined,
+): string => {
+  const chunk: JsonObject = {
+    id: p.responseId,
+    object: "chat.completion.chunk",
+    created: p.unixTimestamp,
+    model: p.modelVersion === "" ? "model" : p.modelVersion,
+    choices: [
+      {
+        index: candidateIndex,
+        delta: {},
+        finish_reason: reasons.finishReason,
+        native_finish_reason: reasons.nativeFinishReason,
+      },
+    ],
+  };
+
+  if (usage !== undefined) usageFields(usage, chunk);
+
+  return JSON.stringify(chunk);
+};
+
 export const convertGeminiResponseToOpenAI = (
   context: ResponseContext,
   line: string,
@@ -122,7 +232,8 @@ export const convertGeminiResponseToOpenAI = (
       modelVersion: "",
       responseId: "",
       pendingUsageMetadata: undefined,
-      sanitizedNameMap: sanitizedToolNameMap(context.originalRequest),
+      sanitizedNameMap: geminiOpenAISanitizedToolNameMap(context.originalRequest),
+      lastToolCallIndex: new Map(),
     } satisfies Params;
   }
 
@@ -141,26 +252,12 @@ export const convertGeminiResponseToOpenAI = (
     return pending.map((index) => {
       p.sawFinishReason.set(index, true);
 
-      const { finishReason, nativeFinishReason } = resolveFinishReason(
+      const reasons = resolveFinishReason(
         p.upstreamFinishReason.get(index) ?? "",
         p.sawToolCall.get(index) === true,
       );
 
-      const chunk = baseChunk();
-      chunk["created"] = p.unixTimestamp;
-
-      if (p.modelVersion !== "") chunk["model"] = p.modelVersion;
-
-      if (p.responseId !== "") chunk["id"] = p.responseId;
-
-      if (p.pendingUsageMetadata !== undefined) usageFields(p.pendingUsageMetadata, chunk);
-      // SAFETY: `chunk` is a fresh `baseChunk()`, whose `choices` is a one-element array of objects.
-      const choice = (chunk["choices"] as JsonObject[])[0] as JsonObject;
-      choice["index"] = index;
-      choice["finish_reason"] = finishReason;
-      choice["native_finish_reason"] = nativeFinishReason;
-
-      return JSON.stringify(chunk);
+      return terminalChunk(p, index, reasons, p.pendingUsageMetadata);
     });
   }
 
@@ -188,8 +285,8 @@ export const convertGeminiResponseToOpenAI = (
   if (p.responseId !== "") base["id"] = p.responseId;
   const usage = get(root, "usageMetadata");
 
+  // Usage rides on each emitted chunk below, so a split terminal frame carries it on its last chunk only.
   if (usage !== undefined) {
-    usageFields(usage, base);
     p.pendingUsageMetadata = undefined;
   } else {
     // The executor renames non-terminal usage to `cpaUsageMetadata`: keep it for a terminal chunk synthesised on [DONE].
@@ -216,11 +313,35 @@ export const convertGeminiResponseToOpenAI = (
         p.upstreamFinishReason.set(candidateIndex, asString(finishReason).toUpperCase());
 
       let assistantRoleSet = false;
+      let sawNoopPart = false;
+      let hasNonEmptyDelta = false;
 
       const setAssistantRole = (): void => {
         if (assistantRoleSet) return;
         delta["role"] = "assistant";
         assistantRoleSet = true;
+      };
+
+      const toolCallsArray = (): Json[] => {
+        let toolCalls = delta["tool_calls"];
+
+        if (!isJsonArray(toolCalls)) {
+          toolCalls = [];
+          delta["tool_calls"] = toolCalls;
+        }
+
+        return toolCalls;
+      };
+
+      // A late signature is still a tool delta, on the tool call it follows (91aca317).
+      const appendToolSignature = (signature: string): void => {
+        const index = p.lastToolCallIndex.get(candidateIndex);
+
+        if (signature === "" || index === undefined) return;
+        const call: JsonObject = { index };
+        setToolSignature(call, signature);
+        setAssistantRole();
+        toolCallsArray().push(call);
       };
 
       const parts = get(candidate, "content.parts");
@@ -233,6 +354,12 @@ export const convertGeminiResponseToOpenAI = (
         let hasReasoning = false;
 
         for (const part of parts) {
+          if (hasUnsupportedPartPayload(part, SUPPORTED_PART_FIELDS)) {
+            p.lastToolCallIndex.delete(candidateIndex);
+            sawNoopPart = true;
+            continue;
+          }
+
           let partText = get(part, "text");
           const functionCall = get(part, "functionCall");
           const inlineData = inlineDataOf(part);
@@ -251,9 +378,15 @@ export const convertGeminiResponseToOpenAI = (
           const hasContentPayload =
             hasTextPayload || functionCall !== undefined || inlineData !== undefined;
 
-          if (hasThoughtSignature && !hasContentPayload) continue;
+          const thoughtSignature = toolThoughtSignature(signature);
+
+          if (hasThoughtSignature && !hasContentPayload) {
+            appendToolSignature(thoughtSignature);
+            continue;
+          }
 
           if (partText !== undefined) {
+            if (asString(partText) !== "") p.lastToolCallIndex.delete(candidateIndex);
             setAssistantRole();
 
             if (asBool(get(part, "thought"))) {
@@ -264,40 +397,53 @@ export const convertGeminiResponseToOpenAI = (
               text += asString(partText);
             }
           } else if (functionCall !== undefined) {
+            const rawName = asString(get(functionCall, "name")).trim();
+            const args = get(functionCall, "args");
+
+            if (rawName === "" && args === undefined) {
+              appendToolSignature(thoughtSignature);
+              sawNoopPart = true;
+              continue;
+            }
+
             p.sawToolCall.set(candidateIndex, true);
             // Indices count calls across the whole stream, not within one chunk (da21f1e5).
             const functionCallIndex = p.functionIndex.get(candidateIndex) ?? 0;
             p.functionIndex.set(candidateIndex, functionCallIndex + 1);
-            let toolCalls = delta["tool_calls"];
+            p.lastToolCallIndex.set(candidateIndex, functionCallIndex);
+            const toolCalls = toolCallsArray();
+            const fcName = restoreSanitizedToolName(p.sanitizedNameMap, rawName);
 
-            if (!isJsonArray(toolCalls)) {
-              toolCalls = [];
-              delta["tool_calls"] = toolCalls;
-            }
-
-            const fcName = restoreSanitizedToolName(
-              p.sanitizedNameMap,
-              asString(get(functionCall, "name")),
-            );
-
+            // Omitted arguments are an empty object (dd866f6c).
             const call: JsonObject = {
               id: functionCallId(fcName, get(functionCall, "id")),
               index: functionCallIndex,
               type: "function",
-              function: { name: fcName, arguments: "" },
+              function: {
+                name: fcName,
+                arguments: args === undefined ? "{}" : JSON.stringify(args),
+              },
             };
 
-            const args = get(functionCall, "args");
-
-            if (args !== undefined)
-              // SAFETY: `call` was built just above with `function` set to an object literal.
-              (call["function"] as JsonObject)["arguments"] = JSON.stringify(args);
+            if (thoughtSignature !== "") setToolSignature(call, thoughtSignature);
             setAssistantRole();
             toolCalls.push(call);
           } else if (inlineData !== undefined) {
+            p.lastToolCallIndex.delete(candidateIndex);
+
+            // Thinking draft images are not part of the answer (6684f3b5).
+            if (asBool(get(part, "thought"))) {
+              sawNoopPart = true;
+              continue;
+            }
+
             const imageUrl = inlineImageUrl(inlineData);
 
-            if (imageUrl === undefined) continue;
+            if (imageUrl === undefined) {
+              sawNoopPart = true;
+              continue;
+            }
+
             let images = delta["images"];
 
             if (!isJsonArray(images)) {
@@ -317,18 +463,35 @@ export const convertGeminiResponseToOpenAI = (
         if (hasText) delta["content"] = text;
 
         if (hasReasoning) delta["reasoning_content"] = reasoning;
+        hasNonEmptyDelta =
+          text !== "" ||
+          reasoning !== "" ||
+          isJsonArray(delta["tool_calls"]) ||
+          isJsonArray(delta["images"]);
       }
 
       const upstream = p.upstreamFinishReason.get(candidateIndex) ?? "";
       const sawToolCall = p.sawToolCall.get(candidateIndex) === true;
 
-      if (upstream !== "" && exists(root, "usageMetadata")) {
+      if (
+        p.sawFinishReason.get(candidateIndex) !== true &&
+        upstream !== "" &&
+        usage !== undefined
+      ) {
         p.sawFinishReason.set(candidateIndex, true);
         const reasons = resolveFinishReason(upstream, sawToolCall);
-        choice["finish_reason"] = reasons.finishReason;
-        choice["native_finish_reason"] = reasons.nativeFinishReason;
+
+        // The payload goes first and the finish in a chunk of its own (8cd6817b).
+        if (hasNonEmptyDelta) responses.push(JSON.stringify(template));
+        responses.push(terminalChunk(p, candidateIndex, reasons, usage));
+        continue;
       }
 
+      if (p.sawFinishReason.get(candidateIndex) === true && !hasNonEmptyDelta) continue;
+
+      if (sawNoopPart && !assistantRoleSet && usage === undefined) continue;
+
+      if (usage !== undefined) usageFields(usage, template);
       responses.push(JSON.stringify(template));
     }
   } else if (usage !== undefined) {
@@ -338,13 +501,11 @@ export const convertGeminiResponseToOpenAI = (
     if (upstream !== "" && p.sawFinishReason.get(0) !== true) {
       p.sawFinishReason.set(0, true);
       const reasons = resolveFinishReason(upstream, p.sawToolCall.get(0) === true);
-      // SAFETY: `base` is a fresh `baseChunk()`, whose `choices` is a one-element array of objects.
-      const choice = (base["choices"] as JsonObject[])[0] as JsonObject;
-      choice["finish_reason"] = reasons.finishReason;
-      choice["native_finish_reason"] = reasons.nativeFinishReason;
+      responses.push(terminalChunk(p, 0, reasons, usage));
+    } else if (p.sawFinishReason.get(0) !== true) {
+      usageFields(usage, base);
+      responses.push(JSON.stringify(base));
     }
-
-    responses.push(JSON.stringify(base));
   }
 
   return responses;
@@ -355,7 +516,7 @@ export const convertGeminiResponseToOpenAINonStream = (
   body: string,
 ): string => {
   const root = tryParseJson(body);
-  const sanitizedNameMap = sanitizedToolNameMap(context.originalRequest);
+  const sanitizedNameMap = geminiOpenAISanitizedToolNameMap(context.originalRequest);
 
   const template: JsonObject = {
     id: "",
@@ -400,9 +561,12 @@ export const convertGeminiResponseToOpenAINonStream = (
       const finishReason = get(candidate, "finishReason");
 
       if (finishReason !== undefined) {
-        choice["finish_reason"] = isContentFilterFinishReason(asString(finishReason))
-          ? "content_filter"
-          : asString(finishReason).toLowerCase();
+        choice["finish_reason"] =
+          asString(finishReason).trim().toUpperCase() === "MAX_TOKENS"
+            ? "length"
+            : isContentFilterFinishReason(asString(finishReason))
+              ? "content_filter"
+              : asString(finishReason).toLowerCase();
         choice["native_finish_reason"] = asString(finishReason).toLowerCase();
       }
 
@@ -410,7 +574,9 @@ export const convertGeminiResponseToOpenAINonStream = (
       const parts = get(candidate, "content.parts");
 
       if (isJsonArray(parts)) {
-        const toolCalls: Json[] = [];
+        const toolCalls: JsonObject[] = [];
+        // The tool call a detached signature still belongs to: text and images end it.
+        let lastToolCall: JsonObject | undefined;
         const images: Json[] = [];
         let text = "";
         let reasoning = "";
@@ -418,6 +584,11 @@ export const convertGeminiResponseToOpenAINonStream = (
         let hasReasoning = false;
 
         for (const part of parts) {
+          if (hasUnsupportedPartPayload(part, SUPPORTED_PART_FIELDS)) {
+            lastToolCall = undefined;
+            continue;
+          }
+
           let partText = get(part, "text");
           const functionCall = get(part, "functionCall");
           const inlineData = inlineDataOf(part);
@@ -433,10 +604,18 @@ export const convertGeminiResponseToOpenAINonStream = (
             functionCall !== undefined ||
             inlineData !== undefined;
 
-          // Skip pure thoughtSignature carriers but keep any payload in the same part (c5251b57).
-          if (signature !== undefined && asString(signature) !== "" && !hasContentPayload) continue;
+          // A pure thoughtSignature carrier signs the tool call it follows (91aca317).
+          if (signature !== undefined && asString(signature) !== "" && !hasContentPayload) {
+            const detached = toolThoughtSignature(signature);
+
+            if (detached !== "" && lastToolCall !== undefined)
+              setToolSignature(lastToolCall, detached);
+            continue;
+          }
 
           if (partText !== undefined) {
+            if (asString(partText) !== "") lastToolCall = undefined;
+
             if (asBool(get(part, "thought"))) {
               hasReasoning = true;
               reasoning += asString(partText);
@@ -452,19 +631,26 @@ export const convertGeminiResponseToOpenAINonStream = (
               asString(get(functionCall, "name")),
             );
 
+            const args = get(functionCall, "args");
+
             const call: JsonObject = {
               id: functionCallId(fcName, get(functionCall, "id")),
               type: "function",
-              function: { name: fcName, arguments: "" },
+              function: {
+                name: fcName,
+                arguments: args === undefined ? "{}" : JSON.stringify(args),
+              },
             };
 
-            const args = get(functionCall, "args");
+            const callSignature = toolThoughtSignature(signature);
 
-            if (args !== undefined)
-              // SAFETY: `call` was built just above with `function` set to an object literal.
-              (call["function"] as JsonObject)["arguments"] = JSON.stringify(args);
+            if (callSignature !== "") setToolSignature(call, callSignature);
             toolCalls.push(call);
+            lastToolCall = call;
           } else if (inlineData !== undefined) {
+            lastToolCall = undefined;
+
+            if (asBool(get(part, "thought"))) continue;
             const imageUrl = inlineImageUrl(inlineData);
 
             if (imageUrl !== undefined) {
