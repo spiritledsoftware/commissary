@@ -59,7 +59,8 @@ export const sanitizeAliases = (aliases: ReadonlyArray<OAuthModelAlias>): OAuthM
     const name = entry.name.trim();
     const alias = entry.alias.trim();
 
-    if (name === "" || alias === "" || name.toLowerCase() === alias.toLowerCase()) continue;
+    // Only an alias spelled exactly like its model is dropped; a case-only alias is kept (34d8fe0f).
+    if (name === "" || alias === "" || name === alias) continue;
     const key = alias.toLowerCase();
 
     if (seen.has(key)) continue;

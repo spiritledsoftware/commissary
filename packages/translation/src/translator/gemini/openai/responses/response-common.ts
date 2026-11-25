@@ -405,3 +405,58 @@ export const pendingIdentityError = (st: EvidenceState): string | undefined => {
 
   return undefined;
 };
+
+/**
+ * `imageOutputFormat`: the Responses `image_generation_call` output format of a Gemini inline image (0f8c40e1);
+ * `undefined` for a MIME type that is not an image Responses reports (audio, video, PDF, ...).
+ */
+export const imageOutputFormat = (mimeType: string): string | undefined => {
+  switch (mimeType.trim().toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+    case "jpeg":
+    case "jpg":
+      return "jpeg";
+    case "image/webp":
+    case "webp":
+      return "webp";
+    case "image/gif":
+    case "gif":
+      return "gif";
+    case "image/png":
+    case "png":
+    case "":
+      return "png";
+    default:
+      return undefined;
+  }
+};
+
+/** A Gemini part's inline image as an `image_generation_call` result and format, or why it is not one. */
+export type InlineImage =
+  | { readonly kind: "image"; readonly data: string; readonly outputFormat: string }
+  | { readonly kind: "skip" }
+  | { readonly kind: "not-image" };
+
+/**
+ * The inline data of a part, when it has some: a thought (draft) image or an empty one is skipped, a non-image MIME
+ * type is not an image.
+ */
+export const geminiInlineImage = (part: Json): InlineImage | undefined => {
+  const inline = get(part, "inlineData") ?? get(part, "inline_data");
+
+  if (inline === undefined) return undefined;
+
+  if (asBool(get(part, "thought"))) return { kind: "skip" };
+  const data = asString(get(inline, "data"));
+
+  if (data === "") return { kind: "skip" };
+  let mimeType = asString(get(inline, "mimeType"));
+
+  if (mimeType === "") mimeType = asString(get(inline, "mime_type"));
+
+  if (mimeType === "") mimeType = "image/png";
+  const outputFormat = imageOutputFormat(mimeType);
+
+  return outputFormat === undefined ? { kind: "not-image" } : { kind: "image", data, outputFormat };
+};

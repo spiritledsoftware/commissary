@@ -18,8 +18,10 @@ import {
   firstNonEmptyStringAt,
   geminiPartFunctionCall,
   geminiPartFunctionResponse,
+  geminiPartsHaveFunctionResponse,
   normalizeGeminiTurnRole,
 } from "../../common/gemini-parts.ts";
+import { inlineDataAsDataUrl } from "../../common/file-data.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { getStr, isArr, isObj, raw, str } from "../common/read.ts";
 
@@ -130,7 +132,101 @@ const openAIContentPartFromGeminiInlineData = (part: Json): JsonObject | undefin
 
   if (lower.startsWith("video/")) return { type: "video_url", video_url: { url: dataUrl } };
 
-  return { type: "file", file: { filename: openAIFileNameFromMime(mimeType), file_data: data } };
+  return {
+    type: "file",
+    file: {
+      filename: openAIFileNameFromMime(mimeType),
+      file_data: inlineDataAsDataUrl(mimeType, data),
+    },
+  };
+};
+
+/** Media a Gemini function response returned, relayed in a user message after the tool messages (34d8fe0f). */
+interface ToolRelayGroup {
+  readonly toolName: string;
+  readonly callId: string;
+  readonly items: ReadonlyArray<JsonObject>;
+}
+
+/** `classifyGeminiRelayedToolMedia`. */
+const classifyRelayedMedia = (items: ReadonlyArray<Json>) => {
+  let hasImage = false;
+  let hasFile = false;
+
+  for (const item of items) {
+    const type = getStr(item, "type");
+
+    if (type === "image_url") hasImage = true;
+    else if (type === "file" || type === "input_audio" || type === "video_url") hasFile = true;
+  }
+
+  return { hasImage, hasFile };
+};
+
+/** `geminiToolResultRelayPlaceholder`: the tool message's text when the media is all it returned. */
+const toolResultRelayPlaceholder = (items: ReadonlyArray<Json>): string => {
+  const { hasImage, hasFile } = classifyRelayedMedia(items);
+
+  if (hasFile && !hasImage)
+    return "[Tool returned document content; the documents follow in the next user message.]";
+
+  if (hasFile)
+    return "[Tool returned media content; the attachments follow in the next user message.]";
+
+  return "[Tool returned image content; the images follow in the next user message.]";
+};
+
+/** `geminiToolResultRelayMediaKind`. */
+const relayMediaKind = (items: ReadonlyArray<Json>): string => {
+  const { hasImage, hasFile } = classifyRelayedMedia(items);
+
+  if (hasFile && !hasImage) return "Documents";
+
+  return hasFile ? "Media" : "Images";
+};
+
+/** `isEmptyGeminiOpenAIResponseValue`. */
+const isEmptyResponseValue = (value: Json | undefined): boolean =>
+  value === undefined || (isObj(value) && Object.keys(value).length === 0);
+
+/** `formatGeminiToolRelayGroupLabel`. */
+const relayGroupLabel = (toolName: string, callId: string): string => {
+  if (toolName !== "" && callId !== "") return `Tool ${toolName} (${callId}):`;
+
+  if (toolName !== "") return `Tool ${toolName}:`;
+
+  return callId !== "" ? `Tool call ${callId}:` : "Tool:";
+};
+
+/** `geminiToolResultRelaySingleNoticeText`. */
+const relaySingleNoticeText = (group: ToolRelayGroup): string => {
+  const kind = relayMediaKind(group.items);
+
+  if (group.toolName !== "" && group.callId !== "")
+    return `${kind} returned by tool ${group.toolName} (${group.callId}):`;
+
+  if (group.toolName !== "") return `${kind} returned by tool ${group.toolName}:`;
+
+  if (group.callId !== "") return `${kind} returned by tool call ${group.callId}:`;
+
+  return `${kind} returned by the preceding tool call(s):`;
+};
+
+/** `buildOpenAIGeminiToolRelayItems`: a notice, then each group's media (labelled when there are several groups). */
+const toolRelayItems = (groups: ReadonlyArray<ToolRelayGroup>): JsonObject[] => {
+  const [first] = groups;
+
+  if (groups.length === 1 && first !== undefined)
+    return [{ type: "text", text: relaySingleNoticeText(first) }, ...first.items];
+  const allItems = groups.flatMap((group) => group.items);
+
+  return [
+    { type: "text", text: `${relayMediaKind(allItems)} returned by the preceding tool call(s):` },
+    ...groups.flatMap((group) => [
+      { type: "text", text: relayGroupLabel(group.toolName, group.callId) },
+      ...group.items,
+    ]),
+  ];
 };
 
 const openAIContentPartFromGeminiFileData = (part: Json): JsonObject | undefined => {
@@ -275,15 +371,53 @@ export const convertGeminiRequestToOpenAI = (
   if (isArr(contents)) {
     let msgIdx = 0;
     let previousRole = "";
+    // OpenAI tool messages cannot carry media, and parallel tool messages must stay contiguous: media a function
+    // response returned, and user content between the responses of one batch, wait for the batch to end (34d8fe0f).
+    let pendingTurnCallCount = 0;
+    let pendingToolRelayMedia: ToolRelayGroup[] = [];
+    let pendingUserContentItems: Json[] = [];
+    let pendingUserText = "";
+    let pendingUserOnlyText = true;
+
+    const resetPending = (): void => {
+      pendingToolRelayMedia = [];
+      pendingUserContentItems = [];
+      pendingUserText = "";
+      pendingUserOnlyText = true;
+    };
+
+    const hasPending = (): boolean =>
+      pendingToolRelayMedia.length > 0 || pendingUserContentItems.length > 0;
+
+    const flushPendingUserAndRelay = (): void => {
+      if (!hasPending()) return;
+      let relayContent: Json;
+
+      if (pendingToolRelayMedia.length > 0)
+        relayContent = [...toolRelayItems(pendingToolRelayMedia), ...pendingUserContentItems];
+      else if (pendingUserOnlyText) relayContent = pendingUserText;
+      else relayContent = pendingUserContentItems;
+      messageItems.push({ role: "user", content: relayContent });
+      resetPending();
+    };
 
     for (const content of contents) {
       const parts = get(content, "parts");
       const role = normalizeGeminiTurnRole(getStr(content, "role"), parts, previousRole);
       previousRole = role;
+      const hasTurnFR = geminiPartsHaveFunctionResponse(parts);
+
+      if (!hasTurnFR && hasPending()) {
+        pendingTurnCallCount = 0;
+
+        if (role !== "user") flushPendingUserAndRelay();
+      }
+
+      if (role === "assistant" && !hasTurnFR) pendingTurnCallCount = 0;
 
       const msg: JsonObject = { role, content: "" };
       let text = "";
-      const contentItems: Json[] = [];
+      let contentItems: Json[] = [];
       let onlyTextContent = true;
       const toolCallItems: Json[] = [];
       let droppedThought = false;
@@ -354,21 +488,58 @@ export const convertGeminiRequestToOpenAI = (
             if (thoughtSignature !== "")
               toolCall.extra_content = { google: { thought_signature: thoughtSignature } };
             toolCallItems.push(toolCall);
+            pendingTurnCallCount++;
           }
 
           const functionResponse = geminiPartFunctionResponse(part);
 
           if (functionResponse !== undefined) {
+            if (pendingTurnCallCount > 0) pendingTurnCallCount--;
             const funcName = getStr(functionResponse, "name");
             const toolMsg: JsonObject = { role: "tool", tool_call_id: "", content: "" };
             let responseRaw = "";
+            let responseNonEmpty = false;
             const response = get(functionResponse, "response");
 
             if (response !== undefined) {
               const contentField = get(response, "content");
               responseRaw = contentField !== undefined ? raw(contentField) : raw(response);
-              toolMsg.content = responseRaw;
+              responseNonEmpty = !isEmptyResponseValue(contentField ?? response);
             }
+
+            // The response's own parts: text joins the tool message, media is relayed after the batch.
+            const frTextParts: string[] = [];
+            const thisResponseMedia: JsonObject[] = [];
+            const frParts = get(functionResponse, "parts");
+
+            for (const nested of isArr(frParts) ? frParts : []) {
+              const nestedText = get(nested, "text");
+
+              if (nestedText !== undefined) {
+                if (str(nestedText).trim() !== "") frTextParts.push(str(nestedText));
+                continue;
+              }
+
+              const media =
+                openAIContentPartFromGeminiInlineData(nested) ??
+                openAIContentPartFromGeminiFileData(nested);
+
+              if (media !== undefined) thisResponseMedia.push(media);
+            }
+
+            let toolContent = responseRaw;
+
+            if (thisResponseMedia.length > 0 || frTextParts.length > 0) {
+              const joined = [...(responseNonEmpty ? [responseRaw] : []), ...frTextParts].join(
+                "\n\n",
+              );
+
+              if (joined.trim() !== "") toolContent = joined;
+              else if (thisResponseMedia.length > 0)
+                toolContent = toolResultRelayPlaceholder(thisResponseMedia);
+            }
+
+            if (toolContent !== "" || response !== undefined) toolMsg.content = toolContent;
 
             const explicitId = explicitGeminiToolId(functionResponse);
             const queue = toolCallIdsByName.get(funcName);
@@ -394,9 +565,50 @@ export const convertGeminiRequestToOpenAI = (
               );
             }
 
+            if (thisResponseMedia.length > 0) {
+              pendingToolRelayMedia.push({
+                toolName: funcName,
+                callId: str(toolMsg.tool_call_id),
+                items: thisResponseMedia,
+              });
+            }
+
             messageItems.push(toolMsg);
             hasFunctionResponse = true;
           }
+        }
+      }
+
+      if (hasTurnFR && pendingTurnCallCount > 0) {
+        // More responses of this batch are still to come: hold this turn's user content.
+        if (role === "user" && contentItems.length > 0) {
+          pendingUserContentItems.push(...contentItems);
+          pendingUserText += text;
+          pendingUserOnlyText = pendingUserOnlyText && onlyTextContent;
+          contentItems = [];
+          text = "";
+        }
+      } else if (hasPending()) {
+        if (role === "user" && contentItems.length > 0) {
+          const prefixItems: Json[] = [];
+
+          if (pendingToolRelayMedia.length > 0) {
+            prefixItems.push(...toolRelayItems(pendingToolRelayMedia));
+            onlyTextContent = false;
+          }
+
+          if (pendingUserContentItems.length > 0) {
+            prefixItems.push(...pendingUserContentItems);
+
+            if (pendingToolRelayMedia.length === 0 && pendingUserOnlyText && onlyTextContent)
+              text = pendingUserText + text;
+            else onlyTextContent = false;
+          }
+
+          contentItems = [...prefixItems, ...contentItems];
+          resetPending();
+        } else {
+          flushPendingUserAndRelay();
         }
       }
 
@@ -416,6 +628,8 @@ export const convertGeminiRequestToOpenAI = (
       messageItems.push(msg);
       msgIdx++;
     }
+
+    flushPendingUserAndRelay();
   }
 
   if (messageItems.length > 0) out.messages = messageItems;

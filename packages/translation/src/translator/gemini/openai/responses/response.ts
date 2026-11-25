@@ -5,6 +5,7 @@
  * (ConvertGeminiResponseToOpenAIResponses). The Go closures over `st`/`out` are kept as closures; SSE frames are
  * `event: <type>\ndata: <json>\n\n` strings. Generated ids use the wall clock (see response-common.ts).
  */
+import { sha256Hex } from "../../../../hash.ts";
 import {
   asBool,
   asInt,
@@ -43,6 +44,7 @@ import {
   echoRequestFields,
   type EvidenceState,
   finishApplyPatchArguments,
+  geminiInlineImage,
   mergeUsage,
   newResponseId,
   newStreamCallId,
@@ -102,6 +104,12 @@ interface CompletedReasoning {
   text: string;
 }
 
+interface CompletedImage {
+  id: string;
+  outputFormat: string;
+  result: string;
+}
+
 interface BufferedPart {
   partIndex: number;
   text: string;
@@ -135,6 +143,9 @@ interface StreamState extends EvidenceState {
   detachedReasoning: Map<number, DetachedReasoning>;
   completedMessages: Map<number, CompletedMessage>;
   completedReasoning: Map<number, CompletedReasoning>;
+  completedImages: Map<number, CompletedImage>;
+  /** Per logical part, the hash of the last image it streamed: a repeated image is not emitted twice. */
+  lastImageHashByPart: Map<number, string>;
   seenReasoningSignatures: Set<string>;
   lastSemanticKind: string;
   hiddenTextSignatures: Map<string, string[]>;
@@ -203,6 +214,8 @@ const newState = (
   detachedReasoning: new Map(),
   completedMessages: new Map(),
   completedReasoning: new Map(),
+  completedImages: new Map(),
+  lastImageHashByPart: new Map(),
   seenReasoningSignatures: new Set(),
   lastSemanticKind: "",
   hiddenTextSignatures: new Map(),
@@ -1205,6 +1218,56 @@ export const convertGeminiResponseToOpenAIResponses = (
       return true;
     }
 
+    // An inline image is an image_generation_call output item (0f8c40e1); thought (draft) images are left out.
+    const image = geminiInlineImage(part);
+
+    if (image !== undefined) {
+      if (image.kind !== "image") return true;
+      const hash = sha256Hex(image.data);
+
+      if (st.lastImageHashByPart.get(currentPartIndex) === hash) return true;
+      st.lastImageHashByPart.set(currentPartIndex, hash);
+      finalizeReasoning();
+      finalizeWebSearch();
+
+      if (st.webSearchBufferedDeltas.length > 0) flushWebSearchBufferedText();
+      finalizeMessage();
+      const idx = st.nextIndex;
+      st.nextIndex++;
+      const itemId = `ig_${st.responseId}_${idx}`;
+      emit("response.output_item.added", {
+        type: "response.output_item.added",
+        sequence_number: nextSeq(),
+        output_index: idx,
+        item: {
+          id: itemId,
+          type: "image_generation_call",
+          status: "in_progress",
+          output_format: image.outputFormat,
+          result: "",
+        },
+      });
+      emit("response.output_item.done", {
+        type: "response.output_item.done",
+        sequence_number: nextSeq(),
+        output_index: idx,
+        item: {
+          id: itemId,
+          type: "image_generation_call",
+          status: "completed",
+          output_format: image.outputFormat,
+          result: image.data,
+        },
+      });
+      st.completedImages.set(idx, {
+        id: itemId,
+        outputFormat: image.outputFormat,
+        result: image.data,
+      });
+
+      return true;
+    }
+
     // Function call.
     if (functionCall === undefined) return true;
     // Finalize reasoning, web search and the open message before emitting function-call outputs: Responses streaming
@@ -1602,6 +1665,19 @@ export const convertGeminiResponseToOpenAIResponses = (
           type: "reasoning",
           encrypted_content: completedReasoning.signature,
           summary: [{ type: "summary_text", text: completedReasoning.text }],
+        });
+        continue;
+      }
+
+      const completedImage = st.completedImages.get(idx);
+
+      if (completedImage !== undefined) {
+        outputs.push({
+          id: completedImage.id,
+          type: "image_generation_call",
+          status: "completed",
+          output_format: completedImage.outputFormat,
+          result: completedImage.result,
         });
         continue;
       }

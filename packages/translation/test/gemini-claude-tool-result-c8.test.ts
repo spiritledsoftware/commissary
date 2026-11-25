@@ -1,5 +1,5 @@
 // Claude tool_result -> Gemini functionResponse: error semantics (ticket C8; upstream 81de4b9c) and images nested in
-// functionResponse.parts (be864305). Expected values come from the Go tests of those commits
+// functionResponse.parts (be864305), base64 documents with them (e1384430). Expected values come from the Go tests of those commits
 // (gemini_claude_tool_result_error_test.go, gemini_claude_request_test.go, claude_tool_result_test.go).
 import { describe, expect, it } from "vite-plus/test";
 import { get, type Json } from "@commissary/json";
@@ -7,7 +7,10 @@ import {
   convertClaudeRequestToGemini,
   convertClaudeRequestToGeminiWithCompat,
 } from "../src/translator/gemini/claude/request.ts";
-import { convertClaudeToolResult } from "../src/translator/gemini/util/claude.ts";
+import {
+  convertClaudeToolResult,
+  convertClaudeToolResultContent,
+} from "../src/translator/gemini/util/claude.ts";
 
 const PNG = {
   type: "image",
@@ -225,5 +228,81 @@ describe("Claude tool_result images nest in functionResponse.parts", () => {
       { inlineData: { mimeType: "image/jpeg", data: "DATA_B1" } },
       { inlineData: { mimeType: "image/webp", data: "DATA_B2" } },
     ]);
+  });
+});
+
+// Go: util/claude_tool_result_test.go and gemini_claude_request_test.go at e1384430.
+describe("Claude tool_result base64 documents", () => {
+  const PDF = {
+    type: "document",
+    source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" },
+  };
+
+  const PDF_PART = { inlineData: { mimeType: "application/pdf", data: "JVBERi0xLjQK" } };
+
+  it.each<[string, Json, Json, boolean, number]>([
+    [
+      "TextAndDocument",
+      [{ type: "text", text: "alpha" }, PDF],
+      { type: "text", text: "alpha" },
+      true,
+      1,
+    ],
+    ["DocumentOnly", [PDF], "", false, 1],
+    ["ObjectDocument", PDF, "", false, 1],
+    [
+      "DocumentWithoutDataDropped",
+      [{ type: "document", source: { type: "base64", media_type: "application/pdf" } }],
+      "",
+      false,
+      0,
+    ],
+    [
+      "DocumentWithoutMediaTypeDropped",
+      [{ type: "document", source: { type: "base64", data: "JVBERi0xLjQK" } }],
+      "",
+      false,
+      0,
+    ],
+  ])("%s", (_name, content, result, resultIsRaw, images) => {
+    const got = convertClaudeToolResultContent(content);
+
+    expect(got.result).toEqual(result);
+    expect(got.resultIsRaw).toBe(resultIsRaw);
+    expect(got.images).toHaveLength(images);
+  });
+
+  it.each<[string, Json, Json]>([
+    [
+      "array text and pdf document",
+      [{ type: "text", text: "Loaded sample.pdf" }, PDF],
+      { type: "text", text: "Loaded sample.pdf" },
+    ],
+    ["array pdf document only", [PDF], ""],
+    ["object pdf document", PDF, ""],
+  ])("%s nests the PDF in functionResponse.parts", (_name, content, result) => {
+    const out = convertClaudeRequestToGemini(
+      "gemini-3.1-pro-preview",
+      {
+        model: "gemini-3.1-pro-preview",
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "call_pdf", name: "read_file", input: {} }],
+          },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "call_pdf", content }],
+          },
+        ],
+      },
+      false,
+    );
+
+    const fr = get(out, "contents.1.parts.0.functionResponse");
+
+    expect(get(fr, "parts")).toEqual([PDF_PART]);
+    expect(get(fr, "response.result")).toEqual(result);
+    expect(JSON.stringify(get(fr, "response"))).not.toContain("JVBERi0xLjQK");
   });
 });

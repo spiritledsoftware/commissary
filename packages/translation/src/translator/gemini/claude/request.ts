@@ -28,9 +28,19 @@ import {
   claudeMessageSystemReminderText,
   isClaudeCodeAttributionSystemText,
 } from "../../common/claude-messages.ts";
+import {
+  claudeDocumentTextBlock,
+  expandClaudeContentDocument,
+} from "../../common/claude-documents.ts";
+import {
+  claudeMaxTokens,
+  claudeOutputJsonSchema,
+  claudeStopSequences,
+} from "../../common/request.ts";
 import { convertClaudeToolResult, sanitizeFunctionName } from "../util/claude.ts";
 import { cleanJsonSchemaForGeminiJsonSchema } from "../util/json-schema.ts";
 import { lookupModelInfo } from "../../model-info.ts";
+import { geminiClaudeCarrierSignatures } from "./signature-carrier.ts";
 
 const GEMINI_CLAUDE_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 
@@ -122,23 +132,45 @@ const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: 
 
       if (isJsonArray(content)) {
         if (originalRole === "user") content = alignClaudeToolResults(content, precedingToolUseIds);
+        // Signatures that rode thinking carrier blocks go back onto their native parts (91aca317).
 
-        for (const block of content) {
+        const carrierSignatures =
+          originalRole === "assistant" ? geminiClaudeCarrierSignatures(content) : undefined;
+
+        for (const [blockIndex, block] of content.entries()) {
+          const carrierSignature = carrierSignatures?.get(blockIndex) ?? "";
+
+          const signedTextPart = (text: string): JsonObject =>
+            carrierSignature === "" ? textPart(text) : { text, thoughtSignature: carrierSignature };
+
           switch (asString(get(block, "type"))) {
             case "text": {
               const text = asString(get(block, "text"));
 
               if (text === "") break;
-              partItems.push(textPart(text));
+              partItems.push(signedTextPart(text));
               break;
             }
 
             case "thinking": {
+              // A signature-only carrier: its signature went to its part, or here when it stands alone.
+              if (
+                asString(get(block, "thinking")) === "" &&
+                asString(get(block, "signature")).trim() !== ""
+              ) {
+                if (carrierSignature !== "")
+                  partItems.push({ text: "", thought: true, thoughtSignature: carrierSignature });
+                break;
+              }
+
               if (!preserveEmptyThinkingBlocks) break;
               partItems.push({
                 text: asString(get(block, "thinking")),
                 thought: true,
-                thoughtSignature: geminiReplaySignatureOrBypass(asString(get(block, "signature"))),
+                thoughtSignature:
+                  carrierSignature === ""
+                    ? geminiReplaySignatureOrBypass(asString(get(block, "signature")))
+                    : carrierSignature,
               });
               break;
             }
@@ -150,15 +182,26 @@ const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: 
               if (toolUseId !== "" && functionName !== "")
                 toolNameById.set(toolUseId, functionName);
               functionName = sanitizeFunctionName(functionName);
-              // `input.String()` of a string value is the text itself, which is accepted when it is a JSON object.
+              // `input.String()` of a string value is the text itself, which is accepted when it is a JSON object;
+              // an omitted (or null, or empty) input is a parameterless call's `{}` (2b7af40e).
               const rawInput = get(block, "input");
-              const input = typeof rawInput === "string" ? tryParseJson(rawInput) : rawInput;
+
+              const input =
+                rawInput === undefined || rawInput === null || rawInput === ""
+                  ? {}
+                  : typeof rawInput === "string"
+                    ? tryParseJson(rawInput)
+                    : rawInput;
 
               if (isJsonObject(input)) {
                 const functionCall: JsonObject = { name: functionName, args: input };
 
                 if (toolUseId !== "") functionCall["id"] = toolUseId;
-                partItems.push({ thoughtSignature: GEMINI_CLAUDE_THOUGHT_SIGNATURE, functionCall });
+                partItems.push({
+                  thoughtSignature:
+                    carrierSignature === "" ? GEMINI_CLAUDE_THOUGHT_SIGNATURE : carrierSignature,
+                  functionCall,
+                });
 
                 if (originalRole === "assistant") pendingToolUseIds.push(toolUseId);
               }
@@ -204,8 +247,37 @@ const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: 
               break;
             }
 
+            case "document": {
+              // A text document, or one of content blocks, becomes text (and images) (e21cf8a5).
+              const emitText = (text: string): void => {
+                partItems.push(signedTextPart(text));
+              };
+
+              const docText = claudeDocumentTextBlock(block);
+
+              if (docText !== undefined) {
+                emitText(docText);
+                break;
+              }
+
+              if (
+                expandClaudeContentDocument(
+                  block,
+                  emitText,
+                  (image) => claudeBase64InlineData(get(image, "source")),
+                  (part) => partItems.push(part),
+                  originalRole === "user" ? () => drops.drop("image") : undefined,
+                )
+              )
+                break;
+              const part = claudeBase64InlineData(get(block, "source"));
+
+              if (part !== undefined) partItems.push(part);
+              else if (originalRole === "user") drops.drop("document");
+              break;
+            }
+
             case "image":
-            case "document":
             case "container_upload": {
               const part = claudeBase64InlineData(get(block, "source"));
 
@@ -365,6 +437,19 @@ const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: 
   const topK = get(request, "top_k");
 
   if (isNumber(topK)) generationConfig["topK"] = topK;
+  // Claude's generation constraints carry over (32842348, ac415c08, 62c419e0).
+  const maxTokens = claudeMaxTokens(get(request, "max_tokens"));
+
+  if (maxTokens !== undefined) generationConfig["maxOutputTokens"] = maxTokens;
+  const stopSequences = claudeStopSequences(get(request, "stop_sequences"));
+
+  if (stopSequences !== undefined) generationConfig["stopSequences"] = stopSequences;
+  const schema = claudeOutputJsonSchema(get(request, "output_config.format"));
+
+  if (schema !== undefined) {
+    generationConfig["responseMimeType"] = "application/json";
+    generationConfig["responseJsonSchema"] = structuredClone(schema);
+  }
 
   if (Object.keys(generationConfig).length > 0) out["generationConfig"] = generationConfig;
 

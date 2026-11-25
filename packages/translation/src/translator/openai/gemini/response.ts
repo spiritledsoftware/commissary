@@ -282,21 +282,101 @@ export const parseArgsToObject = (argsStr: string): JsonObject => {
   return Object.keys(tolerant).length > 0 ? tolerant : {};
 };
 
-/** `extractReasoningTexts`. */
+/** `extractReasoningTexts`: the non-empty reasoning texts of a string, `{text}`, `reasoning.summary` or a list. */
 const extractReasoningTexts = (node: Json | undefined): string[] => {
   if (node === undefined) return [];
 
   if (isArr(node)) return node.flatMap(extractReasoningTexts);
 
-  if (typeof node === "string") return [node];
+  if (typeof node === "string") return node === "" ? [] : [node];
 
   if (isJsonObject(node)) {
     const text = node.text;
 
-    if (text !== undefined) return [str(text)];
+    if (typeof text === "string") return text === "" ? [] : [text];
+
+    if (str(node.type) === "reasoning.summary") {
+      const summary = node.summary;
+
+      return typeof summary === "string" && summary !== "" ? [summary] : [];
+    }
   }
 
   return [];
+};
+
+/**
+ * `collectOpenAIObjectReasoningTexts`: the reasoning texts of a message or delta, from the first of
+ * `reasoning_content`, `reasoning` and `reasoning_details` that has any (2fbac976).
+ */
+const collectReasoningTexts = (obj: Json | undefined): string[] => {
+  if (obj === undefined) return [];
+
+  for (const path of ["reasoning_content", "reasoning", "reasoning_details"]) {
+    const texts = extractReasoningTexts(get(obj, path));
+
+    if (texts.length > 0) return texts;
+  }
+
+  return [];
+};
+
+/** `extractOpenAIContentPartThinkingText`. */
+const contentPartThinkingText = (part: Json): string => {
+  for (const field of ["thinking", "reasoning", "reasoning_content", "text"]) {
+    const texts = extractReasoningTexts(get(part, field));
+
+    if (texts.length > 0) return texts.join("");
+  }
+
+  return "";
+};
+
+/**
+ * `forEachOpenAIContentSegment`: a message's `content`, a string or an array of parts, as visible text and inline
+ * reasoning segments in order (2fbac976).
+ */
+const forEachContentSegment = (
+  content: Json | undefined,
+  emit: (isReasoning: boolean, text: string) => void,
+): void => {
+  if (typeof content === "string") {
+    emit(false, content);
+
+    return;
+  }
+
+  if (!isArr(content)) return;
+
+  for (const part of content) {
+    if (typeof part === "string") {
+      emit(false, part);
+      continue;
+    }
+
+    const text = get(part, "text");
+
+    switch (getStr(part, "type")) {
+      case "thinking":
+      case "reasoning":
+      case "thought":
+      case "reasoning.text":
+      case "reasoning_text":
+        emit(true, contentPartThinkingText(part));
+        break;
+      case "refusal": {
+        const refusal = get(part, "refusal");
+        let refusalText = typeof refusal === "string" ? refusal : "";
+
+        if (refusalText === "" && typeof text === "string") refusalText = text;
+        emit(false, refusalText);
+        break;
+      }
+
+      default:
+        if (typeof text === "string") emit(false, text);
+    }
+  }
 };
 
 const tokenCountFromUsage = (usage: Json | undefined, ...paths: string[]): number | undefined => {
@@ -453,30 +533,27 @@ export const convertOpenAIResponseToGemini = (
     }
 
     const chunkOutputs: string[] = [];
-    const reasoning = get(delta, "reasoning_content");
 
-    if (reasoning !== undefined) {
-      for (const reasoningText of extractReasoningTexts(reasoning)) {
-        if (reasoningText === "") continue;
-
-        const t: JsonObject = JSON.parse(baseJson);
-
-        templateContent(t).parts = [{ thought: true, text: reasoningText }];
-        chunkOutputs.push(JSON.stringify(t));
-      }
-    }
-
-    const content = get(delta, "content");
-
-    if (content !== undefined && str(content) !== "") {
-      const contentText = str(content);
-      param.contentAccumulatorLength += contentText.length;
-
+    for (const reasoningText of collectReasoningTexts(delta)) {
       const t: JsonObject = JSON.parse(baseJson);
 
-      templateContent(t).parts = [{ text: contentText }];
+      templateContent(t).parts = [{ thought: true, text: reasoningText }];
       chunkOutputs.push(JSON.stringify(t));
     }
+
+    forEachContentSegment(get(delta, "content"), (isReasoning, segText) => {
+      if (segText === "") return;
+      const t: JsonObject = JSON.parse(baseJson);
+
+      if (isReasoning) {
+        templateContent(t).parts = [{ thought: true, text: segText }];
+      } else {
+        param.contentAccumulatorLength += segText.length;
+        templateContent(t).parts = [{ text: segText }];
+      }
+
+      chunkOutputs.push(JSON.stringify(t));
+    });
 
     if (chunkOutputs.length > 0) {
       results.push(...chunkOutputs);
@@ -584,48 +661,31 @@ export const convertOpenAIResponseToGeminiNonStream = (
     root = {};
   }
 
-  const { out, candidate } = newTemplate();
+  const { out } = newTemplate();
   const model = get(root, "model");
 
   if (model !== undefined) out.model = str(model);
 
-  const allParts: JsonObject[] = [];
   const choices = get(root, "choices");
 
   if (isArr(choices)) {
-    const ensurePart = (idx: number): JsonObject => {
-      while (allParts.length <= idx) allParts.push({});
+    // Each choice is a candidate of its own (20c60014).
+    const candidates: JsonObject[] = [];
 
-      return allParts[idx] ?? {};
-    };
-
-    for (const choice of choices) {
-      const choiceIdx = asInt(get(choice, "index"));
+    for (const [position, choice] of choices.entries()) {
+      const index = get(choice, "index");
+      const choiceIdx = typeof index === "number" ? asInt(index) : position;
       const message = get(choice, "message");
-      const role = get(message, "role");
+      const candidate: JsonObject = { content: { parts: [], role: "model" }, index: 0 };
+      const parts: JsonObject[] = [];
 
-      if (role !== undefined && str(role) === "assistant")
-        candidateContent(candidate).role = "model";
+      for (const reasoningText of collectReasoningTexts(message))
+        parts.push({ thought: true, text: reasoningText });
 
-      let partIndex = 0;
-      const reasoning = get(message, "reasoning_content");
-
-      if (reasoning !== undefined) {
-        for (const reasoningText of extractReasoningTexts(reasoning)) {
-          if (reasoningText === "") continue;
-          const part = ensurePart(partIndex);
-          part.thought = true;
-          part.text = reasoningText;
-          partIndex++;
-        }
-      }
-
-      const content = get(message, "content");
-
-      if (content !== undefined && str(content) !== "") {
-        ensurePart(partIndex).text = str(content);
-        partIndex++;
-      }
+      forEachContentSegment(get(message, "content"), (isReasoning, segText) => {
+        if (segText === "") return;
+        parts.push(isReasoning ? { thought: true, text: segText } : { text: segText });
+      });
 
       const toolCalls = get(message, "tool_calls");
 
@@ -639,16 +699,15 @@ export const convertOpenAIResponseToGeminiNonStream = (
           if (functionID !== "") functionCall.id = functionID;
           functionCall.name = getStr(fn, "name");
           functionCall.args = parseArgsToObject(getStr(fn, "arguments"));
-          const part = ensurePart(partIndex);
-          part.functionCall = functionCall;
-
+          const part: JsonObject = { functionCall };
           const thoughtSignature = openAIToolCallThoughtSignature(toolCall);
 
           if (thoughtSignature !== "") part.thoughtSignature = thoughtSignature;
-          partIndex++;
+          parts.push(part);
         }
       }
 
+      if (parts.length > 0) candidateContent(candidate).parts = parts;
       const finishReason = get(choice, "finish_reason");
 
       if (typeof finishReason === "string" && finishReason !== "") {
@@ -656,9 +715,10 @@ export const convertOpenAIResponseToGeminiNonStream = (
       }
 
       candidate.index = choiceIdx;
+      candidates.push(candidate);
     }
 
-    if (allParts.length > 0) candidateContent(candidate).parts = allParts;
+    if (candidates.length > 0) out.candidates = candidates;
   }
 
   const usage = get(root, "usage");

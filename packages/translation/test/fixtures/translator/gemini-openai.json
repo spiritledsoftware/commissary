@@ -675,7 +675,7 @@
   },
   "translatedRequest": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
   "responseBodyText": "{\"id\":\"x\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"reasoning_content\":\"why\",\"content\":\"The answer\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}},{\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"g\",\"arguments\":\"garbage\"}},{\"id\":\"c3\",\"type\":\"custom\",\"function\":{\"name\":\"h\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":3},\"completion_tokens_details\":{\"reasoning_tokens\":2}}}",
-  "nonStreamOutput": "{\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"why\"},{\"text\":\"The answer\"},{\"functionCall\":{\"id\":\"call_1\",\"name\":\"f\",\"args\":{\"a\":1}}},{\"functionCall\":{\"name\":\"g\",\"args\":{}}}],\"role\":\"model\"},\"index\":0,\"finishReason\":\"STOP\"}],\"model\":\"gpt-4o\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15,\"thoughtsTokenCount\":2,\"cachedContentTokenCount\":3}}"
+  "nonStreamOutput": "{\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"why\"},{\"text\":\"The answer\"},{\"functionCall\":{\"name\":\"f\",\"id\":\"call_1\",\"args\":{\"a\":1}}},{\"functionCall\":{\"name\":\"g\",\"args\":{}}}],\"role\":\"model\"},\"index\":0,\"finishReason\":\"STOP\"}],\"model\":\"gpt-4o\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15,\"thoughtsTokenCount\":2,\"cachedContentTokenCount\":3}}"
  },
  {
   "name": "non-stream: two choices merge into one candidate",
@@ -718,7 +718,7 @@
   },
   "translatedRequest": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
   "responseBodyText": "{\"model\":\"m\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"first\"},\"finish_reason\":\"stop\"},{\"index\":1,\"message\":{\"role\":\"assistant\",\"content\":\"second\"},\"finish_reason\":\"length\"}]}",
-  "nonStreamOutput": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"second\"}],\"role\":\"model\"},\"index\":1,\"finishReason\":\"MAX_TOKENS\"}],\"model\":\"m\"}"
+  "nonStreamOutput": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"first\"}],\"role\":\"model\"},\"index\":0,\"finishReason\":\"STOP\"},{\"content\":{\"parts\":[{\"text\":\"second\"}],\"role\":\"model\"},\"index\":1,\"finishReason\":\"MAX_TOKENS\"}],\"model\":\"m\"}"
  },
  {
   "name": "non-stream: empty choices",

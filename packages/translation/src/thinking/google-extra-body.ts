@@ -5,7 +5,7 @@
  *
  * Go source: internal/thinking/google_extra_body.go.
  */
-import { asInt, get, isJsonObject, type Json } from "@commissary/json";
+import { asInt, get, isJsonObject, type Json, set } from "@commissary/json";
 import { autoConfig, budgetConfig, EMPTY_CONFIG, levelConfig, noneConfig } from "./types.ts";
 import type { ThinkingConfig } from "./types.ts";
 
@@ -104,4 +104,29 @@ export const extractOpenAIGoogleThinkingConfig = (body: Json | undefined): Think
   if (budget === -1) return autoConfig();
 
   return budgetConfig(budget);
+};
+
+/**
+ * `ApplyOpenAIGoogleThinkingConfigDoc`: writes the Gemini thinking fields an OpenAI Chat request carries onto `out`
+ * at `thinkingPath` (`thinkingBudget: -1` for `auto`, else `thinkingLevel`; a budget alone as `thinkingBudget`).
+ * Reports whether it wrote anything.
+ */
+export const applyOpenAIGoogleThinkingConfig = (
+  out: Json,
+  body: Json | undefined,
+  thinkingPath: string,
+): boolean => {
+  const { level, budget } = fallbackFields(body);
+
+  if (level !== undefined) {
+    if (level === "auto") set(out, `${thinkingPath}.thinkingBudget`, -1);
+    else set(out, `${thinkingPath}.thinkingLevel`, level);
+
+    return true;
+  }
+
+  if (budget === undefined) return false;
+  set(out, `${thinkingPath}.thinkingBudget`, budget);
+
+  return true;
 };

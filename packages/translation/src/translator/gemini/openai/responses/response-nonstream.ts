@@ -29,6 +29,7 @@ import {
 import {
   echoRequestFields,
   type EvidenceState,
+  geminiInlineImage,
   finishApplyPatchArguments,
   mergeUsage,
   newNonStreamCallId,
@@ -85,7 +86,7 @@ interface MessageOutput {
 }
 
 interface OutputOrder {
-  kind: "reasoning" | "message" | "function" | "detached";
+  kind: "reasoning" | "message" | "function" | "detached" | "image";
   index: number;
 }
 
@@ -157,6 +158,7 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
   const reasoningOutputs: ReasoningOutput[] = [];
   const functionOutputs: FunctionOutput[] = [];
   const messageOutputs: MessageOutput[] = [];
+  const imageOutputs: JsonObject[] = [];
   const outputOrder: OutputOrder[] = [];
   const reasoningOutputSignatures = new Set<string>();
 
@@ -293,6 +295,29 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
       return true;
     }
 
+    // An inline image is an image_generation_call output item (0f8c40e1); its signature attaches like a bare one.
+    const image = geminiInlineImage(p);
+
+    if (image !== undefined) {
+      if (image.kind === "skip") return true;
+      attachTrailingSignature(signature);
+
+      if (image.kind === "not-image") return true;
+      flushReasoningOutput();
+      flushMessageOutput();
+      const imageIndex = imageOutputs.length;
+      imageOutputs.push({
+        id: `ig_${stripResponsePrefix(id)}_${imageIndex}`,
+        type: "image_generation_call",
+        status: "completed",
+        output_format: image.outputFormat,
+        result: image.data,
+      });
+      outputOrder.push({ kind: "image", index: imageIndex });
+
+      return true;
+    }
+
     const fc = get(p, "functionCall");
 
     if (fc !== undefined) {
@@ -414,6 +439,13 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
       return true;
     }
 
+    attachTrailingSignature(signature);
+
+    return true;
+  };
+
+  /** A signature on a part without its own output: it joins the open reasoning or message, or detaches. */
+  const attachTrailingSignature = (signature: string): void => {
     if (signature !== "") {
       if (reasoningText.length > 0) {
         if (reasoningEncrypted === "") {
@@ -438,8 +470,6 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
         addDetached(signature, CARRIER_NEXT, CARRIER_ANY);
       }
     }
-
-    return true;
   };
 
   const parts = get(root, "candidates.0.content.parts");
@@ -571,6 +601,13 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
         if (functionOutput === undefined) continue;
         appendDetachedOutput(functionOutput.signature, CARRIER_NEXT, CARRIER_FUNCTION);
         outputs.push(functionOutput.item);
+        break;
+      }
+
+      case "image": {
+        const imageOutput = imageOutputs[outputItem.index];
+
+        if (imageOutput !== undefined) outputs.push(imageOutput);
         break;
       }
     }

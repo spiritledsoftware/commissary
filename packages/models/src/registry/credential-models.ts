@@ -548,8 +548,8 @@ const rewriteName = (name: string, oldId: string, newId: string): string => {
   const from = oldId.trim();
   const to = newId.trim();
 
-  if (trimmed === "" || from === "" || to === "" || from.toLowerCase() === to.toLowerCase())
-    return name;
+  // A case-only rename is a rename (34d8fe0f).
+  if (trimmed === "" || from === "" || to === "" || from === to) return name;
 
   if (trimmed.toLowerCase() === from.toLowerCase()) return to;
 
@@ -602,7 +602,8 @@ export const applyOAuthModelAliasEntries = (
     const name = entry.name.trim();
     const alias = entry.alias.trim();
 
-    if (name === "" || alias === "" || name.toLowerCase() === alias.toLowerCase()) continue;
+    // A case-only alias is kept (34d8fe0f).
+    if (name === "" || alias === "" || name === alias) continue;
     const key = name.toLowerCase();
     const list = forward.get(key) ?? [];
     list.push({
@@ -625,17 +626,18 @@ export const applyOAuthModelAliasEntries = (
     const key = id.toLowerCase();
     const entries = forward.get(key);
 
+    // Listed ids are deduplicated by exact spelling, so a case-only alias lists beside its model (34d8fe0f).
     if (entries === undefined || entries.length === 0) {
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (seen.has(id)) continue;
+      seen.add(id);
       out.push(model);
       continue;
     }
 
     const keepOriginal = entries.some((entry) => entry.fork);
 
-    if (keepOriginal && !seen.has(key)) {
-      seen.add(key);
+    if (keepOriginal && !seen.has(id)) {
+      seen.add(id);
       out.push(model);
     }
 
@@ -644,11 +646,10 @@ export const applyOAuthModelAliasEntries = (
     for (const entry of entries) {
       const mappedId = entry.alias.trim();
 
-      if (mappedId === "" || mappedId.toLowerCase() === key) continue;
-      const aliasKey = mappedId.toLowerCase();
+      if (mappedId === "" || mappedId === id) continue;
 
-      if (seen.has(aliasKey)) continue;
-      seen.add(aliasKey);
+      if (seen.has(mappedId)) continue;
+      seen.add(mappedId);
       const clone: Types.Mutable<ModelInfo> = cloneModelInfo(model);
       clone.id = mappedId;
       clone.metadataModelId =
@@ -665,8 +666,8 @@ export const applyOAuthModelAliasEntries = (
     }
 
     if (!keepOriginal && !addedAlias) {
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (seen.has(id)) continue;
+      seen.add(id);
       out.push(model);
     }
   }

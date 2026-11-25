@@ -78,11 +78,19 @@ interface AliasEntry {
 
 const equalFold = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
-/** `resolveUpstreamModelFromAliases` / `resolveModelAliasResultFromConfigModels`: first alias match wins. */
-const resolveAlias = (entries: ReadonlyArray<AliasEntry>, requested: string): AliasResult => {
+/**
+ * `resolveUpstreamModelFromAliases` / `resolveModelAliasResultFromConfigModels`: first alias match wins; `undefined`
+ * when no alias matches. An alias of the requested model itself maps nothing unless it forces the mapping. OAuth
+ * aliases compare that model name exactly, so a case-only alias maps (34d8fe0f); configured models ignore case.
+ */
+const resolveAlias = (
+  entries: ReadonlyArray<AliasEntry>,
+  requested: string,
+  sameModel: (name: string, base: string) => boolean,
+): AliasResult | undefined => {
   const { suffix, candidates } = lookupCandidates(requested);
 
-  if (candidates.length === 0 || entries.length === 0) return NO_ALIAS;
+  if (candidates.length === 0 || entries.length === 0) return undefined;
   const base = suffix.modelName === "" ? requested.trim() : suffix.modelName;
 
   for (const candidate of candidates) {
@@ -92,7 +100,7 @@ const resolveAlias = (entries: ReadonlyArray<AliasEntry>, requested: string): Al
 
       if (name === "" || alias === "" || !equalFold(alias, candidate)) continue;
 
-      if (equalFold(name, base)) {
+      if (sameModel(name, base)) {
         if (!entry.forceMapping) return NO_ALIAS;
 
         return {
@@ -110,8 +118,10 @@ const resolveAlias = (entries: ReadonlyArray<AliasEntry>, requested: string): Al
     }
   }
 
-  return NO_ALIAS;
+  return undefined;
 };
+
+const exactName = (name: string, base: string): boolean => name === base;
 
 /** `resolveModelAliasPoolFromConfigModels`: every upstream name behind the matching alias, else a name match. */
 export const resolveModelPool = (
@@ -263,14 +273,16 @@ export const resolveModelRoute = (
 
     if (excluded(routeModel, ...pool)) return undefined;
 
-    const alias = resolveAlias(
-      credential.models.map((model) => ({
-        name: model.name,
-        alias: model.alias ?? "",
-        forceMapping: model["force-mapping"] === true,
-      })),
-      routeModel,
-    );
+    const alias =
+      resolveAlias(
+        credential.models.map((model) => ({
+          name: model.name,
+          alias: model.alias ?? "",
+          forceMapping: model["force-mapping"] === true,
+        })),
+        routeModel,
+        equalFold,
+      ) ?? NO_ALIAS;
 
     return route({
       upstreamModels: pool,
@@ -283,11 +295,12 @@ export const resolveModelRoute = (
   const channel = oauthAliasChannel(credential);
   let alias = NO_ALIAS;
 
+  // A matching per-account alias decides, even when it maps nothing; only no match falls through (34d8fe0f).
   if (channel !== "") {
-    alias = resolveAlias(credential.modelAliases.map(entryOf), routeModel);
-
-    if (alias.upstreamModel === "")
-      alias = resolveAlias((context.oauthModelAlias[channel] ?? []).map(entryOf), routeModel);
+    alias =
+      resolveAlias(credential.modelAliases.map(entryOf), routeModel, exactName) ??
+      resolveAlias((context.oauthModelAlias[channel] ?? []).map(entryOf), routeModel, exactName) ??
+      NO_ALIAS;
   }
 
   const upstream = alias.upstreamModel === "" ? routeModel : alias.upstreamModel;

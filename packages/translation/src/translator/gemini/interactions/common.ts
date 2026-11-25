@@ -17,6 +17,11 @@ import {
   set,
 } from "@commissary/json";
 import { normalizeOpenAIFileData } from "../../common/file-data.ts";
+import {
+  geminiPartFunctionResponse,
+  geminiResponseHasOnlyResultKey,
+  isEmptyGeminiResponseObject,
+} from "../../common/gemini-parts.ts";
 
 /** `strings.TrimSpace` + first non-empty (returns the trimmed value). */
 export const firstNonEmptyString = (...values: string[]): string => {
@@ -359,6 +364,48 @@ export const geminiThoughtStepJson = (sig: string, text: string): JsonObject => 
   return step;
 };
 
+/**
+ * `setInteractionsResultFromGeminiFunctionResponse`: a function response with media `parts` becomes a content list
+ * (its `response` as a leading text item, a lone `result` unwrapped), relaying the media (34d8fe0f); otherwise the
+ * `response` as is. `undefined` when there is neither.
+ */
+export const interactionsResultFromGeminiFunctionResponse = (fr: Json): Json | undefined => {
+  const nestedItems: JsonObject[] = [];
+  const frParts = get(fr, "parts");
+
+  if (isJsonArray(frParts)) {
+    for (const nested of frParts) {
+      const text = get(nested, "text");
+
+      if (text !== undefined && asString(text) === "") continue;
+      const item = geminiPartToInteractionsContent(nested);
+
+      if (item !== undefined) nestedItems.push(item);
+    }
+  }
+
+  const response = get(fr, "response");
+
+  if (nestedItems.length === 0) return response;
+  const items: JsonObject[] = [];
+
+  if (!isEmptyGeminiResponseObject(response)) {
+    if (geminiResponseHasOnlyResultKey(response)) {
+      const res = get(response, "result");
+
+      if (typeof res === "string") {
+        if (res.trim() !== "") items.push({ type: "text", text: res });
+      } else {
+        items.push({ type: "text", text: JSON.stringify(res) });
+      }
+    } else {
+      items.push({ type: "text", text: JSON.stringify(response) });
+    }
+  }
+
+  return [...items, ...nestedItems];
+};
+
 /** `geminiPartToInteractionsSteps`. */
 export const geminiPartToInteractionsSteps = (part: Json): JsonObject[] => {
   const sig = interactionsThoughtSignature(part);
@@ -388,7 +435,7 @@ export const geminiPartToInteractionsSteps = (part: Json): JsonObject[] => {
     return steps;
   }
 
-  const fr = get(part, "functionResponse");
+  const fr = geminiPartFunctionResponse(part);
 
   if (fr !== undefined) {
     const step: JsonObject = {
@@ -402,9 +449,9 @@ export const geminiPartToInteractionsSteps = (part: Json): JsonObject[] => {
 
     if (id !== undefined) step["call_id"] = asString(id);
     else if (callId !== undefined) step["call_id"] = asString(callId);
-    const response = get(fr, "response");
+    const result = interactionsResultFromGeminiFunctionResponse(fr);
 
-    if (response !== undefined) step["result"] = response;
+    if (result !== undefined) step["result"] = result;
 
     return [step];
   }

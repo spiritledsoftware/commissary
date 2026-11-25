@@ -70,7 +70,7 @@ describe("applyOAuthModelAliasEntries", () => {
       [
         { name: "gpt-6-astra", alias: "codex-main", fork: true },
         { name: "gpt-5.6-luna", alias: "codex-luna" },
-        { name: "same", alias: "SAME" },
+        { name: "same", alias: "same" },
       ],
       [model("gpt-6-astra"), model("gpt-5.6-luna"), model("same")],
     );
@@ -78,6 +78,26 @@ describe("applyOAuthModelAliasEntries", () => {
     expect(ids(out)).toEqual(["gpt-6-astra", "codex-main", "codex-luna", "same"]);
     expect(out.find((entry) => entry.id === "codex-main")?.metadataModelId).toBe("gpt-6-astra");
     expect(out.find((entry) => entry.id === "codex-luna")?.metadataModelId).toBe("gpt-5.6-luna");
+  });
+
+  // Go: service_oauth_model_alias_test.go at 34d8fe0f.
+  it("lists a case-only alias, beside its model when forked", () => {
+    expect(
+      ids(
+        applyOAuthModelAliasEntries(
+          [{ name: "minimax-m3.1-flash", alias: "MiniMax-M3.1-Flash" }],
+          [model("minimax-m3.1-flash")],
+        ),
+      ),
+    ).toEqual(["MiniMax-M3.1-Flash"]);
+    expect(
+      ids(
+        applyOAuthModelAliasEntries(
+          [{ name: "minimax-m3.1-flash", alias: "MiniMax-M3.1-Flash", fork: true }],
+          [model("minimax-m3.1-flash")],
+        ),
+      ),
+    ).toEqual(["minimax-m3.1-flash", "MiniMax-M3.1-Flash"]);
   });
 });
 

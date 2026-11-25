@@ -3,8 +3,9 @@
  *
  * Go source: internal/translator/gemini/claude/gemini_claude_response.go (ConvertGeminiResponseToClaude,
  * ConvertGeminiResponseToClaudeNonStream, ClaudeTokenCount) and init.go. Tool arguments are cleaned against the client's
- * schemas (202b8b8c, e1fb2521, `../../common/claude-tool-args.ts`); MALFORMED_FUNCTION_CALL without a tool call is an
- * `api_error` the client retries (7f2f17d7).
+ * schemas (202b8b8c, e1fb2521, `../../common/claude-tool-args.ts`); MALFORMED_FUNCTION_CALL with no visible output is
+ * an `api_error` the client retries (7f2f17d7, cf07c78a). A thought signature that arrives detached from its part rides a Claude
+ * carrier block that names the part it belongs to (91aca317, `../../common/gemini-claude-carrier.ts`).
  */
 import {
   asBool,
@@ -19,6 +20,12 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
+import {
+  encodeGeminiClaudeCarrierSignature,
+  type GeminiClaudeCarrierTarget,
+} from "../../common/gemini-claude-carrier.ts";
+import { hasUnsupportedPartPayload } from "../common/parts.ts";
+import { UNSUPPORTED_SIGNATURE_TARGET } from "./signature-carrier.ts";
 import { ToolInputTracker } from "../../common/claude-tool-input.ts";
 import {
   cleanClaudeToolArgumentsWithTranslated,
@@ -43,14 +50,33 @@ interface Params {
   toolNameMap: NameMap;
   sanitizedNameMap: NameMap;
   sawToolCall: boolean;
+  /** A tool call or non-blank text reached the client (cf07c78a). */
+  hasVisibleOutput: boolean;
   hasFinalEvents: boolean;
+  /** The final events were the MALFORMED_FUNCTION_CALL error. */
+  hasMalformedError: boolean;
   finishReason: string;
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
   /** The input_json_delta bookkeeping of the open tool_use block. */
   tool: ToolInputTracker;
+  /** The kind of the last part a trailing signature belongs to, or `unsupported` after a dropped part. */
+  lastSignatureTarget: SignatureTarget;
+  /** Whether the open thinking block has text, so a signature closes it rather than standing alone. */
+  currentThinkingHasText: boolean;
 }
+
+type SignatureTarget = "" | GeminiClaudeCarrierTarget | typeof UNSUPPORTED_SIGNATURE_TARGET;
+
+/** The part fields the Claude translation carries; a part with any other payload is dropped. */
+const SUPPORTED_PART_FIELDS = ["text", "functionCall"];
+
+/** A signature for the part before the carrier, marked with that part's kind. */
+const trailingCarrierSignature = (signature: string, target: SignatureTarget): string =>
+  target === "" || target === UNSUPPORTED_SIGNATURE_TARGET
+    ? signature
+    : encodeGeminiClaudeCarrierSignature(signature, "previous", target);
 
 /** Process-wide tool_use id counter, shared by the stream and non-stream conversions (58257007). */
 let toolUseIdCounter = 0;
@@ -60,9 +86,33 @@ const MALFORMED_FUNCTION_CALL_ERROR = {
   error: { type: "api_error", message: "Gemini response finished with MALFORMED_FUNCTION_CALL" },
 } as const;
 
-/** `isGeminiMalformedFunctionCall`: a malformed call that produced no tool call is retryable, not a refusal. */
-const isMalformedFunctionCall = (finishReason: string, sawToolCall: boolean): boolean =>
-  finishReason === "MALFORMED_FUNCTION_CALL" && !sawToolCall;
+/**
+ * `isGeminiMalformedFunctionCall`: a malformed call with no visible output is retryable, not a refusal; partial text
+ * that already went out is kept (cf07c78a).
+ */
+const isMalformedFunctionCall = (finishReason: string, hasVisibleOutput: boolean): boolean =>
+  finishReason.trim().toUpperCase() === "MALFORMED_FUNCTION_CALL" && !hasVisibleOutput;
+
+const nonEmptyArray = (value: Json | undefined): boolean => isJsonArray(value) && value.length > 0;
+
+/**
+ * `isGeminiNonEmptyFunctionCall`: a function call with a name, an id, partial arguments or non-empty arguments; an
+ * empty placeholder is no call (cf07c78a).
+ */
+const isNonEmptyFunctionCall = (functionCall: Json | undefined): boolean => {
+  if (!isJsonObject(functionCall)) return false;
+
+  if (asString(get(functionCall, "name")).trim() !== "") return true;
+
+  if (asString(get(functionCall, "id")).trim() !== "") return true;
+
+  if (nonEmptyArray(get(functionCall, "partialArgs"))) return true;
+
+  if (nonEmptyArray(get(functionCall, "partial_args"))) return true;
+  const args = get(functionCall, "args");
+
+  return isJsonObject(args) && Object.keys(args).length > 0;
+};
 
 export const resolveGeminiClaudeStopReason = (
   finishReason: string,
@@ -134,12 +184,16 @@ export const convertGeminiResponseToClaude = (
       toolNameMap: toolNameMapFromClaudeRequest(context.originalRequest),
       sanitizedNameMap: sanitizedToolNameMap(context.originalRequest),
       sawToolCall: false,
+      hasVisibleOutput: false,
       hasFinalEvents: false,
+      hasMalformedError: false,
       finishReason: "",
       inputTokens: 0,
       outputTokens: 0,
       cachedTokens: 0,
       tool: new ToolInputTracker(),
+      lastSignatureTarget: "",
+      currentThinkingHasText: false,
     } satisfies Params;
   }
 
@@ -156,7 +210,9 @@ export const convertGeminiResponseToClaude = (
   };
 
   if (line === "[DONE]") {
-    if (isMalformedFunctionCall(p.finishReason, p.sawToolCall)) {
+    if (p.hasMalformedError && p.hasFinalEvents) return [];
+
+    if (isMalformedFunctionCall(p.finishReason, p.hasVisibleOutput)) {
       if (p.responseType !== 0) {
         flushPendingToolInput();
         output += blockStop(p.responseIndex);
@@ -166,6 +222,7 @@ export const convertGeminiResponseToClaude = (
       if (!p.hasFinalEvents) {
         output += event("error", MALFORMED_FUNCTION_CALL_ERROR);
         p.hasFinalEvents = true;
+        p.hasMalformedError = true;
       }
 
       return output === "" ? [] : [output];
@@ -198,7 +255,7 @@ export const convertGeminiResponseToClaude = (
   }
 
   // Everything after the error event of a malformed call is dropped.
-  if (isMalformedFunctionCall(p.finishReason, p.sawToolCall) && p.hasFinalEvents) return [];
+  if (p.hasMalformedError && p.hasFinalEvents) return [];
 
   const root = tryParseJson(line);
 
@@ -224,6 +281,12 @@ export const convertGeminiResponseToClaude = (
     p.responseIndex++;
     p.responseType = 0;
     p.hasContent = true;
+  };
+
+  /** A signature after its part: marked for that part, and dropped after a part the translation dropped. */
+  const appendTrailingCarrierThinkingBlock = (signature: string): void => {
+    if (p.lastSignatureTarget === UNSUPPORTED_SIGNATURE_TARGET) return;
+    appendCarrierThinkingBlock(trailingCarrierSignature(signature, p.lastSignatureTarget));
   };
 
   if (!p.hasFirstResponse) {
@@ -252,22 +315,37 @@ export const convertGeminiResponseToClaude = (
 
   if (isJsonArray(parts)) {
     for (const part of parts) {
+      // A part the translation drops closes the open block, and a later signature belongs to nothing.
+      if (hasUnsupportedPartPayload(part, SUPPORTED_PART_FIELDS)) {
+        if (p.responseType !== 0) {
+          flushPendingToolInput();
+          output += blockStop(p.responseIndex);
+          p.responseIndex++;
+          p.responseType = 0;
+        }
+
+        p.lastSignatureTarget = UNSUPPORTED_SIGNATURE_TARGET;
+        p.currentThinkingHasText = false;
+        continue;
+      }
+
       const partText = get(part, "text");
       const functionCall = get(part, "functionCall");
       const partSig = partSignature(part);
       const hasThoughtSignature = partSig !== "";
       const isThought = asBool(get(part, "thought"));
       const textEmpty = partText === undefined || asString(partText) === "";
+      const closesThinking = p.responseType === 2 && p.currentThinkingHasText;
 
       if (hasThoughtSignature && textEmpty && functionCall === undefined) {
-        if (p.responseType === 2) appendSignatureDelta(partSig);
-        else appendCarrierThinkingBlock(partSig);
+        if (closesThinking) appendSignatureDelta(partSig);
+        else appendTrailingCarrierThinkingBlock(partSig);
         continue;
       }
 
       if (isThought) {
         if (hasThoughtSignature && textEmpty) {
-          if (p.responseType === 2) appendSignatureDelta(partSig);
+          if (closesThinking) appendSignatureDelta(partSig);
           else appendCarrierThinkingBlock(partSig);
           continue;
         }
@@ -284,10 +362,16 @@ export const convertGeminiResponseToClaude = (
             p.responseIndex++;
           }
 
+          p.currentThinkingHasText = false;
           output += blockStart(p.responseIndex, { type: "thinking", thinking: "" });
           output += blockDelta(p.responseIndex, { type: "thinking_delta", thinking: text });
           p.responseType = 2;
           p.hasContent = true;
+        }
+
+        if (text !== "") {
+          p.currentThinkingHasText = true;
+          p.lastSignatureTarget = "text";
         }
 
         if (hasThoughtSignature) appendSignatureDelta(partSig);
@@ -295,8 +379,6 @@ export const convertGeminiResponseToClaude = (
       }
 
       if (functionCall !== undefined) {
-        p.sawToolCall = true;
-
         const upstreamToolName = restoreSanitizedToolName(
           p.sanitizedNameMap,
           asString(get(functionCall, "name")),
@@ -320,6 +402,9 @@ export const convertGeminiResponseToClaude = (
 
         if (p.responseType === 3 && upstreamToolName === "") {
           if (args !== undefined) {
+            p.sawToolCall = true;
+
+            if (isJsonObject(args) && Object.keys(args).length > 0) p.hasVisibleOutput = true;
             const partialJson = p.tool.next(cleaned(p.tool.name));
 
             if (partialJson !== undefined) {
@@ -330,9 +415,18 @@ export const convertGeminiResponseToClaude = (
             }
           }
 
-          if (hasThoughtSignature) appendCarrierThinkingBlock(partSig);
+          if (hasThoughtSignature) appendTrailingCarrierThinkingBlock(partSig);
           continue;
         }
+
+        // An empty placeholder call is no call; its signature trails the part before it (cf07c78a).
+        if (!isNonEmptyFunctionCall(functionCall)) {
+          if (hasThoughtSignature) appendTrailingCarrierThinkingBlock(partSig);
+          continue;
+        }
+
+        p.sawToolCall = true;
+        p.hasVisibleOutput = true;
 
         if (hasThoughtSignature) appendCarrierThinkingBlock(partSig);
 
@@ -374,6 +468,7 @@ export const convertGeminiResponseToClaude = (
 
         p.responseType = 3;
         p.hasContent = true;
+        p.lastSignatureTarget = "function";
         continue;
       }
 
@@ -381,7 +476,7 @@ export const convertGeminiResponseToClaude = (
         const text = asString(partText);
 
         if (hasThoughtSignature && text === "") {
-          if (p.responseType === 2) appendSignatureDelta(partSig);
+          if (closesThinking) appendSignatureDelta(partSig);
           else appendCarrierThinkingBlock(partSig);
           continue;
         }
@@ -404,6 +499,17 @@ export const convertGeminiResponseToClaude = (
           p.hasContent = true;
         }
 
+        if (text !== "") p.lastSignatureTarget = "text";
+
+        if (text.trim() !== "") p.hasVisibleOutput = true;
+
+        // A signed text part stays its own block; unsigned chunks coalesce into one (4a9effcb).
+        if (hasThoughtSignature && text !== "") {
+          output += blockStop(p.responseIndex);
+          p.responseIndex++;
+          p.responseType = 0;
+        }
+
         continue;
       }
 
@@ -411,10 +517,12 @@ export const convertGeminiResponseToClaude = (
     }
   }
 
+  // Only a non-empty string finish reason ends the stream; a null or empty one is intermediate (5ece0cde).
   const finish = get(root, "candidates.0.finishReason");
+  const hasFinishReason = typeof finish === "string" && finish.trim() !== "";
 
-  if (finish !== undefined && asString(finish) !== "") {
-    p.finishReason = asString(finish);
+  if (hasFinishReason) {
+    p.finishReason = finish;
     flushPendingToolInput();
   }
 
@@ -439,7 +547,7 @@ export const convertGeminiResponseToClaude = (
     p.cachedTokens = cachedTokens;
   }
 
-  if (isMalformedFunctionCall(p.finishReason, p.sawToolCall) && !p.hasFinalEvents) {
+  if (isMalformedFunctionCall(p.finishReason, p.hasVisibleOutput) && !p.hasFinalEvents) {
     if (p.responseType !== 0) {
       flushPendingToolInput();
       output += blockStop(p.responseIndex);
@@ -448,11 +556,12 @@ export const convertGeminiResponseToClaude = (
 
     output += event("error", MALFORMED_FUNCTION_CALL_ERROR);
     p.hasFinalEvents = true;
+    p.hasMalformedError = true;
 
     return [output];
   }
 
-  if (usage !== undefined && line.includes('"finishReason"') && !p.hasFinalEvents) {
+  if (usage !== undefined && hasFinishReason && !p.hasFinalEvents) {
     if (!p.hasContent && p.hasFirstResponse) {
       output += blockStart(p.responseIndex, { type: "text", text: "" });
       p.responseType = 1;
@@ -513,6 +622,8 @@ export const convertGeminiResponseToClaudeNonStream = (
   let thinking = "";
   let thinkingSignature = "";
   let hasToolCall = false;
+  let hasVisibleOutput = false;
+  let lastSignatureTarget: SignatureTarget = "";
   const blocks: Json[] = [];
 
   const flushText = (): void => {
@@ -537,18 +648,30 @@ export const convertGeminiResponseToClaudeNonStream = (
 
   if (isJsonArray(parts)) {
     for (const part of parts) {
+      if (hasUnsupportedPartPayload(part, SUPPORTED_PART_FIELDS)) {
+        flushThinking();
+        flushText();
+        lastSignatureTarget = UNSUPPORTED_SIGNATURE_TARGET;
+        continue;
+      }
+
       const partSig = partSignature(part);
       const partText = get(part, "text");
       const functionCall = get(part, "functionCall");
       const isThought = asBool(get(part, "thought"));
       const hasText = partText !== undefined && asString(partText) !== "";
 
-      if (isThought) {
+      // A signature-only thought part is a carrier like any other (below).
+      if (isThought && (hasText || partSig === "")) {
         flushText();
 
         if (partSig !== "") thinkingSignature = partSig;
 
-        if (hasText) thinking += asString(partText);
+        if (hasText) {
+          thinking += asString(partText);
+          lastSignatureTarget = "text";
+        }
+
         continue;
       }
 
@@ -559,9 +682,10 @@ export const convertGeminiResponseToClaudeNonStream = (
         }
 
         if (partSig !== "") {
+          if (lastSignatureTarget === UNSUPPORTED_SIGNATURE_TARGET) continue;
           flushThinking();
           flushText();
-          appendCarrierThinkingBlock(partSig);
+          appendCarrierThinkingBlock(trailingCarrierSignature(partSig, lastSignatureTarget));
         }
 
         continue;
@@ -570,10 +694,22 @@ export const convertGeminiResponseToClaudeNonStream = (
       flushThinking();
 
       if (functionCall !== undefined) {
+        // An empty placeholder call is no call (cf07c78a).
+        if (!isNonEmptyFunctionCall(functionCall)) {
+          if (partSig !== "") {
+            flushText();
+            appendCarrierThinkingBlock(partSig);
+          }
+
+          continue;
+        }
+
         flushText();
 
         if (partSig !== "") appendCarrierThinkingBlock(partSig);
         hasToolCall = true;
+        hasVisibleOutput = true;
+        lastSignatureTarget = "function";
 
         const upstreamToolName = restoreSanitizedToolName(
           sanitizedNameMap,
@@ -619,6 +755,12 @@ export const convertGeminiResponseToClaudeNonStream = (
         }
 
         text += asString(partText);
+
+        if (asString(partText).trim() !== "") hasVisibleOutput = true;
+        lastSignatureTarget = "text";
+
+        // A signed text part stays its own block (4a9effcb).
+        if (partSig !== "") flushText();
         continue;
       }
     }
@@ -632,7 +774,7 @@ export const convertGeminiResponseToClaudeNonStream = (
   const finish = get(root, "candidates.0.finishReason");
   const finishReason = finish === undefined ? "" : asString(finish);
 
-  if (isMalformedFunctionCall(finishReason, hasToolCall))
+  if (isMalformedFunctionCall(finishReason, hasVisibleOutput))
     return JSON.stringify(MALFORMED_FUNCTION_CALL_ERROR);
   out["stop_reason"] = resolveGeminiClaudeStopReason(finishReason, hasToolCall);
 

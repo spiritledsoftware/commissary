@@ -2,9 +2,10 @@
  * Gemini part helpers.
  *
  * Go source: internal/translator/common/gemini.go (IsGeminiThoughtPart, GeminiPartFunctionCall/Response,
- * GeminiPartsHaveFunctionCall/Response, NormalizeGeminiTurnRole).
+ * GeminiPartsHaveFunctionCall/Response, NormalizeGeminiTurnRole). The function-response checks copy the identical
+ * per-translator helpers of claude_gemini_request.go, codex_gemini_request.go and interactions_gemini_common.go.
  */
-import { asBool, exists, get, isJsonArray, type Json } from "@commissary/json";
+import { asBool, exists, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
 
 /** `IsGeminiThoughtPart`: the part carries hidden model thought. */
 export const isGeminiThoughtPart = (part: Json | undefined): boolean =>
@@ -65,3 +66,11 @@ export const normalizeGeminiTurnRole = (
       return previousRole === "user" ? "assistant" : "user";
   }
 };
+
+/** A function response's `response` that is absent or an empty object. */
+export const isEmptyGeminiResponseObject = (value: Json | undefined): boolean =>
+  value === undefined || (isJsonObject(value) && Object.keys(value).length === 0);
+
+/** `geminiClaudeResponseHasOnlyResultKey` (and its Codex and Interactions twins): `{ "result": ... }` and nothing else. */
+export const geminiResponseHasOnlyResultKey = (response: Json | undefined): boolean =>
+  isJsonObject(response) && Object.keys(response).length === 1 && Object.hasOwn(response, "result");
